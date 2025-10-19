@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/renata-amutio/Projects/renatillas/sortable/examples/**)",
+      "Bash(gleam run:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
