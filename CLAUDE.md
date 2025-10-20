@@ -14,7 +14,7 @@ The project uses Lustre for UI and integrates with Three.js and Rapier3D physics
 ## Development Commands
 
 ### Core Commands
-- `gleam run` - Run the project
+- `gleam run -m lustre/dev start` - Run the project
 - `gleam test` - Run all tests
 - `gleam format --check src test` - Check code formatting (used in CI)
 - `gleam format src test` - Format code
