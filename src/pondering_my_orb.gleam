@@ -1,3 +1,4 @@
+import gleam/float
 import gleam/int
 import gleam/javascript/promise
 import gleam/list
@@ -19,6 +20,7 @@ import vec/vec3
 
 pub type Id {
   Camera
+  Boxes
   Ambient
   Directional
   FloorTiles
@@ -27,7 +29,11 @@ pub type Id {
 }
 
 pub type Model {
-  Model(assets: asset.AssetCache, floor_tile: option.Option(object3d.Object3D))
+  Model(
+    assets: asset.AssetCache,
+    floor_tile: option.Option(object3d.Object3D),
+    box: List(scene.Node(Id)),
+  )
 }
 
 pub type Msg {
@@ -47,12 +53,18 @@ pub fn main() -> Nil {
 
 fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), option.Option(_)) {
   let assets = [
+    asset.FBXAsset("PSX_Dungeon/Models/Box.fbx", option.None),
     asset.FBXAsset(
       "PSX_Dungeon/Models/Floor_Tiles.fbx",
       option.Some("PSX_Dungeon/Textures/"),
     ),
     asset.TextureAsset("PSX_Dungeon/Textures/TEX_Ground_04.png"),
+    asset.TextureAsset("PSX_Dungeon/Textures/TEX_Crate_01.png"),
   ]
+  // Initialize physics world with gravity
+  let physics_world =
+    physics.new_world(physics.WorldConfig(gravity: vec3.Vec3(0.0, -9.81, 0.0)))
+
   let effects =
     effect.batch([
       effect.from_promise(promise.map(
@@ -60,13 +72,11 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), option.Option(_)) {
         AssetsLoaded,
       )),
       effect.tick(Tick),
+      effect.from(fn(_) { debug.show_collider_wireframes(physics_world, True) }),
     ])
-  // Initialize physics world with gravity
-  let physics_world =
-    physics.new_world(physics.WorldConfig(gravity: vec3.Vec3(0.0, -9.81, 0.0)))
 
   #(
-    Model(assets: asset.new_cache(), floor_tile: option.None),
+    Model(assets: asset.new_cache(), floor_tile: option.None, box: []),
     effects,
     option.Some(physics_world),
   )
@@ -93,17 +103,56 @@ fn update(
           assets.cache,
           "PSX_Dungeon/Textures/TEX_Ground_04.png",
         )
+      let assert Ok(box_fbx) =
+        asset.get_fbx(assets.cache, "PSX_Dungeon/Models/Box.fbx")
+      let assert Ok(box_texture) =
+        asset.get_texture(assets.cache, "PSX_Dungeon/Textures/TEX_Crate_01.png")
+      let instances =
+        list.map(list.range(0, 19), fn(_) {
+          transform.identity
+          |> transform.with_position(vec3.Vec3(
+            float.random() *. 20.0 -. 10.0,
+            0.5,
+            float.random() *. 20.0 -. 10.0,
+          ))
+          |> transform.scale_by(vec3.Vec3(0.12, 0.12, 0.12))
+        })
+      let boxes = [
+        scene.InstancedModel(
+          id: Boxes,
+          object: box_fbx.scene,
+          instances: instances,
+          physics: option.Some(
+            physics.new_rigid_body(physics.Fixed)
+            |> physics.with_collider(physics.Box(
+              offset: transform.identity,
+              width: 1.0,
+              height: 1.0,
+              depth: 1.0,
+            ))
+            |> physics.build(),
+          ),
+        ),
+      ]
 
-      // Manually apply the texture to the FBX model
       asset.apply_texture_to_object(
         floor_fbx.scene,
         floor_texture,
         asset.NearestFilter,
       )
+      asset.apply_texture_to_object(
+        box_fbx.scene,
+        box_texture,
+        asset.NearestFilter,
+      )
 
       // Store just the single floor tile - we'll use InstancedModel to replicate it
       #(
-        Model(assets: assets.cache, floor_tile: option.Some(floor_fbx.scene)),
+        Model(
+          assets: assets.cache,
+          floor_tile: option.Some(floor_fbx.scene),
+          box: boxes,
+        ),
         effect.none(),
         ctx.physics_world,
       )
@@ -162,67 +211,81 @@ fn view(model: Model, ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
     option.None -> []
   }
 
-  list.append(ground, [
-    scene.Camera(
-      id: Camera,
-      camera: cam,
-      transform: transform.at(position: vec3.Vec3(0.0, 10.0, 15.0)),
-      look_at: option.Some(vec3.Vec3(0.0, 0.0, 0.0)),
-      active: True,
-      viewport: option.None,
-    ),
-    scene.Light(
-      id: Ambient,
-      light: {
-        let assert Ok(light) = light.ambient(color: 0xffffff, intensity: 0.5)
-        light
-      },
-      transform: transform.identity,
-    ),
-    scene.Light(
-      id: Directional,
-      light: {
-        let assert Ok(light) =
-          light.directional(color: 0xffffff, intensity: 2.0)
-        light
-      },
-      transform: transform.at(position: vec3.Vec3(5.0, 10.0, 7.5)),
-    ),
-    // Falling cube 1 (dynamic physics body)
-    scene.Mesh(
-      id: Cube1,
-      geometry: cube_geom,
-      material: cube1_mat,
-      transform: case physics.get_transform(physics_world, Cube1) {
-        Ok(t) -> t
-        Error(Nil) -> transform.at(position: vec3.Vec3(-2.0, 5.0, 0.0))
-      },
-      physics: option.Some(
-        physics.new_rigid_body(physics.Dynamic)
-        |> physics.with_collider(physics.Box(transform.identity, 1.0, 1.0, 1.0))
-        |> physics.with_mass(1.0)
-        |> physics.with_restitution(0.5)
-        |> physics.with_friction(0.5)
-        |> physics.build(),
+  list.flatten([
+    ground,
+    model.box,
+    [
+      scene.Camera(
+        id: Camera,
+        camera: cam,
+        transform: transform.at(position: vec3.Vec3(0.0, 10.0, 15.0)),
+        look_at: option.Some(vec3.Vec3(0.0, 0.0, 0.0)),
+        active: True,
+        viewport: option.None,
       ),
-    ),
-    // Falling cube 2 (dynamic physics body)
-    scene.Mesh(
-      id: Cube2,
-      geometry: cube_geom,
-      material: cube2_mat,
-      transform: case physics.get_transform(physics_world, Cube2) {
-        Ok(t) -> t
-        Error(Nil) -> transform.at(position: vec3.Vec3(2.0, 7.0, 0.0))
-      },
-      physics: option.Some(
-        physics.new_rigid_body(physics.Dynamic)
-        |> physics.with_collider(physics.Box(transform.identity, 1.0, 1.0, 1.0))
-        |> physics.with_mass(1.0)
-        |> physics.with_restitution(0.6)
-        |> physics.with_friction(0.3)
-        |> physics.build(),
+      scene.Light(
+        id: Ambient,
+        light: {
+          let assert Ok(light) = light.ambient(color: 0xffffff, intensity: 0.5)
+          light
+        },
+        transform: transform.identity,
       ),
-    ),
+      scene.Light(
+        id: Directional,
+        light: {
+          let assert Ok(light) =
+            light.directional(color: 0xffffff, intensity: 2.0)
+          light
+        },
+        transform: transform.at(position: vec3.Vec3(5.0, 10.0, 7.5)),
+      ),
+      // Falling cube 1 (dynamic physics body)
+      scene.Mesh(
+        id: Cube1,
+        geometry: cube_geom,
+        material: cube1_mat,
+        transform: case physics.get_transform(physics_world, Cube1) {
+          Ok(t) -> t
+          Error(Nil) -> transform.at(position: vec3.Vec3(-2.0, 5.0, 0.0))
+        },
+        physics: option.Some(
+          physics.new_rigid_body(physics.Dynamic)
+          |> physics.with_collider(physics.Box(
+            transform.identity,
+            1.0,
+            1.0,
+            1.0,
+          ))
+          |> physics.with_mass(1.0)
+          |> physics.with_restitution(0.5)
+          |> physics.with_friction(0.5)
+          |> physics.build(),
+        ),
+      ),
+      // Falling cube 2 (dynamic physics body)
+      scene.Mesh(
+        id: Cube2,
+        geometry: cube_geom,
+        material: cube2_mat,
+        transform: case physics.get_transform(physics_world, Cube2) {
+          Ok(t) -> t
+          Error(Nil) -> transform.at(position: vec3.Vec3(2.0, 7.0, 0.0))
+        },
+        physics: option.Some(
+          physics.new_rigid_body(physics.Dynamic)
+          |> physics.with_collider(physics.Box(
+            transform.identity,
+            1.0,
+            1.0,
+            1.0,
+          ))
+          |> physics.with_mass(1.0)
+          |> physics.with_restitution(0.6)
+          |> physics.with_friction(0.3)
+          |> physics.build(),
+        ),
+      ),
+    ],
   ])
 }
