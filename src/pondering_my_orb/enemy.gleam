@@ -24,7 +24,7 @@ pub fn new(
   Enemy(max_health: health, current_health: health, damage:, speed:, transform:)
 }
 
-pub fn render(id: id, enemy: Enemy) {
+pub fn render(enemy: Enemy, id: id) {
   let assert Ok(capsule) =
     geometry.cylinder(
       radius_top: 0.5,
