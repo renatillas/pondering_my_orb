@@ -3,6 +3,7 @@ import gleam/int
 import gleam/javascript/promise
 import gleam/list
 import gleam/option
+import pondering_my_orb/enemy
 import tiramisu
 import tiramisu/asset
 import tiramisu/background
@@ -26,6 +27,7 @@ pub type Id {
   FloorTiles
   Cube1
   Cube2
+  Enemy
 }
 
 pub type Model {
@@ -33,6 +35,7 @@ pub type Model {
     assets: asset.AssetCache,
     floor_tile: option.Option(object3d.Object3D),
     box: List(scene.Node(Id)),
+    enemy: option.Option(enemy.Enemy),
   )
 }
 
@@ -76,7 +79,12 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), option.Option(_)) {
     ])
 
   #(
-    Model(assets: asset.new_cache(), floor_tile: option.None, box: []),
+    Model(
+      assets: asset.new_cache(),
+      floor_tile: option.None,
+      box: [],
+      enemy: option.None,
+    ),
     effects,
     option.Some(physics_world),
   )
@@ -107,6 +115,10 @@ fn update(
         asset.get_fbx(assets.cache, "PSX_Dungeon/Models/Box.fbx")
       let assert Ok(box_texture) =
         asset.get_texture(assets.cache, "PSX_Dungeon/Textures/TEX_Crate_01.png")
+
+      let knight_enemy =
+        enemy.knight_enemy(transform.at(vec3.Vec3(0.0, 10.0, 0.0)))
+
       let instances =
         list.map(list.range(0, 19), fn(_) {
           transform.identity
@@ -152,6 +164,7 @@ fn update(
           assets: assets.cache,
           floor_tile: option.Some(floor_fbx.scene),
           box: boxes,
+          enemy: option.Some(knight_enemy),
         ),
         effect.none(),
         ctx.physics_world,
@@ -211,8 +224,13 @@ fn view(model: Model, ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
     option.None -> []
   }
 
+  let enemy = case model.enemy {
+    option.Some(enemy) -> [enemy.render(Enemy, enemy)]
+    option.None -> []
+  }
   list.flatten([
     ground,
+    enemy,
     model.box,
     [
       scene.Camera(
