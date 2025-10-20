@@ -61,20 +61,16 @@ pub fn unique_spell_count(bag: SpellBag) -> Int {
   bag.spells |> bag.to_set() |> set.size()
 }
 
-/// Transfer a spell from the bag to a wand slot
 pub fn transfer_to_wand(
   bag: SpellBag,
   spell: spell.Spell,
   wand: wand.Wand,
   slot_index: Int,
 ) -> Result(#(SpellBag, wand.Wand), TransferError) {
-  // Check if we have the spell
   let new_bag = remove_spell(bag, spell)
-  // Try to add to wand
   case wand.set_spell(wand, slot_index, spell) {
     Ok(new_wand) -> Ok(#(SpellBag(new_bag), new_wand))
     Error(Nil) -> {
-      // Failed to add to wand, return spell to bag
       Error(InvalidSlot)
     }
   }

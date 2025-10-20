@@ -1,5 +1,3 @@
-/// Wand System - Handles spell casting with modifiers
-/// Spells are cast from left to right, with modifiers affecting the next damaging spell
 import gleam/float
 import gleam/option
 import gleam/result
