@@ -18,7 +18,6 @@ gleam_stdlib = ">= 0.44.0 and < 2.0.0"
 tiramisu = ">= 3.0.0 and < 4.0.0"
 vec = ">= 3.0.1 and < 4.0.0"
 lustre = ">= 5.3.5 and < 6.0.0"
-sortable = { path = "../sortable" }
 iv = ">= 1.3.2 and < 2.0.0"
 tote = ">= 1.0.2 and < 2.0.0"
 
