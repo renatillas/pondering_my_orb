@@ -31,8 +31,8 @@ pub type Id {
 pub type Model {
   Model(
     assets: asset.AssetCache,
-    floor_tile: option.Option(object3d.Object3D),
-    box: List(scene.Node(Id)),
+    ground: List(scene.Node(Id)),
+    boxes: List(scene.Node(Id)),
   )
 }
 
@@ -76,7 +76,7 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), option.Option(_)) {
     ])
 
   #(
-    Model(assets: asset.new_cache(), floor_tile: option.None, box: []),
+    Model(assets: asset.new_cache(), ground: [], boxes: []),
     effects,
     option.Some(physics_world),
   )
@@ -95,69 +95,77 @@ fn update(
       #(model, effect.tick(Tick), option.Some(new_physics_world))
     }
     AssetsLoaded(assets:) -> {
-      // Get the loaded FBX and texture
-      let assert Ok(floor_fbx) =
-        asset.get_fbx(assets.cache, "PSX_Dungeon/Models/Floor_Tiles.fbx")
-      let assert Ok(floor_texture) =
-        asset.get_texture(
-          assets.cache,
-          "PSX_Dungeon/Textures/TEX_Ground_04.png",
-        )
-      let assert Ok(box_fbx) =
-        asset.get_fbx(assets.cache, "PSX_Dungeon/Models/Box.fbx")
-      let assert Ok(box_texture) =
-        asset.get_texture(assets.cache, "PSX_Dungeon/Textures/TEX_Crate_01.png")
-      let instances =
-        list.map(list.range(0, 19), fn(_) {
-          transform.identity
-          |> transform.with_position(vec3.Vec3(
-            float.random() *. 20.0 -. 10.0,
-            0.5,
-            float.random() *. 20.0 -. 10.0,
-          ))
-          |> transform.scale_by(vec3.Vec3(0.12, 0.12, 0.12))
-        })
-      let boxes = [
-        scene.InstancedModel(
-          id: Boxes,
-          object: box_fbx.scene,
-          instances: instances,
-          physics: option.Some(
-            physics.new_rigid_body(physics.Fixed)
-            |> physics.with_collider(physics.Box(
-              offset: transform.identity,
-              width: 1.0,
-              height: 1.0,
-              depth: 1.0,
-            ))
-            |> physics.build(),
-          ),
-        ),
-      ]
-
-      asset.apply_texture_to_object(
-        floor_fbx.scene,
-        floor_texture,
-        asset.NearestFilter,
-      )
-      asset.apply_texture_to_object(
-        box_fbx.scene,
-        box_texture,
-        asset.NearestFilter,
-      )
-
-      // Store just the single floor tile - we'll use InstancedModel to replicate it
-      #(
-        Model(
-          assets: assets.cache,
-          floor_tile: option.Some(floor_fbx.scene),
-          box: boxes,
-        ),
-        effect.none(),
-        ctx.physics_world,
-      )
+      update_model_with_assets(assets, ctx.physics_world)
     }
   }
+}
+
+fn update_model_with_assets(
+  assets: asset.BatchLoadResult,
+  physics_world: option.Option(physics.PhysicsWorld(Id)),
+) -> #(Model, Effect(Msg), option.Option(physics.PhysicsWorld(Id))) {
+  let assert Ok(floor_fbx) =
+    asset.get_fbx(assets.cache, "PSX_Dungeon/Models/Floor_Tiles.fbx")
+  let assert Ok(floor_texture) =
+    asset.get_texture(assets.cache, "PSX_Dungeon/Textures/TEX_Ground_04.png")
+  let assert Ok(box_fbx) =
+    asset.get_fbx(assets.cache, "PSX_Dungeon/Models/Box.fbx")
+  let assert Ok(box_texture) =
+    asset.get_texture(assets.cache, "PSX_Dungeon/Textures/TEX_Crate_01.png")
+
+  let boxes = render_boxes(box_fbx)
+  let ground = render_ground(floor_fbx.scene)
+
+  let effects =
+    effect.batch([
+      effect.from(fn(_) {
+        asset.apply_texture_to_object(
+          floor_fbx.scene,
+          floor_texture,
+          asset.NearestFilter,
+        )
+      }),
+      effect.from(fn(_) {
+        asset.apply_texture_to_object(
+          box_fbx.scene,
+          box_texture,
+          asset.NearestFilter,
+        )
+      }),
+    ])
+
+  #(Model(assets: assets.cache, ground:, boxes:), effects, physics_world)
+}
+
+fn render_boxes(box_fbx: asset.FBXData) -> List(scene.Node(Id)) {
+  let instances =
+    list.map(list.range(0, 19), fn(_) {
+      transform.identity
+      |> transform.with_position(vec3.Vec3(
+        float.random() *. 20.0 -. 10.0,
+        0.5,
+        float.random() *. 20.0 -. 10.0,
+      ))
+      |> transform.scale_by(vec3.Vec3(0.12, 0.12, 0.12))
+    })
+  let boxes = [
+    scene.InstancedModel(
+      id: Boxes,
+      object: box_fbx.scene,
+      instances: instances,
+      physics: option.Some(
+        physics.new_rigid_body(physics.Fixed)
+        |> physics.with_collider(physics.Box(
+          offset: transform.identity,
+          width: 1.0,
+          height: 1.0,
+          depth: 1.0,
+        ))
+        |> physics.build(),
+      ),
+    ),
+  ]
+  boxes
 }
 
 fn view(model: Model, ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
@@ -171,49 +179,9 @@ fn view(model: Model, ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
   let assert Ok(cube2_mat) =
     material.new() |> material.with_color(0x44ff44) |> material.build
 
-  // Create floor tiles using InstancedModel for efficient rendering
-  let ground = case model.floor_tile {
-    option.Some(tile) -> {
-      // Generate transforms for a 100x100 grid
-      let instances =
-        list.flatten(
-          list.map(list.range(0, 36), fn(x) {
-            list.map(list.range(0, 36), fn(z) {
-              transform.identity
-              |> transform.with_position(vec3.Vec3(
-                int.to_float(x) -. 18.0,
-                0.0,
-                int.to_float(z) -. 18.0,
-              ))
-              |> transform.with_scale(vec3.Vec3(0.05, 0.05, 0.05))
-            })
-          }),
-        )
-
-      [
-        scene.InstancedModel(
-          id: FloorTiles,
-          object: tile,
-          instances: instances,
-          physics: option.Some(
-            physics.new_rigid_body(physics.Fixed)
-            |> physics.with_collider(physics.Box(
-              offset: transform.identity,
-              width: 1.0,
-              height: 0.25,
-              depth: 1.0,
-            ))
-            |> physics.build(),
-          ),
-        ),
-      ]
-    }
-    option.None -> []
-  }
-
   list.flatten([
-    ground,
-    model.box,
+    model.ground,
+    model.boxes,
     [
       scene.Camera(
         id: Camera,
@@ -288,4 +256,40 @@ fn view(model: Model, ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
       ),
     ],
   ])
+}
+
+fn render_ground(floor_tile: object3d.Object3D) -> List(scene.Node(Id)) {
+  // Generate transforms for a 100x100 grid
+  let instances =
+    list.flatten(
+      list.map(list.range(0, 36), fn(x) {
+        list.map(list.range(0, 36), fn(z) {
+          transform.identity
+          |> transform.with_position(vec3.Vec3(
+            int.to_float(x) -. 18.0,
+            0.0,
+            int.to_float(z) -. 18.0,
+          ))
+          |> transform.with_scale(vec3.Vec3(0.05, 0.05, 0.05))
+        })
+      }),
+    )
+
+  [
+    scene.InstancedModel(
+      id: FloorTiles,
+      object: floor_tile,
+      instances: instances,
+      physics: option.Some(
+        physics.new_rigid_body(physics.Fixed)
+        |> physics.with_collider(physics.Box(
+          offset: transform.identity,
+          width: 1.0,
+          height: 0.25,
+          depth: 1.0,
+        ))
+        |> physics.build(),
+      ),
+    ),
+  ]
 }
