@@ -8,15 +8,6 @@ pub opaque type SpellBag {
   SpellBag(spells: bag.Bag(spell.Spell))
 }
 
-pub type AddResult {
-  Added(new_count: Int)
-  StackLimitReached
-}
-
-pub type RemoveError {
-  NotFound
-}
-
 pub fn new() -> SpellBag {
   SpellBag(spells: bag.new())
 }

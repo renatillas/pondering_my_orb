@@ -1,12 +1,7 @@
-/// Spell System - Inspired by Noita
-/// Defines spell types, properties, and how modifiers affect damaging spells
-import gleam/list
+import iv
 
-/// Represents the different types of spells
 pub type Spell {
-  /// Damaging spells that create projectiles and deal damage
   DamageSpell(DamageSpell)
-  /// Modifier spells that enhance the next damaging spell
   ModifierSpell(ModifierSpell)
 }
 
@@ -18,7 +13,6 @@ pub type DamageSpell {
     projectile_speed: Float,
     projectile_lifetime: Float,
     projectile_size: Float,
-    color: Int,
   )
 }
 
@@ -27,9 +21,13 @@ pub type ModifierSpell {
     name: String,
     mana_cost: Float,
     damage_multiplier: Float,
-    speed_multiplier: Float,
-    size_multiplier: Float,
-    lifetime_multiplier: Float,
+    damage_addition: Float,
+    projectile_speed_multiplier: Float,
+    projectile_speed_addition: Float,
+    projectile_size_multiplier: Float,
+    projectile_size_addition: Float,
+    projectile_lifetime_multiplier: Float,
+    projectile_lifetime_addition: Float,
   )
 }
 
@@ -64,7 +62,6 @@ pub fn damaging_spell(
   projectile_lifetime projectile_lifetime: Float,
   mana_cost mana_cost: Float,
   projectile_size projectile_size: Float,
-  color color: Int,
 ) -> Spell {
   DamageSpell(Damage(
     name: name,
@@ -73,7 +70,6 @@ pub fn damaging_spell(
     projectile_lifetime: projectile_lifetime,
     mana_cost: mana_cost,
     projectile_size: projectile_size,
-    color: color,
   ))
 }
 
@@ -81,50 +77,77 @@ pub fn damaging_spell(
 pub fn modifier_spell(
   name name: String,
   damage_multiplier damage_multiplier: Float,
-  speed_multiplier speed_multiplier: Float,
-  size_multiplier size_multiplier: Float,
-  lifetime_multiplier lifetime_multiplier: Float,
+  damage_addition damage_addition: Float,
+  projectile_speed_multiplier projectile_speed_multiplier: Float,
+  projectile_speed_addition projectile_speed_addition: Float,
+  projectile_size_multiplier projectile_size_multiplier: Float,
+  projectile_size_addition projectile_size_addition: Float,
+  projectile_lifetime_multiplier projectile_lifetime_multiplier: Float,
+  projectile_lifetime_addition projectile_lifetime_addition: Float,
   mana_cost mana_cost: Float,
 ) -> Spell {
   ModifierSpell(Modifier(
-    name: name,
-    damage_multiplier: damage_multiplier,
-    speed_multiplier: speed_multiplier,
-    size_multiplier: size_multiplier,
-    lifetime_multiplier: lifetime_multiplier,
-    mana_cost: mana_cost,
+    name:,
+    mana_cost:,
+    damage_multiplier:,
+    damage_addition:,
+    projectile_speed_multiplier:,
+    projectile_speed_addition:,
+    projectile_size_multiplier:,
+    projectile_size_addition:,
+    projectile_lifetime_multiplier:,
+    projectile_lifetime_addition:,
   ))
 }
 
 /// Apply a list of modifiers to a damaging spell
 pub fn apply_modifiers(
   base_spell: DamageSpell,
-  modifiers: List(ModifierSpell),
+  modifiers: iv.Array(ModifierSpell),
 ) -> ModifiedSpell {
   // Fold over all modifiers to calculate final values
-  let #(damage_mult, speed_mult, size_mult, lifetime_mult, total_mana) =
-    list.fold(
+  let #(damage, speed, size, lifetime) =
+    iv.fold(
       modifiers,
-      #(1.0, 1.0, 1.0, 1.0, base_spell.mana_cost),
+      #(
+        base_spell.damage,
+        base_spell.projectile_speed,
+        base_spell.projectile_size,
+        base_spell.projectile_lifetime,
+      ),
       fn(acc, mod) {
-        let #(d, s, sz, l, m) = acc
+        let #(damage, speed, size, lifetime) = acc
         #(
-          d *. mod.damage_multiplier,
-          s *. mod.speed_multiplier,
-          sz *. mod.size_multiplier,
-          l *. mod.lifetime_multiplier,
-          m +. mod.mana_cost,
+          damage +. mod.damage_addition,
+          speed +. mod.projectile_speed_addition,
+          size +. mod.projectile_size_addition,
+          lifetime +. mod.projectile_lifetime_addition,
+        )
+      },
+    )
+  let #(final_damage, final_speed, final_size, final_lifetime, total_mana_cost) =
+    iv.fold(
+      modifiers,
+      #(damage, speed, size, lifetime, base_spell.mana_cost),
+      fn(acc, mod) {
+        let #(damage, speed, size, lifetime, mana_cost) = acc
+        #(
+          damage *. mod.damage_multiplier,
+          speed *. mod.projectile_speed_multiplier,
+          size *. mod.projectile_size_multiplier,
+          lifetime *. mod.projectile_lifetime_multiplier,
+          mana_cost *. mod.projectile_lifetime_multiplier,
         )
       },
     )
 
   ModifiedSpell(
     base: DamageSpell(base_spell),
-    final_damage: base_spell.damage *. damage_mult,
-    final_speed: base_spell.projectile_speed *. speed_mult,
-    final_size: base_spell.projectile_size *. size_mult,
-    final_lifetime: base_spell.projectile_lifetime *. lifetime_mult,
-    total_mana_cost: total_mana,
+    final_damage:,
+    final_speed:,
+    final_size:,
+    final_lifetime:,
+    total_mana_cost:,
   )
 }
 
@@ -139,7 +162,6 @@ pub fn spark() -> Spell {
     projectile_lifetime: 2.0,
     mana_cost: 5.0,
     projectile_size: 0.3,
-    color: 0xffff44,
   )
 }
 
@@ -152,7 +174,6 @@ pub fn fireball() -> Spell {
     projectile_lifetime: 3.0,
     mana_cost: 20.0,
     projectile_size: 0.8,
-    color: 0xff4400,
   )
 }
 
@@ -165,42 +186,5 @@ pub fn lightning() -> Spell {
     projectile_lifetime: 1.0,
     mana_cost: 35.0,
     projectile_size: 0.2,
-    color: 0x00ffff,
-  )
-}
-
-/// Damage boost modifier
-pub fn heavy_shot() -> Spell {
-  modifier_spell(
-    name: "Heavy Shot",
-    damage_multiplier: 2.0,
-    speed_multiplier: 0.01,
-    size_multiplier: 1.5,
-    lifetime_multiplier: 1.0,
-    mana_cost: 10.0,
-  )
-}
-
-/// Speed boost modifier
-pub fn homing() -> Spell {
-  modifier_spell(
-    name: "Homing",
-    damage_multiplier: 1.0,
-    speed_multiplier: 1.3,
-    size_multiplier: 1.0,
-    lifetime_multiplier: 1.5,
-    mana_cost: 15.0,
-  )
-}
-
-/// Triple damage modifier
-pub fn triple_spell() -> Spell {
-  modifier_spell(
-    name: "Triple Spell",
-    damage_multiplier: 0.7,
-    speed_multiplier: 1.0,
-    size_multiplier: 0.8,
-    lifetime_multiplier: 1.0,
-    mana_cost: 20.0,
   )
 }
