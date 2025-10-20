@@ -50,6 +50,6 @@ pub fn render(enemy: Enemy, id: id) {
   )
 }
 
-pub fn knight_enemy(transform: transform.Transform) {
+pub fn basic(transform: transform.Transform) {
   new(health: 10, damage: 10, speed: 10.0, transform:)
 }

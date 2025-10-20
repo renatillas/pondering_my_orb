@@ -118,7 +118,7 @@ fn update_model_with_assets(
   let ground = render_ground(floor_fbx.scene)
 
   let enemy =
-    enemy.knight_enemy(transform.identity) |> enemy.render(Enemy) |> list.wrap
+    enemy.basic(transform.identity) |> enemy.render(Enemy) |> list.wrap
 
   let effects =
     effect.batch([
