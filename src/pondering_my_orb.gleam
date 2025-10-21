@@ -4,16 +4,14 @@ import gleam/javascript/promise
 import gleam/list
 import gleam/option
 import pondering_my_orb/enemy
+import pondering_my_orb/map
 import tiramisu
 import tiramisu/asset
 import tiramisu/background
 import tiramisu/camera
 import tiramisu/debug
 import tiramisu/effect.{type Effect}
-import tiramisu/geometry
 import tiramisu/light
-import tiramisu/material
-import tiramisu/object3d
 import tiramisu/physics
 import tiramisu/scene
 import tiramisu/transform
@@ -24,7 +22,7 @@ pub type Id {
   Boxes
   Ambient
   Directional
-  FloorTiles
+  Ground
   Cube1
   Cube2
   Enemy
@@ -33,9 +31,9 @@ pub type Id {
 pub type Model {
   Model(
     assets: asset.AssetCache,
-    enemy: List(scene.Node(Id)),
-    ground: List(scene.Node(Id)),
-    boxes: List(scene.Node(Id)),
+    enemy: option.Option(enemy.Enemy),
+    ground: option.Option(map.Obstacle(map.Ground)),
+    boxes: option.Option(map.Obstacle(map.Box)),
   )
 }
 
@@ -79,7 +77,7 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), option.Option(_)) {
     ])
 
   #(
-    Model(assets: asset.new_cache(), ground: [], boxes: [], enemy: []),
+    Model(ground: option.None, boxes: option.None, enemy: option.None),
     effects,
     option.Some(physics_world),
   )
@@ -90,7 +88,6 @@ fn update(
   msg: Msg,
   ctx: tiramisu.Context(Id),
 ) -> #(Model, Effect(Msg), option.Option(_)) {
-  echo debug.get_performance_stats()
   let assert option.Some(physics_world) = ctx.physics_world
   case msg {
     Tick -> {
@@ -114,11 +111,38 @@ fn update_model_with_assets(
   let assert Ok(box_texture) =
     asset.get_texture(assets.cache, "PSX_Dungeon/Textures/TEX_Crate_01.png")
 
-  let boxes = render_boxes(box_fbx)
-  let ground = render_ground(floor_fbx.scene)
+  let boxes =
+    list.map(list.range(0, 19), fn(_) {
+      transform.identity
+      |> transform.with_position(vec3.Vec3(
+        float.random() *. 20.0 -. 10.0,
+        0.5,
+        float.random() *. 20.0 -. 10.0,
+      ))
+      |> transform.scale_by(vec3.Vec3(0.12, 0.12, 0.12))
+    })
+    |> map.box(box_fbx.scene, _)
+    |> option.Some
+
+  let ground =
+    list.flatten(
+      list.map(list.range(0, 36), fn(x) {
+        list.map(list.range(0, 36), fn(z) {
+          transform.identity
+          |> transform.with_position(vec3.Vec3(
+            int.to_float(x) -. 18.0,
+            0.0,
+            int.to_float(z) -. 18.0,
+          ))
+          |> transform.with_scale(vec3.Vec3(0.05, 0.05, 0.05))
+        })
+      }),
+    )
+    |> map.ground(floor_fbx.scene, _)
+    |> option.Some
 
   let enemy =
-    enemy.basic(transform.identity) |> enemy.render(Enemy) |> list.wrap
+    enemy.basic(transform.identity)
 
   let effects =
     effect.batch([
@@ -137,58 +161,29 @@ fn update_model_with_assets(
         )
       }),
     ])
-
-  #(
-    Model(assets: assets.cache, ground:, boxes:, enemy:),
-    effects,
-    ctx.physics_world,
-  )
+  #(Model(ground:, boxes:, enemy:), effects, physics_world)
 }
 
-fn render_boxes(box_fbx: asset.FBXData) -> List(scene.Node(Id)) {
-  let instances =
-    list.map(list.range(0, 19), fn(_) {
-      transform.identity
-      |> transform.with_position(vec3.Vec3(
-        float.random() *. 20.0 -. 10.0,
-        0.5,
-        float.random() *. 20.0 -. 10.0,
-      ))
-      |> transform.scale_by(vec3.Vec3(0.12, 0.12, 0.12))
-    })
-  let boxes = [
-    scene.InstancedModel(
-      id: Boxes,
-      object: box_fbx.scene,
-      instances: instances,
-      physics: option.Some(
-        physics.new_rigid_body(physics.Fixed)
-        |> physics.with_collider(physics.Box(
-          offset: transform.identity,
-          width: 1.0,
-          height: 1.0,
-          depth: 1.0,
-        ))
-        |> physics.build(),
-      ),
-    ),
-  ]
-  boxes
-}
-
-fn view(model: Model, ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
-  let assert option.Some(physics_world) = ctx.physics_world
+fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
   let assert Ok(cam) =
     camera.perspective(field_of_view: 75.0, near: 0.1, far: 1000.0)
 
-  let assert Ok(cube_geom) = geometry.box(width: 1.0, height: 1.0, depth: 1.0)
-  let assert Ok(cube1_mat) =
-    material.new() |> material.with_color(0xff4444) |> material.build
-  let assert Ok(cube2_mat) =
-    material.new() |> material.with_color(0x44ff44) |> material.build
+  let ground = case model.ground {
+    option.Some(ground) -> map.render_ground(ground, Ground)
+    option.None -> []
+  }
+
+  let boxes = case model.boxes {
+    option.Some(boxes) -> map.render_box(boxes, Boxes)
+    option.None -> []
+  }
+  
+  let enemy = case model.enemy {
+    option.Some(enemy) -> enemy.render(enemy, Enemy) |> list.wrap
+    option.None -> []
+  }
 
   list.flatten([
-    model.ground,
     model.enemy,
     model.ground,
     model.boxes,
@@ -218,88 +213,6 @@ fn view(model: Model, ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
         },
         transform: transform.at(position: vec3.Vec3(5.0, 10.0, 7.5)),
       ),
-      // Falling cube 1 (dynamic physics body)
-      scene.Mesh(
-        id: Cube1,
-        geometry: cube_geom,
-        material: cube1_mat,
-        transform: case physics.get_transform(physics_world, Cube1) {
-          Ok(t) -> t
-          Error(Nil) -> transform.at(position: vec3.Vec3(-2.0, 5.0, 0.0))
-        },
-        physics: option.Some(
-          physics.new_rigid_body(physics.Dynamic)
-          |> physics.with_collider(physics.Box(
-            transform.identity,
-            1.0,
-            1.0,
-            1.0,
-          ))
-          |> physics.with_mass(1.0)
-          |> physics.with_restitution(0.5)
-          |> physics.with_friction(0.5)
-          |> physics.build(),
-        ),
-      ),
-      // Falling cube 2 (dynamic physics body)
-      scene.Mesh(
-        id: Cube2,
-        geometry: cube_geom,
-        material: cube2_mat,
-        transform: case physics.get_transform(physics_world, Cube2) {
-          Ok(t) -> t
-          Error(Nil) -> transform.at(position: vec3.Vec3(2.0, 7.0, 0.0))
-        },
-        physics: option.Some(
-          physics.new_rigid_body(physics.Dynamic)
-          |> physics.with_collider(physics.Box(
-            transform.identity,
-            1.0,
-            1.0,
-            1.0,
-          ))
-          |> physics.with_mass(1.0)
-          |> physics.with_restitution(0.6)
-          |> physics.with_friction(0.3)
-          |> physics.build(),
-        ),
-      ),
     ],
   ])
-}
-
-fn render_ground(floor_tile: object3d.Object3D) -> List(scene.Node(Id)) {
-  // Generate transforms for a 100x100 grid
-  let instances =
-    list.flatten(
-      list.map(list.range(0, 36), fn(x) {
-        list.map(list.range(0, 36), fn(z) {
-          transform.identity
-          |> transform.with_position(vec3.Vec3(
-            int.to_float(x) -. 18.0,
-            0.0,
-            int.to_float(z) -. 18.0,
-          ))
-          |> transform.with_scale(vec3.Vec3(0.05, 0.05, 0.05))
-        })
-      }),
-    )
-
-  [
-    scene.InstancedModel(
-      id: FloorTiles,
-      object: floor_tile,
-      instances: instances,
-      physics: option.Some(
-        physics.new_rigid_body(physics.Fixed)
-        |> physics.with_collider(physics.Box(
-          offset: transform.identity,
-          width: 1.0,
-          height: 0.25,
-          depth: 1.0,
-        ))
-        |> physics.build(),
-      ),
-    ),
-  ]
 }
