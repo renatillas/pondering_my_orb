@@ -34,7 +34,7 @@ pub type Id {
 
 pub type Model {
   Model(
-    enemy: option.Option(enemy.Enemy),
+    enemy: option.Option(enemy.Enemy(Id)),
     ground: option.Option(map.Obstacle(map.Ground)),
     boxes: option.Option(map.Obstacle(map.Box)),
     player: player.Player,
@@ -85,12 +85,14 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), option.Option(_)) {
       effect.tick(Tick),
       effect.from(fn(_) { debug.show_collider_wireframes(physics_world, True) }),
     ])
+  let enemy =
+    enemy.basic(Enemy, transform.at(vec3.Vec3(10.0, 5.5, 10.0))) |> option.Some
 
   #(
     Model(
       ground: option.None,
       boxes: option.None,
-      enemy: option.None,
+      enemy:,
       player: player.init(),
       pointer_locked: False,
       camera_distance: 5.0,
@@ -170,7 +172,19 @@ fn update(
           vec3.Vec3(player_pitch, player_yaw, player_roll),
         )
 
+      // Apply enemy movement velocity to physics world
+      let physics_world = case model.enemy {
+        option.Some(en) ->
+          enemy.follow(en, transform.at(player.player_position), physics_world)
+        option.None -> physics_world
+      }
+
+      // Step physics simulation
       let new_physics_world = physics.step(physics_world)
+
+      // Don't sync enemy transform from physics - let physics control it entirely
+      // The renderer will sync physics transforms directly to Three.js
+
       #(
         Model(..model, player:, pointer_locked:),
         effect.batch([effect.tick(Tick), pointer_lock_effect, exit_lock_effect]),
@@ -346,7 +360,7 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
   }
 
   let enemy = case model.enemy {
-    option.Some(enemy) -> enemy.render(enemy, Enemy) |> list.wrap
+    option.Some(enemy) -> enemy.render(enemy) |> list.wrap
     option.None -> []
   }
 
