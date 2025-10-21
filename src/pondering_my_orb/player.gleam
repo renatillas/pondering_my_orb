@@ -5,11 +5,10 @@ import tiramisu/physics
 import tiramisu/scene
 import tiramisu/transform
 
-pub type Enemy {
-  Enemy(
+pub type Player {
+  Player(
     max_health: Int,
     current_health: Int,
-    damage: Int,
     speed: Float,
     transform: transform.Transform,
   )
@@ -17,14 +16,13 @@ pub type Enemy {
 
 pub fn new(
   health health: Int,
-  damage damage: Int,
   speed speed: Float,
   transform transform: transform.Transform,
 ) {
-  Enemy(max_health: health, current_health: health, damage:, speed:, transform:)
+  Player(max_health: health, current_health: health, speed:, transform:)
 }
 
-pub fn render(enemy: Enemy, id: id) {
+pub fn render(player: Player, id: id) {
   let assert Ok(capsule) =
     geometry.cylinder(
       radius_top: 0.5,
@@ -33,12 +31,12 @@ pub fn render(enemy: Enemy, id: id) {
       radial_segments: 10,
     )
   let assert Ok(material) =
-    material.new() |> material.with_color(0xff0000) |> material.build()
+    material.new() |> material.with_color(0x00ff00) |> material.build()
   scene.Mesh(
     id,
     geometry: capsule,
     material:,
-    transform: enemy.transform,
+    transform: player.transform,
     physics: option.Some(
       physics.new_rigid_body(physics.Dynamic)
       |> physics.with_collider(physics.Capsule(
@@ -54,5 +52,5 @@ pub fn render(enemy: Enemy, id: id) {
 }
 
 pub fn basic(transform: transform.Transform) {
-  new(health: 10, damage: 10, speed: 10.0, transform:)
+  new(health: 100, speed: 11.0, transform:)
 }
