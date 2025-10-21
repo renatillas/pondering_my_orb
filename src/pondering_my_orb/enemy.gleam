@@ -77,6 +77,8 @@ pub fn follow(
   enemy: Enemy(id),
   target target: vec3.Vec3(Float),
   enemy_velocity enemy_velocity: vec3.Vec3(Float),
+  physics_world physics_world: physics.PhysicsWorld(id),
+  player_id player_id: id,
 ) {
   // Calculate direction to target (keep it horizontal)
   let direction =
@@ -89,8 +91,47 @@ pub fn follow(
     False -> vec3.Vec3(0.0, 0.0, 0.0)
   }
 
+  // Check for obstacles in front using raycast (only when moving)
+  let is_moving = vec3f.length(horizontal_velocity) >. 0.1
+
+  let climb_velocity = case is_moving {
+    True -> {
+      // Normalize direction for raycast
+      let normalized_direction = vec3f.normalize(direction)
+
+      // Cast ray horizontally forward from lower body (knee height)
+      // Start the ray OUTSIDE the enemy's capsule (radius 0.5) to avoid self-hits
+      let raycast_origin =
+        vec3.Vec3(
+          enemy.position.x +. normalized_direction.x *. 0.7,
+          enemy.position.y -. 0.7,
+          // Lower body level
+          enemy.position.z +. normalized_direction.z *. 0.7,
+        )
+
+      // Cast ray purely horizontally forward
+      let raycast_direction =
+        vec3.Vec3(normalized_direction.x, 0.0, normalized_direction.z)
+
+      case
+        physics.raycast(
+          physics_world,
+          origin: raycast_origin,
+          direction: raycast_direction,
+          max_distance: 1.0,
+        )
+      {
+        Ok(hit) if hit.id == player_id -> enemy_velocity.y
+        Ok(_) -> 5.0
+        Error(Nil) -> enemy_velocity.y
+      }
+    }
+    False -> enemy_velocity.y
+    // Not moving, don't climb
+  }
+
   let final_velocity =
-    vec3.Vec3(horizontal_velocity.x, enemy_velocity.y, horizontal_velocity.z)
+    vec3.Vec3(horizontal_velocity.x, climb_velocity, horizontal_velocity.z)
 
   final_velocity
 }

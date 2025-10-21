@@ -170,6 +170,8 @@ fn update(
           model.enemy,
           target: player.player_position,
           enemy_velocity:,
+          physics_world:,
+          player_id: Player,
         )
       let physics_world =
         physics.set_velocity(physics_world, Enemy, desired_velocity)
