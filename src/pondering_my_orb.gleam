@@ -62,62 +62,51 @@ fn update(
   ctx: Context(Id),
 ) -> #(Model, Effect(Msg), Option(PhysicsWorld(Id))) {
   let assert option.Some(physics_world) = ctx.physics_world
-  debug.show_collider_wireframes(physics_world, True)
+  // debug.show_collider_wireframes(physics_world, True)
+
   let camera_position = model.camera_position
 
   let impulse = Vec3(x: 0.0, y: 0.0, z: 0.0)
 
-  let #(impulse, camera_position) = case
-    input.is_key_pressed(ctx.input, input.KeyW)
-  {
-    True -> #(
-      Vec3(..impulse, z: impulse.z -. 0.1),
-      Vec3(..camera_position, z: camera_position.z -. 0.1),
-    )
-    False -> #(impulse, camera_position)
-  }
-
-  let #(impulse, camera_position) = case
-    input.is_key_pressed(ctx.input, input.KeyS)
-  {
-    True -> #(
-      Vec3(..impulse, z: impulse.z +. 0.1),
-      Vec3(..camera_position, z: camera_position.z +. 0.1),
-    )
-    False -> #(impulse, camera_position)
-  }
-
-  let #(impulse, camera_position) = case
-    input.is_key_pressed(ctx.input, input.KeyA)
-  {
-    True -> #(
-      Vec3(..impulse, x: impulse.x -. 0.1),
-      Vec3(..camera_position, x: camera_position.x -. 0.1),
-    )
-    False -> #(impulse, camera_position)
-  }
-
-  let #(impulse, camera_position) = case
-    input.is_key_pressed(ctx.input, input.KeyD)
-  {
-    True -> #(
-      Vec3(..impulse, x: impulse.x +. 0.1),
-      Vec3(..camera_position, x: camera_position.x +. 0.1),
-    )
-    False -> #(impulse, camera_position)
-  }
-
-  let impulse = case input.is_key_just_pressed(ctx.input, input.Space) {
-    True -> Vec3(..impulse, y: 10.0)
+  let impulse = case input.is_key_pressed(ctx.input, input.KeyW) {
+    True -> Vec3(..impulse, z: impulse.z -. 0.1)
     False -> impulse
   }
 
-  // echo impulse
+  let impulse = case input.is_key_pressed(ctx.input, input.KeyS) {
+    True -> Vec3(..impulse, z: impulse.z +. 0.1)
+
+    False -> impulse
+  }
+
+  let impulse = case input.is_key_pressed(ctx.input, input.KeyA) {
+    True -> Vec3(..impulse, x: impulse.x -. 0.1)
+    False -> impulse
+  }
+
+  let impulse = case input.is_key_pressed(ctx.input, input.KeyD) {
+    True -> Vec3(..impulse, x: impulse.x +. 0.1)
+    False -> impulse
+  }
+
+  let impulse = case input.is_key_just_pressed(ctx.input, input.Space) {
+    True -> Vec3(..impulse, y: 5.0)
+    False -> impulse
+  }
 
   let updated_physics_world =
     physics.apply_impulse(physics_world, Player, impulse)
-    |> physics.apply_impulse(Camera, impulse)
     |> physics.step()
+
+  let assert Ok(player_transform) = physics.get_transform(physics_world, Player)
+  let player_position = transform.position(player_transform)
+
+  let camera_position =
+    Vec3(
+      x: player_position.x,
+      y: player_position.y +. 5.0,
+      z: player_position.z +. 10.0,
+    )
 
   #(Model(camera_position:), effect.tick(Tick), Some(updated_physics_world))
 }
@@ -190,8 +179,14 @@ fn setup_player() {
   scene.Mesh(
     id: Player,
     geometry: {
-      let assert Ok(sphere) = geometry.sphere(1.0, 30, 30)
-      sphere
+      let assert Ok(cylinder) =
+        geometry.cylinder(
+          radius_top: 1.0,
+          radius_bottom: 1.0,
+          height: 2.0,
+          radial_segments: 32,
+        )
+      cylinder
     },
     material: {
       let assert Ok(material) =
@@ -206,7 +201,11 @@ fn setup_player() {
     transform: transform.at(Vec3(x: 0.0, y: 10.0, z: 0.0)),
     physics: option.Some(
       physics.new_rigid_body(physics.Dynamic)
-      |> physics.with_collider(physics.Sphere(transform.identity, 1.0))
+      |> physics.with_collider(physics.Cylinder(
+        offset: transform.identity,
+        half_height: 1.0,
+        radius: 1.0,
+      ))
       |> physics.with_mass(1.0)
       |> physics.with_restitution(0.5)
       |> physics.with_friction(0.5)
