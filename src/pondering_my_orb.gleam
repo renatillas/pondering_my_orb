@@ -3,6 +3,7 @@ import gleam/int
 import gleam/javascript/promise
 import gleam/list
 import gleam/option
+import pondering_my_orb/enemy
 import pondering_my_orb/map
 import tiramisu
 import tiramisu/asset
@@ -24,10 +25,12 @@ pub type Id {
   Ground
   Cube1
   Cube2
+  Enemy
 }
 
 pub type Model {
   Model(
+    enemy: option.Option(enemy.Enemy),
     ground: option.Option(map.Obstacle(map.Ground)),
     boxes: option.Option(map.Obstacle(map.Box)),
   )
@@ -73,7 +76,7 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), option.Option(_)) {
     ])
 
   #(
-    Model(ground: option.None, boxes: option.None),
+    Model(ground: option.None, boxes: option.None, enemy: option.None),
     effects,
     option.Some(physics_world),
   )
@@ -90,15 +93,13 @@ fn update(
       let new_physics_world = physics.step(physics_world)
       #(model, effect.tick(Tick), option.Some(new_physics_world))
     }
-    AssetsLoaded(assets:) -> {
-      update_model_with_assets(assets, ctx.physics_world)
-    }
+    AssetsLoaded(assets:) -> update_model_with_assets(assets, ctx)
   }
 }
 
 fn update_model_with_assets(
   assets: asset.BatchLoadResult,
-  physics_world: option.Option(physics.PhysicsWorld(Id)),
+  ctx: tiramisu.Context(Id),
 ) -> #(Model, Effect(Msg), option.Option(physics.PhysicsWorld(Id))) {
   let assert Ok(floor_fbx) =
     asset.get_fbx(assets.cache, "PSX_Dungeon/Models/Floor_Tiles.fbx")
@@ -139,6 +140,9 @@ fn update_model_with_assets(
     |> map.ground(floor_fbx.scene, _)
     |> option.Some
 
+  let enemy =
+    enemy.basic(transform.at(vec3.Vec3(0.0, 10.0, 0.0))) |> option.Some
+
   let effects =
     effect.batch([
       effect.from(fn(_) {
@@ -156,8 +160,7 @@ fn update_model_with_assets(
         )
       }),
     ])
-
-  #(Model(ground:, boxes:), effects, physics_world)
+  #(Model(ground:, boxes:, enemy:), effects, ctx.physics_world)
 }
 
 fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
@@ -174,7 +177,13 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
     option.None -> []
   }
 
+  let enemy = case model.enemy {
+    option.Some(enemy) -> enemy.render(enemy, Enemy) |> list.wrap
+    option.None -> []
+  }
+
   list.flatten([
+    enemy,
     ground,
     boxes,
     [
