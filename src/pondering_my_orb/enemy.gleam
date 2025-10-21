@@ -32,7 +32,8 @@ pub fn render(enemy: Enemy, id: id) {
       height: 2.0,
       radial_segments: 10,
     )
-  let assert Ok(material) = material.new() |> material.build()
+  let assert Ok(material) =
+    material.new() |> material.with_color(0xff0000) |> material.build()
   scene.Mesh(
     id,
     geometry: capsule,
