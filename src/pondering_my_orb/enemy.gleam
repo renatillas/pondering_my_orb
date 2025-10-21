@@ -45,6 +45,8 @@ pub fn render(enemy: Enemy, id: id) {
         half_height: 1.0,
         radius: 0.5,
       ))
+      |> physics.with_lock_rotation_x()
+      |> physics.with_lock_rotation_z()
       |> physics.build(),
     ),
   )

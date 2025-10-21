@@ -30,7 +30,6 @@ pub type Id {
 
 pub type Model {
   Model(
-    assets: asset.AssetCache,
     enemy: option.Option(enemy.Enemy),
     ground: option.Option(map.Obstacle(map.Ground)),
     boxes: option.Option(map.Obstacle(map.Box)),
@@ -142,7 +141,7 @@ fn update_model_with_assets(
     |> option.Some
 
   let enemy =
-    enemy.basic(transform.identity)
+    enemy.basic(transform.at(vec3.Vec3(0.0, 10.0, 0.0))) |> option.Some
 
   let effects =
     effect.batch([
@@ -161,7 +160,7 @@ fn update_model_with_assets(
         )
       }),
     ])
-  #(Model(ground:, boxes:, enemy:), effects, physics_world)
+  #(Model(ground:, boxes:, enemy:), effects, ctx.physics_world)
 }
 
 fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
@@ -177,16 +176,16 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
     option.Some(boxes) -> map.render_box(boxes, Boxes)
     option.None -> []
   }
-  
+
   let enemy = case model.enemy {
     option.Some(enemy) -> enemy.render(enemy, Enemy) |> list.wrap
     option.None -> []
   }
 
   list.flatten([
-    model.enemy,
-    model.ground,
-    model.boxes,
+    enemy,
+    ground,
+    boxes,
     [
       scene.Camera(
         id: Camera,
