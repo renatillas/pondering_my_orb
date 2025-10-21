@@ -101,8 +101,6 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), option.Option(_)) {
   )
 }
 
-const player_move_speed = 0.1
-
 const mouse_sensitivity = 0.003
 
 fn update(
@@ -148,48 +146,17 @@ fn update(
         False -> player_yaw
       }
 
-      let forward_x = maths.sin(player_yaw)
-      let forward_z = maths.cos(player_yaw)
-      let right_x = maths.cos(player_yaw)
-      let right_z = 0.0 -. maths.sin(player_yaw)
+      let direction = direction_from_yaw(player_yaw)
 
       let vec3.Vec3(player_x, player_y, player_z) = model.player.player_position
 
-      let player_x = case input.is_key_pressed(ctx.input, input.KeyW) {
-        True -> player_x +. forward_x *. player_move_speed
-        False -> player_x
-      }
-      let player_z = case input.is_key_pressed(ctx.input, input.KeyW) {
-        True -> player_z +. forward_z *. player_move_speed
-        False -> player_z
-      }
-
-      let player_x = case input.is_key_pressed(ctx.input, input.KeyS) {
-        True -> player_x -. forward_x *. player_move_speed
-        False -> player_x
-      }
-      let player_z = case input.is_key_pressed(ctx.input, input.KeyS) {
-        True -> player_z -. forward_z *. player_move_speed
-        False -> player_z
-      }
-
-      let player_x = case input.is_key_pressed(ctx.input, input.KeyA) {
-        True -> player_x +. right_x *. player_move_speed
-        False -> player_x
-      }
-      let player_z = case input.is_key_pressed(ctx.input, input.KeyA) {
-        True -> player_z +. right_z *. player_move_speed
-        False -> player_z
-      }
-
-      let player_x = case input.is_key_pressed(ctx.input, input.KeyD) {
-        True -> player_x -. right_x *. player_move_speed
-        False -> player_x
-      }
-      let player_z = case input.is_key_pressed(ctx.input, input.KeyD) {
-        True -> player_z -. right_z *. player_move_speed
-        False -> player_z
-      }
+      let #(player_x, player_z) =
+        calculate_movement_input(
+          ctx.input,
+          model.player.speed,
+          #(player_x, player_z),
+          direction,
+        )
 
       let pointer_locked = case should_exit_pointer_lock {
         True -> False
@@ -222,6 +189,64 @@ fn update(
       ctx.physics_world,
     )
   }
+}
+
+fn direction_from_yaw(yaw: Float) -> #(#(Float, Float), #(Float, Float)) {
+  let forward_x = maths.sin(yaw)
+  let forward_z = maths.cos(yaw)
+  let right_x = maths.cos(yaw)
+  let right_z = -1.0 *. maths.sin(yaw)
+
+  #(#(forward_x, forward_z), #(right_x, right_z))
+}
+
+fn calculate_movement_input(
+  input: input.InputState,
+  player_move_speed: Float,
+  player: #(Float, Float),
+  directions: #(#(Float, Float), #(Float, Float)),
+) -> #(Float, Float) {
+  let #(player_x, player_z) = player
+  let #(forward_x, forward_z) = directions.0
+  let #(right_x, right_z) = directions.1
+
+  let player_x = case input.is_key_pressed(input, input.KeyW) {
+    True -> player_x +. forward_x *. player_move_speed
+    False -> player_x
+  }
+  let player_z = case input.is_key_pressed(input, input.KeyW) {
+    True -> player_z +. forward_z *. player_move_speed
+    False -> player_z
+  }
+
+  let player_x = case input.is_key_pressed(input, input.KeyS) {
+    True -> player_x -. forward_x *. player_move_speed
+    False -> player_x
+  }
+  let player_z = case input.is_key_pressed(input, input.KeyS) {
+    True -> player_z -. forward_z *. player_move_speed
+    False -> player_z
+  }
+
+  let player_x = case input.is_key_pressed(input, input.KeyA) {
+    True -> player_x +. right_x *. player_move_speed
+    False -> player_x
+  }
+  let player_z = case input.is_key_pressed(input, input.KeyA) {
+    True -> player_z +. right_z *. player_move_speed
+    False -> player_z
+  }
+
+  let player_x = case input.is_key_pressed(input, input.KeyD) {
+    True -> player_x -. right_x *. player_move_speed
+    False -> player_x
+  }
+  let player_z = case input.is_key_pressed(input, input.KeyD) {
+    True -> player_z -. right_z *. player_move_speed
+    False -> player_z
+  }
+
+  #(player_x, player_z)
 }
 
 fn update_model_with_assets(
