@@ -1,28 +1,36 @@
 import gleam/option
 import tiramisu/geometry
 import tiramisu/material
-import tiramisu/physics
 import tiramisu/scene
 import tiramisu/transform
+import vec/vec3
 
 pub type Player {
   Player(
     max_health: Int,
     current_health: Int,
     speed: Float,
-    transform: transform.Transform,
+    player_position: vec3.Vec3(Float),
+    player_rotation: vec3.Vec3(Float),
   )
 }
 
 pub fn new(
   health health: Int,
   speed speed: Float,
-  transform transform: transform.Transform,
+  player_position player_position: vec3.Vec3(Float),
+  player_rotation player_rotation: vec3.Vec3(Float),
 ) {
-  Player(max_health: health, current_health: health, speed:, transform:)
+  Player(
+    max_health: health,
+    current_health: health,
+    speed:,
+    player_position:,
+    player_rotation:,
+  )
 }
 
-pub fn render(player: Player, id: id) {
+pub fn render(id: id, player: Player) {
   let assert Ok(capsule) =
     geometry.cylinder(
       radius_top: 0.5,
@@ -33,24 +41,28 @@ pub fn render(player: Player, id: id) {
   let assert Ok(material) =
     material.new() |> material.with_color(0x00ff00) |> material.build()
   scene.Mesh(
-    id,
+    id:,
     geometry: capsule,
     material:,
-    transform: player.transform,
-    physics: option.Some(
-      physics.new_rigid_body(physics.Dynamic)
-      |> physics.with_collider(physics.Capsule(
-        offset: transform.identity,
-        half_height: 1.0,
-        radius: 0.5,
-      ))
-      |> physics.with_lock_rotation_x()
-      |> physics.with_lock_rotation_z()
-      |> physics.build(),
-    ),
+    transform: transform.at(player.player_position)
+      |> transform.with_rotation(player.player_rotation),
+    physics: option.None,
   )
 }
 
-pub fn basic(transform: transform.Transform) {
-  new(health: 100, speed: 11.0, transform:)
+pub fn init() -> Player {
+  new(
+    health: 100,
+    speed: 0.1,
+    player_position: vec3.Vec3(0.0, 0.0, 0.0),
+    player_rotation: vec3.Vec3(0.0, 0.0, 0.0),
+  )
+}
+
+pub fn update(
+  player: Player,
+  position: vec3.Vec3(Float),
+  rotation: vec3.Vec3(Float),
+) -> Player {
+  Player(..player, player_position: position, player_rotation: rotation)
 }

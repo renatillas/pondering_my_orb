@@ -13,10 +13,8 @@ import tiramisu/background
 import tiramisu/camera
 import tiramisu/debug
 import tiramisu/effect.{type Effect}
-import tiramisu/geometry
 import tiramisu/input
 import tiramisu/light
-import tiramisu/material
 import tiramisu/physics
 import tiramisu/scene
 import tiramisu/transform
@@ -39,9 +37,7 @@ pub type Model {
     enemy: option.Option(enemy.Enemy),
     ground: option.Option(map.Obstacle(map.Ground)),
     boxes: option.Option(map.Obstacle(map.Box)),
-    // Player
-    player_position: vec3.Vec3(Float),
-    player_rotation: vec3.Vec3(Float),
+    player: player.Player,
     // Camera
     pointer_locked: Bool,
     camera_distance: Float,
@@ -95,8 +91,7 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), option.Option(_)) {
       ground: option.None,
       boxes: option.None,
       enemy: option.None,
-      player_position: vec3.Vec3(0.0, 0.0, 0.0),
-      player_rotation: vec3.Vec3(0.0, 0.0, 0.0),
+      player: player.init(),
       pointer_locked: False,
       camera_distance: 5.0,
       camera_height: 2.0,
@@ -144,8 +139,8 @@ fn update(
       }
 
       let vec3.Vec3(player_pitch, player_yaw, player_roll) =
-        model.player_rotation
-      let #(mouse_dx, mouse_dy) = input.mouse_delta(ctx.input)
+        model.player.player_rotation
+      let #(mouse_dx, _mouse_dy) = input.mouse_delta(ctx.input)
 
       let player_yaw = case model.pointer_locked {
         True -> player_yaw -. mouse_dx *. mouse_sensitivity
@@ -158,7 +153,7 @@ fn update(
       let right_x = maths.cos(player_yaw)
       let right_z = 0.0 -. maths.sin(player_yaw)
 
-      let vec3.Vec3(player_x, player_y, player_z) = model.player_position
+      let vec3.Vec3(player_x, player_y, player_z) = model.player.player_position
 
       let player_x = case input.is_key_pressed(ctx.input, input.KeyW) {
         True -> player_x +. forward_x *. player_move_speed
@@ -201,14 +196,16 @@ fn update(
         False -> model.pointer_locked
       }
 
+      let player =
+        player.update(
+          model.player,
+          vec3.Vec3(player_x, player_y, player_z),
+          vec3.Vec3(player_pitch, player_yaw, player_roll),
+        )
+
       let new_physics_world = physics.step(physics_world)
       #(
-        Model(
-          ..model,
-          player_position: vec3.Vec3(player_x, player_y, player_z),
-          player_rotation: vec3.Vec3(player_pitch, player_yaw, player_roll),
-          pointer_locked:,
-        ),
+        Model(..model, player:, pointer_locked:),
         effect.batch([effect.tick(Tick), pointer_lock_effect, exit_lock_effect]),
         option.Some(new_physics_world),
       )
@@ -298,8 +295,8 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
   let assert Ok(cam) =
     camera.perspective(field_of_view: 75.0, near: 0.1, far: 1000.0)
 
-  let vec3.Vec3(_player_pitch, player_yaw, _) = model.player_rotation
-  let vec3.Vec3(player_x, player_y, player_z) = model.player_position
+  let vec3.Vec3(_player_pitch, player_yaw, _) = model.player.player_rotation
+  let vec3.Vec3(player_x, player_y, player_z) = model.player.player_position
 
   let behind_x = -1.0 *. maths.sin(player_yaw) *. model.camera_distance
   let behind_z = -1.0 *. maths.cos(player_yaw) *. model.camera_distance
@@ -333,7 +330,7 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
     ground,
     boxes,
     [
-      render_player(model.player_position, model.player_rotation),
+      player.render(Player, model.player),
       scene.Camera(
         id: Camera,
         camera: cam,
@@ -361,24 +358,4 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
       ),
     ],
   ])
-}
-
-fn render_player(position: vec3.Vec3(Float), rotation: vec3.Vec3(Float)) {
-  let assert Ok(capsule) =
-    geometry.cylinder(
-      radius_top: 0.5,
-      radius_bottom: 0.5,
-      height: 2.0,
-      radial_segments: 10,
-    )
-  let assert Ok(material) =
-    material.new() |> material.with_color(0x00ff00) |> material.build()
-  scene.Mesh(
-    Player,
-    geometry: capsule,
-    material:,
-    transform: transform.at(position)
-      |> transform.with_rotation(rotation),
-    physics: option.None,
-  )
 }
