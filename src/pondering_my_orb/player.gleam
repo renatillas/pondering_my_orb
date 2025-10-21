@@ -3,6 +3,7 @@ import gleam_community/maths
 import tiramisu/geometry
 import tiramisu/input
 import tiramisu/material
+import tiramisu/physics
 import tiramisu/scene
 import tiramisu/transform
 import vec/vec3
@@ -46,7 +47,7 @@ pub fn render(id: id, player: Player) {
     geometry.cylinder(
       radius_top: 0.5,
       radius_bottom: 0.5,
-      height: 2.0,
+      height: 2.5,
       radial_segments: 10,
     )
   let assert Ok(material) =
@@ -57,15 +58,26 @@ pub fn render(id: id, player: Player) {
     material:,
     transform: transform.at(player.player_position)
       |> transform.with_rotation(player.player_rotation),
-    physics: option.None,
+    physics: option.Some(
+      physics.new_rigid_body(physics.Dynamic)
+      |> physics.with_collider(physics.Capsule(
+        offset: transform.identity,
+        half_height: 1.0,
+        radius: 0.5,
+      ))
+      |> physics.with_angular_damping(100.0)
+      |> physics.with_lock_rotation_x()
+      |> physics.with_lock_rotation_z()
+      |> physics.build(),
+    ),
   )
 }
 
 pub fn init() -> Player {
   new(
     health: 100,
-    speed: 0.1,
-    player_position: vec3.Vec3(0.0, 0.0, 0.0),
+    speed: 5.0,
+    player_position: vec3.Vec3(0.0, 2.0, 0.0),
     player_rotation: vec3.Vec3(0.0, 0.0, 0.0),
   )
 }
@@ -76,6 +88,10 @@ pub fn update(
   rotation: vec3.Vec3(Float),
 ) -> Player {
   Player(..player, player_position: position, player_rotation: rotation)
+}
+
+pub fn with_position(player: Player, position: vec3.Vec3(Float)) -> Player {
+  Player(..player, player_position: position)
 }
 
 pub fn default_bindings() -> input.InputBindings(PlayerAction) {
@@ -95,62 +111,63 @@ fn direction_from_yaw(yaw: Float) -> #(#(Float, Float), #(Float, Float)) {
   #(#(forward_x, forward_z), #(right_x, right_z))
 }
 
-fn calculate_movement(
+fn calculate_velocity(
   input_state: input.InputState,
   bindings: input.InputBindings(PlayerAction),
   player_move_speed: Float,
-  player_pos: #(Float, Float),
+  current_velocity: vec3.Vec3(Float),
   directions: #(#(Float, Float), #(Float, Float)),
-) -> #(Float, Float) {
-  let #(player_x, player_z) = player_pos
+) -> vec3.Vec3(Float) {
+  let vec3.Vec3(_vx, vy, _vz) = current_velocity
   let #(forward_x, forward_z) = directions.0
   let #(right_x, right_z) = directions.1
 
-  let player_x = case input.is_action_pressed(input_state, bindings, Forward) {
-    True -> player_x +. forward_x *. player_move_speed
-    False -> player_x
-  }
-  let player_z = case input.is_action_pressed(input_state, bindings, Forward) {
-    True -> player_z +. forward_z *. player_move_speed
-    False -> player_z
-  }
-
-  let player_x = case input.is_action_pressed(input_state, bindings, Backward) {
-    True -> player_x -. forward_x *. player_move_speed
-    False -> player_x
-  }
-  let player_z = case input.is_action_pressed(input_state, bindings, Backward) {
-    True -> player_z -. forward_z *. player_move_speed
-    False -> player_z
+  let velocity_x = case
+    input.is_action_pressed(input_state, bindings, Forward),
+    input.is_action_pressed(input_state, bindings, Backward)
+  {
+    True, False -> forward_x *. player_move_speed
+    False, True -> -1.0 *. forward_x *. player_move_speed
+    _, _ -> 0.0
   }
 
-  let player_x = case input.is_action_pressed(input_state, bindings, Left) {
-    True -> player_x +. right_x *. player_move_speed
-    False -> player_x
-  }
-  let player_z = case input.is_action_pressed(input_state, bindings, Left) {
-    True -> player_z +. right_z *. player_move_speed
-    False -> player_z
-  }
-
-  let player_x = case input.is_action_pressed(input_state, bindings, Right) {
-    True -> player_x -. right_x *. player_move_speed
-    False -> player_x
-  }
-  let player_z = case input.is_action_pressed(input_state, bindings, Right) {
-    True -> player_z -. right_z *. player_move_speed
-    False -> player_z
+  let velocity_z = case
+    input.is_action_pressed(input_state, bindings, Forward),
+    input.is_action_pressed(input_state, bindings, Backward)
+  {
+    True, False -> forward_z *. player_move_speed
+    False, True -> -1.0 *. forward_z *. player_move_speed
+    _, _ -> 0.0
   }
 
-  #(player_x, player_z)
+  let velocity_x = case
+    input.is_action_pressed(input_state, bindings, Left),
+    input.is_action_pressed(input_state, bindings, Right)
+  {
+    True, False -> velocity_x +. right_x *. player_move_speed
+    False, True -> velocity_x -. right_x *. player_move_speed
+    _, _ -> velocity_x
+  }
+
+  let velocity_z = case
+    input.is_action_pressed(input_state, bindings, Left),
+    input.is_action_pressed(input_state, bindings, Right)
+  {
+    True, False -> velocity_z +. right_z *. player_move_speed
+    False, True -> velocity_z -. right_z *. player_move_speed
+    _, _ -> velocity_z
+  }
+
+  vec3.Vec3(velocity_x, vy, velocity_z)
 }
 
 pub fn handle_input(
   player: Player,
   input_state: input.InputState,
   bindings: input.InputBindings(PlayerAction),
+  current_velocity: vec3.Vec3(Float),
   pointer_locked: Bool,
-) -> Player {
+) -> #(Player, vec3.Vec3(Float)) {
   let vec3.Vec3(player_pitch, player_yaw, player_roll) = player.player_rotation
   let #(mouse_dx, _mouse_dy) = input.mouse_delta(input_state)
 
@@ -160,20 +177,21 @@ pub fn handle_input(
   }
 
   let direction = direction_from_yaw(player_yaw)
-  let vec3.Vec3(player_x, player_y, player_z) = player.player_position
 
-  let #(player_x, player_z) =
-    calculate_movement(
+  let velocity =
+    calculate_velocity(
       input_state,
       bindings,
       player.speed,
-      #(player_x, player_z),
+      current_velocity,
       direction,
     )
 
-  Player(
-    ..player,
-    player_position: vec3.Vec3(player_x, player_y, player_z),
-    player_rotation: vec3.Vec3(player_pitch, player_yaw, player_roll),
-  )
+  let updated_player =
+    Player(
+      ..player,
+      player_rotation: vec3.Vec3(player_pitch, player_yaw, player_roll),
+    )
+
+  #(updated_player, velocity)
 }

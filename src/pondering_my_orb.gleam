@@ -88,7 +88,7 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), option.Option(_)) {
       effect.from(fn(_) { debug.show_collider_wireframes(physics_world, True) }),
     ])
 
-  let enemy = enemy.basic(Enemy, transform.at(vec3.Vec3(10.0, 5.5, 10.0)))
+  let enemy = enemy.basic(Enemy, position: vec3.Vec3(10.0, 5.5, 10.0))
   let player_bindings = player.default_bindings()
 
   #(
@@ -140,41 +140,57 @@ fn update(
         _, _ -> #(False, effect.none())
       }
 
-      let player =
+      let player_velocity =
+        physics.get_velocity(physics_world, Player)
+        |> result.unwrap(vec3.Vec3(0.0, 0.0, 0.0))
+
+      let #(player, desired_velocity) =
         player.handle_input(
           model.player,
           ctx.input,
           model.player_bindings,
+          player_velocity,
           model.pointer_locked,
         )
+
+      let physics_world =
+        physics.set_velocity(physics_world, Player, desired_velocity)
 
       let pointer_locked = case should_exit_pointer_lock {
         True -> False
         False -> model.pointer_locked
       }
-      let enemy_position =
-        physics.get_transform(physics_world, model.enemy.id)
-        |> result.map(transform.position)
-        |> result.unwrap(or: transform.position(model.enemy.initial_transform))
 
       let enemy_velocity =
-        echo physics.get_velocity(physics_world, Enemy)
-          |> result.unwrap(vec3.Vec3(0.0, 0.0, 0.0))
-          as "enemy velocity"
+        physics.get_velocity(physics_world, Enemy)
+        |> result.unwrap(vec3.Vec3(0.0, 0.0, 0.0))
 
-      let physics_world =
+      let desired_velocity =
         enemy.follow(
           model.enemy,
-          target: transform.at(player.player_position),
+          target: player.player_position,
           enemy_velocity:,
-          set_velocity: physics.set_velocity(physics_world, Enemy, _),
-          enemy_position:,
         )
+      let physics_world =
+        physics.set_velocity(physics_world, Enemy, desired_velocity)
 
       let physics_world = physics.step(physics_world)
 
+      let player_position =
+        physics.get_transform(physics_world, Player)
+        |> result.map(transform.position)
+        |> result.unwrap(or: model.player.player_position)
+
+      let enemy_position =
+        physics.get_transform(physics_world, Enemy)
+        |> result.map(transform.position)
+        |> result.unwrap(or: model.enemy.position)
+
+      let player = player |> player.with_position(player_position)
+      let enemy = model.enemy |> enemy.with_position(position: enemy_position)
+
       #(
-        Model(..model, player:, pointer_locked:),
+        Model(..model, player:, pointer_locked:, enemy:),
         effect.batch([effect.tick(Tick), pointer_lock_effect, exit_lock_effect]),
         option.Some(physics_world),
       )
