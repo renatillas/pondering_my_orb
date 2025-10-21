@@ -14,7 +14,7 @@ pub type Enemy(id) {
     current_health: Int,
     damage: Int,
     speed: Float,
-    transform: transform.Transform,
+    initial_transform: transform.Transform,
     physics_body: physics.RigidBody,
   )
 }
@@ -24,7 +24,7 @@ pub fn new(
   health health: Int,
   damage damage: Int,
   speed speed: Float,
-  transform transform: transform.Transform,
+  initial_transform initial_transform: transform.Transform,
 ) {
   let physics_body =
     physics.new_rigid_body(physics.Dynamic)
@@ -44,7 +44,7 @@ pub fn new(
     current_health: health,
     damage:,
     speed:,
-    transform:,
+    initial_transform:,
     physics_body:,
   )
 }
@@ -63,26 +63,24 @@ pub fn render(enemy: Enemy(id)) {
     enemy.id,
     geometry: capsule,
     material:,
-    transform: enemy.transform,
+    transform: enemy.initial_transform,
     physics: option.Some(enemy.physics_body),
   )
 }
 
-pub fn basic(id: id, transform: transform.Transform) {
-  new(id:, health: 10, damage: 10, speed: 3.0, transform:)
+pub fn basic(id id: id, at initial_transform: transform.Transform) {
+  new(id:, health: 10, damage: 10, speed: 3.0, initial_transform:)
 }
 
 /// Apply velocity to enemy's physics body to move towards target
 pub fn follow(
   enemy: Enemy(id),
-  target: transform.Transform,
-  physics_world: physics.PhysicsWorld(id),
+  enemy_position enemy_position: vec3.Vec3(Float),
+  target target: transform.Transform,
+  enemy_velocity enemy_velocity: vec3.Vec3(Float),
+  set_velocity set_velocity,
 ) -> physics.PhysicsWorld(id) {
   // Get current position from physics body
-  let enemy_position = case physics.get_transform(physics_world, enemy.id) {
-    Ok(t) -> transform.position(t)
-    Error(_) -> transform.position(enemy.transform)
-  }
 
   let target_position = transform.position(target)
 
@@ -98,16 +96,16 @@ pub fn follow(
   }
 
   // Get current velocity to preserve Y component (gravity)
-  let current_velocity = case physics.get_velocity(physics_world, enemy.id) {
-    Ok(vel) -> vel
-    Error(_) -> vec3.Vec3(0.0, 0.0, 0.0)
-  }
-
   // Combine horizontal movement with vertical physics (gravity)
   let final_velocity =
-    vec3.Vec3(horizontal_velocity.x, current_velocity.y, horizontal_velocity.z)
+    echo vec3.Vec3(
+      horizontal_velocity.x,
+      enemy_velocity.y,
+      horizontal_velocity.z,
+    )
+      as "final velocity"
 
   // Apply velocity and clear unwanted angular velocity
-  physics_world
-  |> physics.set_velocity(enemy.id, final_velocity)
+
+  set_velocity(final_velocity)
 }
