@@ -137,14 +137,6 @@ pub fn init() -> Player {
   )
 }
 
-// pub fn update(
-//   player: Player,
-//   position: vec3.Vec3(Float),
-//   rotation: vec3.Vec3(Float),
-// ) -> Player {
-//   Player(..player, position: position, rotation: rotation)
-// }
-
 pub fn with_position(player: Player, position: vec3.Vec3(Float)) -> Player {
   Player(..player, position: position)
 }
@@ -278,24 +270,29 @@ fn calculate_jump(
 }
 
 pub fn take_damage(player: Player, damage: Int) -> Player {
-  let new_health = player.current_health - damage
-  let capped_health = case new_health < 0 {
-    True -> 0
-    False -> new_health
-  }
-  echo "Player took "
-    <> int.to_string(damage)
-    <> " damage! Health: "
-    <> int.to_string(capped_health)
-    <> "/"
-    <> int.to_string(player.max_health)
+  case player.is_vulnerable {
+    True -> {
+      let new_health = player.current_health - damage
+      let capped_health = case new_health < 0 {
+        True -> 0
+        False -> new_health
+      }
+      echo "Player took "
+        <> int.to_string(damage)
+        <> " damage! Health: "
+        <> int.to_string(capped_health)
+        <> "/"
+        <> int.to_string(player.max_health)
 
-  Player(
-    ..player,
-    current_health: capped_health,
-    time_since_taking_damage: 0.0,
-    is_vulnerable: False,
-  )
+      Player(
+        ..player,
+        current_health: capped_health,
+        time_since_taking_damage: 0.0,
+        is_vulnerable: False,
+      )
+    }
+    False -> player
+  }
 }
 
 pub fn update(player: Player, delta_time: Float) -> Player {

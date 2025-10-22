@@ -187,9 +187,9 @@ fn update(
 
       let enemy_can_damage = enemy.can_damage(enemy, player.position)
 
-      let player = case enemy_can_damage, player.is_vulnerable {
-        True, True -> player.take_damage(player, model.enemy.damage)
-        _, _ -> player
+      let player = case enemy_can_damage {
+        True -> player.take_damage(player, model.enemy.damage)
+        False -> player
       }
 
       let pointer_locked = case should_exit_pointer_lock {
