@@ -7,14 +7,18 @@ import tiramisu/physics
 import tiramisu/scene
 import tiramisu/transform
 import vec/vec3
+import vec/vec3f
 
 const mouse_sensitivity = 0.003
+
+const jumping_speed = 15.0
 
 pub type PlayerAction {
   Forward
   Backward
   Left
   Right
+  Jump
 }
 
 pub type Player {
@@ -22,23 +26,23 @@ pub type Player {
     max_health: Int,
     current_health: Int,
     speed: Float,
-    player_position: vec3.Vec3(Float),
-    player_rotation: vec3.Vec3(Float),
+    position: vec3.Vec3(Float),
+    rotation: vec3.Vec3(Float),
   )
 }
 
 pub fn new(
   health health: Int,
   speed speed: Float,
-  player_position player_position: vec3.Vec3(Float),
-  player_rotation player_rotation: vec3.Vec3(Float),
+  position position: vec3.Vec3(Float),
+  rotation rotation: vec3.Vec3(Float),
 ) {
   Player(
     max_health: health,
     current_health: health,
     speed:,
-    player_position:,
-    player_rotation:,
+    position:,
+    rotation:,
   )
 }
 
@@ -56,8 +60,8 @@ pub fn render(id: id, player: Player) {
     id:,
     geometry: capsule,
     material:,
-    transform: transform.at(player.player_position)
-      |> transform.with_rotation(player.player_rotation),
+    transform: transform.at(player.position)
+      |> transform.with_rotation(player.rotation),
     physics: option.Some(
       physics.new_rigid_body(physics.Dynamic)
       |> physics.with_collider(physics.Capsule(
@@ -65,7 +69,8 @@ pub fn render(id: id, player: Player) {
         half_height: 1.0,
         radius: 0.5,
       ))
-      |> physics.with_angular_damping(100.0)
+      |> physics.with_restitution(0.0)
+      |> physics.with_friction(0.0)
       |> physics.with_lock_rotation_x()
       |> physics.with_lock_rotation_z()
       |> physics.build(),
@@ -77,8 +82,8 @@ pub fn init() -> Player {
   new(
     health: 100,
     speed: 5.0,
-    player_position: vec3.Vec3(0.0, 2.0, 0.0),
-    player_rotation: vec3.Vec3(0.0, 0.0, 0.0),
+    position: vec3.Vec3(0.0, 2.0, 0.0),
+    rotation: vec3.Vec3(0.0, 0.0, 0.0),
   )
 }
 
@@ -87,11 +92,11 @@ pub fn update(
   position: vec3.Vec3(Float),
   rotation: vec3.Vec3(Float),
 ) -> Player {
-  Player(..player, player_position: position, player_rotation: rotation)
+  Player(..player, position: position, rotation: rotation)
 }
 
 pub fn with_position(player: Player, position: vec3.Vec3(Float)) -> Player {
-  Player(..player, player_position: position)
+  Player(..player, position: position)
 }
 
 pub fn default_bindings() -> input.InputBindings(PlayerAction) {
@@ -100,6 +105,7 @@ pub fn default_bindings() -> input.InputBindings(PlayerAction) {
   |> input.bind_key(input.KeyS, Backward)
   |> input.bind_key(input.KeyA, Left)
   |> input.bind_key(input.KeyD, Right)
+  |> input.bind_key(input.Space, Jump)
 }
 
 fn direction_from_yaw(yaw: Float) -> #(#(Float, Float), #(Float, Float)) {
@@ -115,10 +121,9 @@ fn calculate_velocity(
   input_state: input.InputState,
   bindings: input.InputBindings(PlayerAction),
   player_move_speed: Float,
-  current_velocity: vec3.Vec3(Float),
+  player_velocity: vec3.Vec3(Float),
   directions: #(#(Float, Float), #(Float, Float)),
 ) -> vec3.Vec3(Float) {
-  let vec3.Vec3(_vx, vy, _vz) = current_velocity
   let #(forward_x, forward_z) = directions.0
   let #(right_x, right_z) = directions.1
 
@@ -158,17 +163,18 @@ fn calculate_velocity(
     _, _ -> velocity_z
   }
 
-  vec3.Vec3(velocity_x, vy, velocity_z)
+  vec3.Vec3(velocity_x, player_velocity.y, velocity_z)
 }
 
 pub fn handle_input(
   player: Player,
-  input_state: input.InputState,
-  bindings: input.InputBindings(PlayerAction),
-  current_velocity: vec3.Vec3(Float),
-  pointer_locked: Bool,
-) -> #(Player, vec3.Vec3(Float)) {
-  let vec3.Vec3(player_pitch, player_yaw, player_roll) = player.player_rotation
+  velocity player_velocity: vec3.Vec3(Float),
+  input_state input_state: input.InputState,
+  bindings bindings: input.InputBindings(PlayerAction),
+  pointer_locked pointer_locked: Bool,
+  physics_world physics_world: physics.PhysicsWorld(id),
+) -> #(Player, vec3.Vec3(Float), vec3.Vec3(Float)) {
+  let vec3.Vec3(player_pitch, player_yaw, player_roll) = player.rotation
   let #(mouse_dx, _mouse_dy) = input.mouse_delta(input_state)
 
   let player_yaw = case pointer_locked {
@@ -183,15 +189,40 @@ pub fn handle_input(
       input_state,
       bindings,
       player.speed,
-      current_velocity,
+      player_velocity,
       direction,
     )
 
-  let updated_player =
-    Player(
-      ..player,
-      player_rotation: vec3.Vec3(player_pitch, player_yaw, player_roll),
-    )
+  let impulse = calculate_jump(player, physics_world, input_state, bindings)
 
-  #(updated_player, velocity)
+  let updated_player =
+    Player(..player, rotation: vec3.Vec3(player_pitch, player_yaw, player_roll))
+
+  #(updated_player, velocity, impulse)
+}
+
+fn calculate_jump(
+  player: Player,
+  physics_world: physics.PhysicsWorld(id),
+  input_state: input.InputState,
+  bindings: input.InputBindings(PlayerAction),
+) -> vec3.Vec3(Float) {
+  let raycast_origin =
+    vec3.Vec3(player.position.x, player.position.y -. 1.6, player.position.z)
+
+  // Cast ray purely horizontally forward
+  let raycast_direction = vec3.Vec3(0.0, -0.5, 0.0)
+
+  case
+    physics.raycast(
+      physics_world,
+      origin: raycast_origin,
+      direction: raycast_direction,
+      max_distance: 1.0,
+    ),
+    input.is_action_just_pressed(input_state, bindings, Jump)
+  {
+    Ok(_), True -> vec3.Vec3(0.0, jumping_speed, 0.0)
+    _, _ -> vec3f.zero
+  }
 }
