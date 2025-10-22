@@ -35,6 +35,7 @@ pub fn new(
       half_height: 1.0,
       radius: 0.5,
     ))
+    |> physics.with_friction(0.0)
     |> physics.with_angular_damping(100.0)
     |> physics.with_lock_rotation_x()
     |> physics.with_lock_rotation_z()

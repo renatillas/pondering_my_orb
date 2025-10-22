@@ -70,6 +70,7 @@ pub fn render(id: id, player: Player) {
         radius: 0.5,
       ))
       |> physics.with_restitution(0.0)
+      |> physics.with_friction(0.0)
       |> physics.with_lock_rotation_x()
       |> physics.with_lock_rotation_z()
       |> physics.build(),

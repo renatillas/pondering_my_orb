@@ -37,6 +37,7 @@ pub fn render_box(box: Obstacle(Box), id: id) -> scene.Node(id) {
         height: 1.0,
         depth: 1.0,
       ))
+      |> physics.with_friction(0.0)
       |> physics.build(),
     ),
   )
