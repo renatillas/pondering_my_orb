@@ -1,3 +1,4 @@
+import gleam/int
 import gleam/option
 import gleam_community/maths
 import tiramisu/geometry
@@ -13,6 +14,14 @@ const mouse_sensitivity = 0.003
 
 const jumping_speed = 15.0
 
+const invulnerability_duration = 3.0
+
+const passive_heal_delay = 6.0
+
+const passive_heal_rate = 2
+
+const passive_heal_interval = 0.5
+
 pub type PlayerAction {
   Forward
   Backward
@@ -23,11 +32,22 @@ pub type PlayerAction {
 
 pub type Player {
   Player(
+    // Health
     max_health: Int,
     current_health: Int,
+    // Movement
     speed: Float,
     position: vec3.Vec3(Float),
     rotation: vec3.Vec3(Float),
+    // Taking damage
+    invulnerability_duration: Float,
+    time_since_taking_damage: Float,
+    is_vulnerable: Bool,
+    // Healing
+    passive_heal_delay: Float,
+    passive_heal_rate: Int,
+    passive_heal_interval: Float,
+    time_since_last_passive_heal: Float,
   )
 }
 
@@ -36,6 +56,13 @@ pub fn new(
   speed speed: Float,
   position position: vec3.Vec3(Float),
   rotation rotation: vec3.Vec3(Float),
+  invulnerability_duration invulnerability_duration: Float,
+  time_since_taking_damage time_since_taking_damage: Float,
+  is_vulnerable is_vulnerable: Bool,
+  passive_heal_delay passive_heal_delay: Float,
+  passive_heal_rate passive_heal_rate: Int,
+  passive_heal_interval passive_heal_interval: Float,
+  time_since_last_passive_heal time_since_last_passive_heal: Float,
 ) {
   Player(
     max_health: health,
@@ -43,6 +70,13 @@ pub fn new(
     speed:,
     position:,
     rotation:,
+    invulnerability_duration:,
+    time_since_taking_damage:,
+    is_vulnerable:,
+    passive_heal_delay:,
+    passive_heal_rate:,
+    passive_heal_interval:,
+    time_since_last_passive_heal:,
   )
 }
 
@@ -54,8 +88,17 @@ pub fn render(id: id, player: Player) {
       height: 2.5,
       radial_segments: 10,
     )
+
+  let health_percentage = player.current_health * 100 / player.max_health
+  let color = case health_percentage {
+    p if p >= 75 -> 0x00ff00
+    p if p >= 50 -> 0xaaff00
+    p if p >= 25 -> 0xffaa00
+    _ -> 0xff0000
+  }
+
   let assert Ok(material) =
-    material.new() |> material.with_color(0x00ff00) |> material.build()
+    material.new() |> material.with_color(color) |> material.build()
   scene.Mesh(
     id:,
     geometry: capsule,
@@ -84,15 +127,14 @@ pub fn init() -> Player {
     speed: 5.0,
     position: vec3.Vec3(0.0, 2.0, 0.0),
     rotation: vec3.Vec3(0.0, 0.0, 0.0),
+    invulnerability_duration:,
+    time_since_taking_damage: 0.0,
+    is_vulnerable: False,
+    passive_heal_delay:,
+    passive_heal_rate:,
+    passive_heal_interval:,
+    time_since_last_passive_heal: 0.0,
   )
-}
-
-pub fn update(
-  player: Player,
-  position: vec3.Vec3(Float),
-  rotation: vec3.Vec3(Float),
-) -> Player {
-  Player(..player, position: position, rotation: rotation)
 }
 
 pub fn with_position(player: Player, position: vec3.Vec3(Float)) -> Player {
@@ -225,4 +267,72 @@ fn calculate_jump(
     Ok(_), True -> vec3.Vec3(0.0, jumping_speed, 0.0)
     _, _ -> vec3f.zero
   }
+}
+
+pub fn take_damage(player: Player, damage: Int) -> Player {
+  case player.is_vulnerable {
+    True -> {
+      let new_health = player.current_health - damage
+      let capped_health = case new_health < 0 {
+        True -> 0
+        False -> new_health
+      }
+      echo "Player took "
+        <> int.to_string(damage)
+        <> " damage! Health: "
+        <> int.to_string(capped_health)
+        <> "/"
+        <> int.to_string(player.max_health)
+
+      Player(
+        ..player,
+        current_health: capped_health,
+        time_since_taking_damage: 0.0,
+        is_vulnerable: False,
+      )
+    }
+    False -> player
+  }
+}
+
+pub fn update(player: Player, delta_time: Float) -> Player {
+  let time_since_taking_damage = player.time_since_taking_damage +. delta_time
+  let is_vulnerable =
+    time_since_taking_damage >=. player.invulnerability_duration
+
+  let player = Player(..player, time_since_taking_damage:, is_vulnerable:)
+
+  case player.time_since_taking_damage >=. player.passive_heal_delay {
+    True -> {
+      let time_since_last_passive_heal =
+        player.time_since_last_passive_heal +. delta_time
+
+      case time_since_last_passive_heal >=. player.passive_heal_interval {
+        True -> passive_heal(player)
+        False -> Player(..player, time_since_last_passive_heal:)
+      }
+    }
+    False -> player
+  }
+}
+
+fn passive_heal(player: Player) -> Player {
+  let new_health = player.current_health + player.passive_heal_rate
+  let capped_health = case new_health > player.max_health {
+    True -> player.max_health
+    False -> new_health
+  }
+
+  echo "Player healed "
+    <> int.to_string(player.passive_heal_rate)
+    <> " HP! Health: "
+    <> int.to_string(capped_health)
+    <> "/"
+    <> int.to_string(player.max_health)
+
+  Player(
+    ..player,
+    current_health: capped_health,
+    time_since_last_passive_heal: 0.0,
+  )
 }

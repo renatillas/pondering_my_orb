@@ -178,8 +178,19 @@ fn update(
         |> result.map(transform.position)
         |> result.unwrap(or: model.enemy.position)
 
-      let player = player |> player.with_position(player_position)
+      let player =
+        player
+        |> player.with_position(player_position)
+        |> player.update(ctx.delta_time)
+
       let enemy = model.enemy |> enemy.with_position(position: enemy_position)
+
+      let enemy_can_damage = enemy.can_damage(enemy, player.position)
+
+      let player = case enemy_can_damage {
+        True -> player.take_damage(player, model.enemy.damage)
+        False -> player
+      }
 
       let pointer_locked = case should_exit_pointer_lock {
         True -> False
@@ -187,7 +198,11 @@ fn update(
       }
       #(
         Model(..model, player:, pointer_locked:, enemy:),
-        effect.batch([effect.tick(Tick), pointer_lock_effect, exit_lock_effect]),
+        effect.batch([
+          effect.tick(Tick),
+          pointer_lock_effect,
+          exit_lock_effect,
+        ]),
         option.Some(physics_world),
       )
     }
