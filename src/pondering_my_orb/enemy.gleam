@@ -15,6 +15,7 @@ pub type Enemy(id) {
     max_health: Int,
     current_health: Int,
     damage: Int,
+    damage_range: Float,
     speed: Float,
     position: vec3.Vec3(Float),
     physics_body: physics.RigidBody,
@@ -25,6 +26,7 @@ pub fn new(
   id id: id,
   health health: Int,
   damage damage: Int,
+  damage_range damage_range: Float,
   speed speed: Float,
   position position: vec3.Vec3(Float),
 ) {
@@ -46,6 +48,7 @@ pub fn new(
     max_health: health,
     current_health: health,
     damage:,
+    damage_range:,
     speed:,
     position:,
     physics_body:,
@@ -72,7 +75,7 @@ pub fn render(enemy: Enemy(id)) {
 }
 
 pub fn basic(id id: id, position position: vec3.Vec3(Float)) {
-  new(id:, health: 10, damage: 10, speed: 3.0, position:)
+  new(id:, health: 10, damage: 10, damage_range: 1.0, speed: 3.0, position:)
 }
 
 /// Apply velocity to enemy's physics body to move towards target
@@ -137,6 +140,11 @@ pub fn follow(
     vec3.Vec3(horizontal_velocity.x, climb_velocity, horizontal_velocity.z)
 
   final_velocity
+}
+
+pub fn can_damage(enemy: Enemy(id), player_position: vec3.Vec3(Float)) -> Bool {
+  let distance = vec3f.distance(player_position, enemy.position)
+  distance <. enemy.damage_range
 }
 
 pub fn with_position(enemy: Enemy(id), position position: vec3.Vec3(Float)) {

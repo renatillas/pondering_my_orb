@@ -21,6 +21,14 @@ import tiramisu/scene
 import tiramisu/transform
 import vec/vec3
 
+const damage_cooldown_duration = 2.0
+
+const heal_delay = 3.0
+
+const heal_rate = 2.0
+
+const heal_interval = 0.5
+
 pub type Id {
   Camera
   Boxes
@@ -178,8 +186,50 @@ fn update(
         |> result.map(transform.position)
         |> result.unwrap(or: model.enemy.position)
 
-      let player = player |> player.with_position(player_position)
+      let player =
+        player
+        |> player.with_position(player_position)
+        |> player.apply_tick()
+
       let enemy = model.enemy |> enemy.with_position(position: enemy_position)
+
+      let enemy_can_damage = enemy.can_damage(enemy, player.position)
+
+      let player = case enemy_can_damage, player.is_vulnerable {
+        True, True -> player.take_damage(player, model.enemy.damage)
+        _, _ -> player
+      }
+
+      let player = case player.should_passive_heal {
+        True -> player.passive_heal(player)
+        False -> player
+      }
+
+      // Handle healing (only if not at max health and after heal_delay)
+      // let #(player, heal_timer) = case
+      //   player.current_health < player.max_health,
+      //   time_since_damage >. heal_delay
+      // {
+      //   True, True -> {
+      //     let new_heal_timer = model.heal_timer +. 0.016
+
+      //     case new_heal_timer >=. heal_interval {
+      //       True -> {
+      //         let healed_player = player.heal(player, float.round(heal_rate))
+      //         echo "Player healed "
+      //           <> float.to_string(heal_rate)
+      //           <> " HP! Health: "
+      //           <> int.to_string(healed_player.current_health)
+      //           <> "/"
+      //           <> int.to_string(healed_player.max_health)
+
+      //         #(healed_player, 0.0)
+      //       }
+      //       False -> #(player, new_heal_timer)
+      //     }
+      //   }
+      //   _, _ -> #(player, 0.0)
+      // }
 
       let pointer_locked = case should_exit_pointer_lock {
         True -> False
@@ -187,7 +237,11 @@ fn update(
       }
       #(
         Model(..model, player:, pointer_locked:, enemy:),
-        effect.batch([effect.tick(Tick), pointer_lock_effect, exit_lock_effect]),
+        effect.batch([
+          effect.tick(Tick),
+          pointer_lock_effect,
+          exit_lock_effect,
+        ]),
         option.Some(physics_world),
       )
     }
