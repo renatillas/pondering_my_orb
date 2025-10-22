@@ -20,7 +20,7 @@ const passive_heal_delay = 6.0
 
 const passive_heal_rate = 2
 
-const passive_heal_interval = 2.0
+const passive_heal_interval = 0.5
 
 pub type PlayerAction {
   Forward
@@ -48,7 +48,6 @@ pub type Player {
     passive_heal_rate: Int,
     passive_heal_interval: Float,
     time_since_last_passive_heal: Float,
-    should_passive_heal: Bool,
   )
 }
 
@@ -64,7 +63,6 @@ pub fn new(
   passive_heal_rate passive_heal_rate: Int,
   passive_heal_interval passive_heal_interval: Float,
   time_since_last_passive_heal time_since_last_passive_heal: Float,
-  should_passive_heal should_passive_heal: Bool,
 ) {
   Player(
     max_health: health,
@@ -79,7 +77,6 @@ pub fn new(
     passive_heal_rate:,
     passive_heal_interval:,
     time_since_last_passive_heal:,
-    should_passive_heal:,
   )
 }
 
@@ -137,17 +134,16 @@ pub fn init() -> Player {
     passive_heal_rate:,
     passive_heal_interval:,
     time_since_last_passive_heal: 0.0,
-    should_passive_heal: False,
   )
 }
 
-pub fn update(
-  player: Player,
-  position: vec3.Vec3(Float),
-  rotation: vec3.Vec3(Float),
-) -> Player {
-  Player(..player, position: position, rotation: rotation)
-}
+// pub fn update(
+//   player: Player,
+//   position: vec3.Vec3(Float),
+//   rotation: vec3.Vec3(Float),
+// ) -> Player {
+//   Player(..player, position: position, rotation: rotation)
+// }
 
 pub fn with_position(player: Player, position: vec3.Vec3(Float)) -> Player {
   Player(..player, position: position)
@@ -294,52 +290,52 @@ pub fn take_damage(player: Player, damage: Int) -> Player {
     <> "/"
     <> int.to_string(player.max_health)
 
-  Player(..player, current_health: capped_health, time_since_taking_damage: 0.0)
-}
-
-pub fn apply_tick(player: Player) -> Player {
-  let time_since_taking_damage = player.time_since_taking_damage +. 0.016
-  let is_vulnerable =
-    time_since_taking_damage >=. player.invulnerability_duration
-
-  let should_passive_heal =
-    player.time_since_taking_damage >=. player.passive_heal_delay
-  let time_since_last_passive_heal = case should_passive_heal {
-    True -> player.time_since_last_passive_heal +. 0.016
-    False -> player.time_since_last_passive_heal
-  }
-
   Player(
     ..player,
-    time_since_taking_damage:,
-    is_vulnerable:,
-    should_passive_heal:,
-    time_since_last_passive_heal:,
+    current_health: capped_health,
+    time_since_taking_damage: 0.0,
+    is_vulnerable: False,
   )
 }
 
-pub fn passive_heal(player: Player) -> Player {
-  case player.time_since_last_passive_heal >=. player.passive_heal_interval {
+pub fn update(player: Player, delta_time: Float) -> Player {
+  let time_since_taking_damage = player.time_since_taking_damage +. delta_time
+  let is_vulnerable =
+    time_since_taking_damage >=. player.invulnerability_duration
+
+  let player = Player(..player, time_since_taking_damage:, is_vulnerable:)
+
+  case player.time_since_taking_damage >=. player.passive_heal_delay {
     True -> {
-      let new_health = player.current_health + player.passive_heal_rate
-      let capped_health = case new_health > player.max_health {
-        True -> player.max_health
-        False -> new_health
+      let time_since_last_passive_heal =
+        player.time_since_last_passive_heal +. delta_time
+
+      case time_since_last_passive_heal >=. player.passive_heal_interval {
+        True -> passive_heal(player)
+        False -> Player(..player, time_since_last_passive_heal:)
       }
-
-      echo "Player healed "
-        <> int.to_string(player.passive_heal_rate)
-        <> " HP! Health: "
-        <> int.to_string(capped_health)
-        <> "/"
-        <> int.to_string(player.max_health)
-
-      Player(
-        ..player,
-        current_health: capped_health,
-        time_since_last_passive_heal: 0.0,
-      )
     }
     False -> player
   }
+}
+
+fn passive_heal(player: Player) -> Player {
+  let new_health = player.current_health + player.passive_heal_rate
+  let capped_health = case new_health > player.max_health {
+    True -> player.max_health
+    False -> new_health
+  }
+
+  echo "Player healed "
+    <> int.to_string(player.passive_heal_rate)
+    <> " HP! Health: "
+    <> int.to_string(capped_health)
+    <> "/"
+    <> int.to_string(player.max_health)
+
+  Player(
+    ..player,
+    current_health: capped_health,
+    time_since_last_passive_heal: 0.0,
+  )
 }

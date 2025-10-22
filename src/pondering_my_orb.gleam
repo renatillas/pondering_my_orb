@@ -21,14 +21,6 @@ import tiramisu/scene
 import tiramisu/transform
 import vec/vec3
 
-const damage_cooldown_duration = 2.0
-
-const heal_delay = 3.0
-
-const heal_rate = 2.0
-
-const heal_interval = 0.5
-
 pub type Id {
   Camera
   Boxes
@@ -189,7 +181,7 @@ fn update(
       let player =
         player
         |> player.with_position(player_position)
-        |> player.apply_tick()
+        |> player.update(ctx.delta_time)
 
       let enemy = model.enemy |> enemy.with_position(position: enemy_position)
 
@@ -198,11 +190,6 @@ fn update(
       let player = case enemy_can_damage, player.is_vulnerable {
         True, True -> player.take_damage(player, model.enemy.damage)
         _, _ -> player
-      }
-
-      let player = case player.should_passive_heal {
-        True -> player.passive_heal(player)
-        False -> player
       }
 
       let pointer_locked = case should_exit_pointer_lock {
