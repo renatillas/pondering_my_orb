@@ -205,32 +205,6 @@ fn update(
         False -> player
       }
 
-      // Handle healing (only if not at max health and after heal_delay)
-      // let #(player, heal_timer) = case
-      //   player.current_health < player.max_health,
-      //   time_since_damage >. heal_delay
-      // {
-      //   True, True -> {
-      //     let new_heal_timer = model.heal_timer +. 0.016
-
-      //     case new_heal_timer >=. heal_interval {
-      //       True -> {
-      //         let healed_player = player.heal(player, float.round(heal_rate))
-      //         echo "Player healed "
-      //           <> float.to_string(heal_rate)
-      //           <> " HP! Health: "
-      //           <> int.to_string(healed_player.current_health)
-      //           <> "/"
-      //           <> int.to_string(healed_player.max_health)
-
-      //         #(healed_player, 0.0)
-      //       }
-      //       False -> #(player, new_heal_timer)
-      //     }
-      //   }
-      //   _, _ -> #(player, 0.0)
-      // }
-
       let pointer_locked = case should_exit_pointer_lock {
         True -> False
         False -> model.pointer_locked
