@@ -140,48 +140,38 @@ fn update(
         _, _ -> #(False, effect.none())
       }
 
-      let player_velocity =
-        physics.get_velocity(physics_world, Player)
-        |> result.unwrap(vec3.Vec3(0.0, 0.0, 0.0))
-
-      let #(player, desired_velocity) =
+      let #(player, player_desired_velocity, impulse) =
         player.handle_input(
           model.player,
-          ctx.input,
-          model.player_bindings,
-          player_velocity,
-          model.pointer_locked,
+          velocity: physics.get_velocity(physics_world, Player)
+            |> result.unwrap(vec3.Vec3(0.0, 0.0, 0.0)),
+          input_state: ctx.input,
+          bindings: model.player_bindings,
+          pointer_locked: model.pointer_locked,
+          physics_world:,
         )
 
-      let physics_world =
-        physics.set_velocity(physics_world, Player, desired_velocity)
-
-      let pointer_locked = case should_exit_pointer_lock {
-        True -> False
-        False -> model.pointer_locked
-      }
-
-      let enemy_velocity =
-        physics.get_velocity(physics_world, Enemy)
-        |> result.unwrap(vec3.Vec3(0.0, 0.0, 0.0))
-
-      let desired_velocity =
+      let enemy_desired_velocity =
         enemy.follow(
           model.enemy,
-          target: player.player_position,
-          enemy_velocity:,
+          target: player.position,
+          enemy_velocity: physics.get_velocity(physics_world, Enemy)
+            |> result.unwrap(vec3.Vec3(0.0, 0.0, 0.0)),
           physics_world:,
           player_id: Player,
         )
+
       let physics_world =
-        physics.set_velocity(physics_world, Enemy, desired_velocity)
+        physics.set_velocity(physics_world, Player, player_desired_velocity)
+        |> physics.apply_impulse(Player, impulse)
+        |> physics.set_velocity(Enemy, enemy_desired_velocity)
 
       let physics_world = physics.step(physics_world)
 
       let player_position =
         physics.get_transform(physics_world, Player)
         |> result.map(transform.position)
-        |> result.unwrap(or: model.player.player_position)
+        |> result.unwrap(or: model.player.position)
 
       let enemy_position =
         physics.get_transform(physics_world, Enemy)
@@ -191,6 +181,10 @@ fn update(
       let player = player |> player.with_position(player_position)
       let enemy = model.enemy |> enemy.with_position(position: enemy_position)
 
+      let pointer_locked = case should_exit_pointer_lock {
+        True -> False
+        False -> model.pointer_locked
+      }
       #(
         Model(..model, player:, pointer_locked:, enemy:),
         effect.batch([effect.tick(Tick), pointer_lock_effect, exit_lock_effect]),
@@ -279,8 +273,8 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
   let assert Ok(cam) =
     camera.perspective(field_of_view: 75.0, near: 0.1, far: 1000.0)
 
-  let vec3.Vec3(_player_pitch, player_yaw, _) = model.player.player_rotation
-  let vec3.Vec3(player_x, player_y, player_z) = model.player.player_position
+  let vec3.Vec3(_player_pitch, player_yaw, _) = model.player.rotation
+  let vec3.Vec3(player_x, player_y, player_z) = model.player.position
 
   let behind_x = -1.0 *. maths.sin(player_yaw) *. model.camera_distance
   let behind_z = -1.0 *. maths.cos(player_yaw) *. model.camera_distance

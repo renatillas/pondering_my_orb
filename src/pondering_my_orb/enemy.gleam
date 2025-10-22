@@ -7,6 +7,8 @@ import tiramisu/transform
 import vec/vec3
 import vec/vec3f
 
+const jump_velocity = 5.0
+
 pub type Enemy(id) {
   Enemy(
     id: id,
@@ -122,7 +124,7 @@ pub fn follow(
         )
       {
         Ok(hit) if hit.id == player_id -> enemy_velocity.y
-        Ok(_) -> 5.0
+        Ok(_) -> jump_velocity
         Error(Nil) -> enemy_velocity.y
       }
     }
