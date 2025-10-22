@@ -3,6 +3,7 @@ import gleam/int
 import gleam/javascript/promise
 import gleam/list
 import gleam/option
+import gleam/result
 import gleam_community/maths
 import pondering_my_orb/enemy
 import pondering_my_orb/map
@@ -34,10 +35,11 @@ pub type Id {
 
 pub type Model {
   Model(
-    enemy: option.Option(enemy.Enemy),
+    enemy: enemy.Enemy(Id),
     ground: option.Option(map.Obstacle(map.Ground)),
     boxes: option.Option(map.Obstacle(map.Box)),
     player: player.Player,
+    player_bindings: input.InputBindings(player.PlayerAction),
     // Camera
     pointer_locked: Bool,
     camera_distance: Float,
@@ -72,7 +74,7 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), option.Option(_)) {
     asset.TextureAsset("PSX_Dungeon/Textures/TEX_Ground_04.png"),
     asset.TextureAsset("PSX_Dungeon/Textures/TEX_Crate_01.png"),
   ]
-  // Initialize physics world with gravity
+
   let physics_world =
     physics.new_world(physics.WorldConfig(gravity: vec3.Vec3(0.0, -9.81, 0.0)))
 
@@ -86,12 +88,16 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), option.Option(_)) {
       effect.from(fn(_) { debug.show_collider_wireframes(physics_world, True) }),
     ])
 
+  let enemy = enemy.basic(Enemy, position: vec3.Vec3(10.0, 5.5, 10.0))
+  let player_bindings = player.default_bindings()
+
   #(
     Model(
       ground: option.None,
       boxes: option.None,
-      enemy: option.None,
+      enemy:,
       player: player.init(),
+      player_bindings:,
       pointer_locked: False,
       camera_distance: 5.0,
       camera_height: 2.0,
@@ -100,8 +106,6 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), option.Option(_)) {
     option.Some(physics_world),
   )
 }
-
-const mouse_sensitivity = 0.003
 
 fn update(
   model: Model,
@@ -136,45 +140,61 @@ fn update(
         _, _ -> #(False, effect.none())
       }
 
-      let vec3.Vec3(player_pitch, player_yaw, player_roll) =
-        model.player.player_rotation
-      let #(mouse_dx, _mouse_dy) = input.mouse_delta(ctx.input)
+      let player_velocity =
+        physics.get_velocity(physics_world, Player)
+        |> result.unwrap(vec3.Vec3(0.0, 0.0, 0.0))
 
-      let player_yaw = case model.pointer_locked {
-        True -> player_yaw -. mouse_dx *. mouse_sensitivity
-
-        False -> player_yaw
-      }
-
-      let direction = direction_from_yaw(player_yaw)
-
-      let vec3.Vec3(player_x, player_y, player_z) = model.player.player_position
-
-      let #(player_x, player_z) =
-        calculate_movement_input(
+      let #(player, desired_velocity) =
+        player.handle_input(
+          model.player,
           ctx.input,
-          model.player.speed,
-          #(player_x, player_z),
-          direction,
+          model.player_bindings,
+          player_velocity,
+          model.pointer_locked,
         )
+
+      let physics_world =
+        physics.set_velocity(physics_world, Player, desired_velocity)
 
       let pointer_locked = case should_exit_pointer_lock {
         True -> False
         False -> model.pointer_locked
       }
 
-      let player =
-        player.update(
-          model.player,
-          vec3.Vec3(player_x, player_y, player_z),
-          vec3.Vec3(player_pitch, player_yaw, player_roll),
-        )
+      let enemy_velocity =
+        physics.get_velocity(physics_world, Enemy)
+        |> result.unwrap(vec3.Vec3(0.0, 0.0, 0.0))
 
-      let new_physics_world = physics.step(physics_world)
+      let desired_velocity =
+        enemy.follow(
+          model.enemy,
+          target: player.player_position,
+          enemy_velocity:,
+          physics_world:,
+          player_id: Player,
+        )
+      let physics_world =
+        physics.set_velocity(physics_world, Enemy, desired_velocity)
+
+      let physics_world = physics.step(physics_world)
+
+      let player_position =
+        physics.get_transform(physics_world, Player)
+        |> result.map(transform.position)
+        |> result.unwrap(or: model.player.player_position)
+
+      let enemy_position =
+        physics.get_transform(physics_world, Enemy)
+        |> result.map(transform.position)
+        |> result.unwrap(or: model.enemy.position)
+
+      let player = player |> player.with_position(player_position)
+      let enemy = model.enemy |> enemy.with_position(position: enemy_position)
+
       #(
-        Model(..model, player:, pointer_locked:),
+        Model(..model, player:, pointer_locked:, enemy:),
         effect.batch([effect.tick(Tick), pointer_lock_effect, exit_lock_effect]),
-        option.Some(new_physics_world),
+        option.Some(physics_world),
       )
     }
     AssetsLoaded(assets:) -> update_model_with_assets(model, assets, ctx)
@@ -189,64 +209,6 @@ fn update(
       ctx.physics_world,
     )
   }
-}
-
-fn direction_from_yaw(yaw: Float) -> #(#(Float, Float), #(Float, Float)) {
-  let forward_x = maths.sin(yaw)
-  let forward_z = maths.cos(yaw)
-  let right_x = maths.cos(yaw)
-  let right_z = -1.0 *. maths.sin(yaw)
-
-  #(#(forward_x, forward_z), #(right_x, right_z))
-}
-
-fn calculate_movement_input(
-  input: input.InputState,
-  player_move_speed: Float,
-  player: #(Float, Float),
-  directions: #(#(Float, Float), #(Float, Float)),
-) -> #(Float, Float) {
-  let #(player_x, player_z) = player
-  let #(forward_x, forward_z) = directions.0
-  let #(right_x, right_z) = directions.1
-
-  let player_x = case input.is_key_pressed(input, input.KeyW) {
-    True -> player_x +. forward_x *. player_move_speed
-    False -> player_x
-  }
-  let player_z = case input.is_key_pressed(input, input.KeyW) {
-    True -> player_z +. forward_z *. player_move_speed
-    False -> player_z
-  }
-
-  let player_x = case input.is_key_pressed(input, input.KeyS) {
-    True -> player_x -. forward_x *. player_move_speed
-    False -> player_x
-  }
-  let player_z = case input.is_key_pressed(input, input.KeyS) {
-    True -> player_z -. forward_z *. player_move_speed
-    False -> player_z
-  }
-
-  let player_x = case input.is_key_pressed(input, input.KeyA) {
-    True -> player_x +. right_x *. player_move_speed
-    False -> player_x
-  }
-  let player_z = case input.is_key_pressed(input, input.KeyA) {
-    True -> player_z +. right_z *. player_move_speed
-    False -> player_z
-  }
-
-  let player_x = case input.is_key_pressed(input, input.KeyD) {
-    True -> player_x -. right_x *. player_move_speed
-    False -> player_x
-  }
-  let player_z = case input.is_key_pressed(input, input.KeyD) {
-    True -> player_z -. right_z *. player_move_speed
-    False -> player_z
-  }
-
-  #(player_x, player_z)
 }
 
 fn update_model_with_assets(
@@ -293,9 +255,6 @@ fn update_model_with_assets(
     |> map.ground(floor_fbx.scene, _)
     |> option.Some
 
-  let enemy =
-    enemy.basic(transform.at(vec3.Vec3(0.0, 10.0, 0.0))) |> option.Some
-
   let effects =
     effect.batch([
       effect.from(fn(_) {
@@ -313,7 +272,7 @@ fn update_model_with_assets(
         )
       }),
     ])
-  #(Model(..model, ground:, boxes:, enemy:), effects, ctx.physics_world)
+  #(Model(..model, ground:, boxes:), effects, ctx.physics_world)
 }
 
 fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
@@ -336,19 +295,16 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
   let look_at_target = vec3.Vec3(player_x, player_y +. 1.0, player_z)
 
   let ground = case model.ground {
-    option.Some(ground) -> map.render_ground(ground, Ground)
+    option.Some(ground) -> [map.render_ground(ground, Ground)]
     option.None -> []
   }
 
   let boxes = case model.boxes {
-    option.Some(boxes) -> map.render_box(boxes, Boxes)
+    option.Some(boxes) -> [map.render_box(boxes, Boxes)]
     option.None -> []
   }
 
-  let enemy = case model.enemy {
-    option.Some(enemy) -> enemy.render(enemy, Enemy) |> list.wrap
-    option.None -> []
-  }
+  let enemy = [enemy.render(model.enemy)]
 
   list.flatten([
     enemy,
