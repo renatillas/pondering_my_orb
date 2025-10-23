@@ -65,7 +65,7 @@ pub fn render(enemy: Enemy(id)) {
     )
   let assert Ok(material) =
     material.new() |> material.with_color(0xff0000) |> material.build()
-  scene.Mesh(
+  scene.mesh(
     enemy.id,
     geometry: capsule,
     material:,

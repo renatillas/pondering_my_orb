@@ -112,12 +112,12 @@ pub fn render(id: id, player: Player) {
 
   let assert Ok(material) =
     material.new() |> material.with_color(color) |> material.build()
-  scene.Mesh(
+  scene.mesh(
     id:,
     geometry: capsule,
     material:,
     transform: transform.at(player.position)
-      |> transform.with_rotation(player.rotation),
+      |> transform.with_euler_rotation(player.rotation),
     physics: option.Some(
       physics.new_rigid_body(physics.Dynamic)
       |> physics.with_collider(physics.Capsule(

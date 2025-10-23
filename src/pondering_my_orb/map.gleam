@@ -1,5 +1,5 @@
 import gleam/option
-import tiramisu/object3d
+import tiramisu/asset
 import tiramisu/physics
 import tiramisu/scene
 import tiramisu/transform
@@ -9,23 +9,23 @@ pub type Box
 pub type Ground
 
 pub opaque type Obstacle(kind) {
-  Box(model: object3d.Object3D, instances: List(transform.Transform))
-  Ground(model: object3d.Object3D, instances: List(transform.Transform))
+  Box(model: asset.Object3D, instances: List(transform.Transform))
+  Ground(model: asset.Object3D, instances: List(transform.Transform))
 }
 
 pub fn box(
-  model: object3d.Object3D,
+  model: asset.Object3D,
   instances: List(transform.Transform),
 ) -> Obstacle(Box) {
   Box(model:, instances:)
 }
 
-pub fn ground(model: object3d.Object3D, instances: List(transform.Transform)) {
+pub fn ground(model: asset.Object3D, instances: List(transform.Transform)) {
   Ground(model:, instances:)
 }
 
 pub fn render_box(box: Obstacle(Box), id: id) -> scene.Node(id) {
-  scene.InstancedModel(
+  scene.instanced_model(
     id:,
     object: box.model,
     instances: box.instances,
@@ -44,7 +44,7 @@ pub fn render_box(box: Obstacle(Box), id: id) -> scene.Node(id) {
 }
 
 pub fn render_ground(ground: Obstacle(Ground), id: id) -> scene.Node(id) {
-  scene.InstancedModel(
+  scene.instanced_model(
     id: id,
     object: ground.model,
     instances: ground.instances,

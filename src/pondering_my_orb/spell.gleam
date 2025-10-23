@@ -264,7 +264,7 @@ pub fn view(
       |> material.with_color(0xff4444)
       |> material.build()
 
-    scene.Mesh(
+    scene.mesh(
       id: id(int.random(1_000_000)),
       geometry: sphere,
       material:,

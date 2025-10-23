@@ -346,7 +346,7 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
     projectiles,
     [
       player.render(Player, model.player),
-      scene.Camera(
+      scene.camera(
         id: Camera,
         camera: cam,
         transform: transform.at(position: camera_position),
@@ -354,7 +354,7 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
         active: True,
         viewport: option.None,
       ),
-      scene.Light(
+      scene.light(
         id: Ambient,
         light: {
           let assert Ok(light) = light.ambient(color: 0xffffff, intensity: 0.5)
@@ -362,7 +362,7 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
         },
         transform: transform.identity,
       ),
-      scene.Light(
+      scene.light(
         id: Directional,
         light: {
           let assert Ok(light) =
