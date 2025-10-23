@@ -1,6 +1,8 @@
 import gleam/int
 import gleam/option
 import gleam_community/maths
+import pondering_my_orb/spell
+import pondering_my_orb/wand
 import tiramisu/geometry
 import tiramisu/input
 import tiramisu/material
@@ -30,6 +32,10 @@ pub type PlayerAction {
   Jump
 }
 
+pub type AutoCast {
+  AutoCast(time_since_last_cast: Float)
+}
+
 pub type Player {
   Player(
     // Health
@@ -48,6 +54,9 @@ pub type Player {
     passive_heal_rate: Int,
     passive_heal_interval: Float,
     time_since_last_passive_heal: Float,
+    // Spell casting
+    wand: wand.Wand,
+    auto_cast: AutoCast,
   )
 }
 
@@ -63,7 +72,9 @@ pub fn new(
   passive_heal_rate passive_heal_rate: Int,
   passive_heal_interval passive_heal_interval: Float,
   time_since_last_passive_heal time_since_last_passive_heal: Float,
-) {
+  wand wand: wand.Wand,
+  auto_cast auto_cast: AutoCast,
+) -> Player {
   Player(
     max_health: health,
     current_health: health,
@@ -77,6 +88,8 @@ pub fn new(
     passive_heal_rate:,
     passive_heal_interval:,
     time_since_last_passive_heal:,
+    wand:,
+    auto_cast:,
   )
 }
 
@@ -122,6 +135,17 @@ pub fn render(id: id, player: Player) {
 }
 
 pub fn init() -> Player {
+  let assert Ok(wand) =
+    wand.new(
+      name: "Player's Wand",
+      slot_count: 1,
+      max_mana: 100.0,
+      mana_recharge_rate: 10.0,
+      cast_delay: 1.0,
+      recharge_time: 1.0,
+    )
+    |> wand.set_spell(0, spell.fireball())
+
   new(
     health: 100,
     speed: 5.0,
@@ -134,6 +158,8 @@ pub fn init() -> Player {
     passive_heal_rate:,
     passive_heal_interval:,
     time_since_last_passive_heal: 0.0,
+    wand:,
+    auto_cast: AutoCast(time_since_last_cast: 0.0),
   )
 }
 
@@ -277,6 +303,7 @@ pub fn take_damage(player: Player, damage: Int) -> Player {
         True -> 0
         False -> new_health
       }
+
       echo "Player took "
         <> int.to_string(damage)
         <> " damage! Health: "
@@ -295,14 +322,47 @@ pub fn take_damage(player: Player, damage: Int) -> Player {
   }
 }
 
-pub fn update(player: Player, delta_time: Float) -> Player {
+pub fn update(
+  player: Player,
+  enemy_position: vec3.Vec3(Float),
+  delta_time: Float,
+) -> #(Player, option.Option(wand.CastResult)) {
+  let time_since_last_cast = player.auto_cast.time_since_last_cast +. delta_time
+  let #(player, cast_result) = case
+    time_since_last_cast >=. player.wand.cast_delay
+  {
+    True -> {
+      let normalized_direction =
+        vec3.Vec3(
+          enemy_position.x -. player.position.x,
+          enemy_position.y -. player.position.y,
+          enemy_position.z -. player.position.z,
+        )
+        |> vec3f.normalize()
+
+      let #(cast_result, wand) =
+        wand.cast(player.wand, 0, player.position, normalized_direction, 0)
+
+      #(
+        Player(..player, auto_cast: AutoCast(time_since_last_cast: 0.0), wand:),
+        option.Some(cast_result),
+      )
+    }
+    False -> #(
+      Player(..player, auto_cast: AutoCast(time_since_last_cast)),
+      option.None,
+    )
+  }
+
   let time_since_taking_damage = player.time_since_taking_damage +. delta_time
   let is_vulnerable =
     time_since_taking_damage >=. player.invulnerability_duration
 
   let player = Player(..player, time_since_taking_damage:, is_vulnerable:)
 
-  case player.time_since_taking_damage >=. player.passive_heal_delay {
+  let player = case
+    player.time_since_taking_damage >=. player.passive_heal_delay
+  {
     True -> {
       let time_since_last_passive_heal =
         player.time_since_last_passive_heal +. delta_time
@@ -314,6 +374,8 @@ pub fn update(player: Player, delta_time: Float) -> Player {
     }
     False -> player
   }
+
+  #(player, cast_result)
 }
 
 fn passive_heal(player: Player) -> Player {

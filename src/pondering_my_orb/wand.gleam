@@ -3,6 +3,7 @@ import gleam/option
 import gleam/result
 import iv
 import pondering_my_orb/spell
+import vec/vec3
 
 /// Represents a wand with spell slots
 pub type Wand {
@@ -89,8 +90,8 @@ pub fn get_spell(
 pub fn cast(
   wand: Wand,
   start_index: Int,
-  position: #(Float, Float, Float),
-  direction: #(Float, Float, Float),
+  position: vec3.Vec3(Float),
+  direction: vec3.Vec3(Float),
   projectile_starting_index: Int,
 ) -> #(CastResult, Wand) {
   case start_index >= iv.length(wand.slots) {
@@ -127,8 +128,8 @@ fn process_spell_sequence(
   spells: iv.Array(spell.Spell),
   accumulated_modifiers: iv.Array(spell.ModifierSpell),
   current_index: Int,
-  position: #(Float, Float, Float),
-  direction: #(Float, Float, Float),
+  position: vec3.Vec3(Float),
+  direction: vec3.Vec3(Float),
   projectile_starting_index: Int,
 ) -> #(CastResult, Wand) {
   case spells == iv.new(), accumulated_modifiers == iv.new() {

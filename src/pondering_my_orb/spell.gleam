@@ -1,4 +1,13 @@
+import gleam/int
+import gleam/list
+import gleam/option
 import iv
+import tiramisu/geometry
+import tiramisu/material
+import tiramisu/scene
+import tiramisu/transform
+import vec/vec3
+import vec/vec3f
 
 pub type Spell {
   DamageSpell(DamageSpell)
@@ -36,8 +45,8 @@ pub type Projectile {
   Projectile(
     id: Int,
     spell: ModifiedSpell,
-    position: #(Float, Float, Float),
-    direction: #(Float, Float, Float),
+    position: vec3.Vec3(Float),
+    direction: vec3.Vec3(Float),
     time_alive: Float,
   )
 }
@@ -187,4 +196,80 @@ pub fn lightning() -> Spell {
     mana_cost: 35.0,
     projectile_size: 0.2,
   )
+}
+
+pub fn update(
+  projectiles: List(Projectile),
+  nearest_enemy_position: vec3.Vec3(Float),
+  delta_time: Float,
+) -> #(List(Projectile), Float) {
+  let #(collided, remaining) =
+    list.map(projectiles, update_position(_, delta_time))
+    |> list.partition(collided_with_enemy(_, nearest_enemy_position))
+
+  let total_damage =
+    list.fold(collided, 0.0, fn(acc, projectile) {
+      acc +. projectile.spell.final_damage
+    })
+
+  let final_projectiles =
+    remaining
+    |> list.filter(fn(projectile) {
+      projectile.time_alive <. projectile.spell.final_lifetime
+    })
+
+  #(final_projectiles, total_damage)
+}
+
+fn update_position(projectile: Projectile, delta_time: Float) -> Projectile {
+  let vec3.Vec3(x, y, z) = projectile.position
+  let vec3.Vec3(dx, dy, dz) = projectile.direction
+
+  let speed = projectile.spell.final_speed
+  let new_x = x +. dx *. speed *. delta_time
+  let new_y = y +. dy *. speed *. delta_time
+  let new_z = z +. dz *. speed *. delta_time
+
+  let new_time_alive = projectile.time_alive +. delta_time
+
+  Projectile(
+    ..projectile,
+    position: vec3.Vec3(new_x, new_y, new_z),
+    time_alive: new_time_alive,
+  )
+}
+
+fn collided_with_enemy(
+  projectile: Projectile,
+  nearest_enemy_position: vec3.Vec3(Float),
+) -> Bool {
+  let distance = vec3f.distance(projectile.position, nearest_enemy_position)
+  distance <=. 1.0
+}
+
+pub fn view(
+  id: fn(Int) -> id,
+  projectiles: List(Projectile),
+) -> List(scene.Node(id)) {
+  list.map(projectiles, fn(projectile) {
+    let assert Ok(sphere) =
+      geometry.sphere(
+        radius: projectile.spell.final_size,
+        width_segments: 8,
+        height_segments: 6,
+      )
+
+    let assert Ok(material) =
+      material.new()
+      |> material.with_color(0xff4444)
+      |> material.build()
+
+    scene.Mesh(
+      id: id(int.random(1_000_000)),
+      geometry: sphere,
+      material:,
+      transform: transform.at(projectile.position),
+      physics: option.None,
+    )
+  })
 }
