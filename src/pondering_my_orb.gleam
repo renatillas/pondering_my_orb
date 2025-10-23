@@ -56,6 +56,8 @@ pub type Model {
 pub type Msg {
   Tick
   EnemyAttacksPlayer(Int)
+  EnemyKilled(Id)
+  ProjectileDamagedEnemy(Id, Float)
   EnemySpawned
   EnemySpawnStarted(Int)
   AssetsLoaded(assets: asset.BatchLoadResult)
@@ -130,9 +132,7 @@ fn update(
 
   case msg {
     Tick -> {
-      let #(pointer_locked, pointer_effects) = handle_pointer_locked(model, ctx)
-
-      let #(player, player_desired_velocity, impulse) =
+      let #(player, impulse, pointer_locked, input_effects) =
         player.handle_input(
           model.player,
           velocity: physics.get_velocity(physics_world, Player)
@@ -141,6 +141,8 @@ fn update(
           bindings: model.player_bindings,
           pointer_locked: model.pointer_locked,
           physics_world:,
+          pointer_locked_msg: PointerLocked,
+          pointer_lock_failed_msg: PointerLockFailed,
         )
 
       let #(enemies, enemy_effects) =
@@ -158,7 +160,7 @@ fn update(
         |> list.unzip()
 
       let physics_world =
-        physics.set_velocity(physics_world, Player, player_desired_velocity)
+        physics.set_velocity(physics_world, Player, player.velocity)
         |> physics.apply_impulse(Player, impulse)
         |> list.fold(over: enemies, from: _, with: fn(acc, enemy) {
           physics.set_velocity(acc, enemy.id, enemy.velocity)
@@ -174,24 +176,27 @@ fn update(
       let enemies =
         list.map(enemies, enemy.after_physics_update(_, physics_world))
 
-      let nearest_enemy_position =
-        player.nearest_enemy_position(player, enemies)
+      let nearest_enemy = player.nearest_enemy_position(player, enemies)
 
       let #(player, cast_result) =
         player
         |> player.with_position(player_position)
-        |> player.update(nearest_enemy_position, ctx.delta_time)
+        |> player.update(nearest_enemy, ctx.delta_time)
 
       let projectiles = case cast_result {
-        option.Some(wand.CastSuccess(projectile, _, _)) -> {
+        Ok(wand.CastSuccess(projectile, _, _)) -> {
           [projectile, ..model.projectiles]
         }
         _ -> model.projectiles
       }
 
-      // TODO: Apply damage to enemy
-      let #(updated_projectiles, _total_damage) =
-        spell.update(projectiles, nearest_enemy_position, ctx.delta_time)
+      let #(updated_projectiles, spell_effect) =
+        spell.update(
+          projectiles,
+          nearest_enemy,
+          ctx.delta_time,
+          ProjectileDamagedEnemy,
+        )
 
       #(
         Model(
@@ -204,7 +209,8 @@ fn update(
         effect.batch([
           effect.tick(Tick),
           effect.batch(enemy_effects),
-          effect.batch(pointer_effects),
+          effect.batch(input_effects),
+          spell_effect,
         ]),
         option.Some(physics_world),
       )
@@ -243,40 +249,44 @@ fn update(
       option.Some(physics_world),
     )
     EnemySpawnStarted(_) -> #(model, effect.none(), option.Some(physics_world))
+    ProjectileDamagedEnemy(id, damage) -> {
+      let enemy =
+        list.find(model.enemies, fn(enemy) { enemy.id == id })
+        |> result.map(fn(enemy) {
+          enemy.Enemy(
+            ..enemy,
+            current_health: enemy.current_health - float.round(damage),
+          )
+        })
+      case enemy {
+        Ok(killed_enemy) if killed_enemy.current_health <= 0 -> #(
+          Model(
+            ..model,
+            enemies: list.filter(model.enemies, fn(enemy) {
+              killed_enemy.id != enemy.id
+            }),
+          ),
+          effect.from(fn(dispatch) { dispatch(EnemyKilled(killed_enemy.id)) }),
+          option.Some(physics_world),
+        )
+        Ok(damaged_enemy) -> #(
+          Model(
+            ..model,
+            enemies: list.map(model.enemies, fn(enemy) {
+              case enemy.id == damaged_enemy.id {
+                True -> damaged_enemy
+                False -> enemy
+              }
+            }),
+          ),
+          effect.none(),
+          option.Some(physics_world),
+        )
+        _ -> #(model, effect.none(), option.Some(physics_world))
+      }
+    }
+    EnemyKilled(_) -> #(model, effect.none(), option.Some(physics_world))
   }
-}
-
-fn handle_pointer_locked(
-  model: Model,
-  ctx: tiramisu.Context(Id),
-) -> #(Bool, List(Effect(Msg))) {
-  let should_request_lock = case model.pointer_locked {
-    False -> input.is_left_button_just_pressed(ctx.input)
-    True -> False
-  }
-
-  let pointer_lock_effect = case should_request_lock {
-    True ->
-      effect.request_pointer_lock(
-        on_success: PointerLocked,
-        on_error: PointerLockFailed,
-      )
-    False -> effect.none()
-  }
-
-  let #(should_exit_pointer_lock, exit_lock_effect) = case
-    input.is_key_just_pressed(ctx.input, input.Escape),
-    model.pointer_locked
-  {
-    True, True -> #(True, effect.exit_pointer_lock())
-    _, _ -> #(False, effect.none())
-  }
-
-  let pointer_locked = case should_exit_pointer_lock {
-    True -> False
-    False -> model.pointer_locked
-  }
-  #(pointer_locked, [pointer_lock_effect, exit_lock_effect])
 }
 
 fn update_model_with_assets(
