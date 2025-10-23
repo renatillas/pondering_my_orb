@@ -8,6 +8,8 @@ import gleam_community/maths
 import pondering_my_orb/enemy
 import pondering_my_orb/map
 import pondering_my_orb/player
+import pondering_my_orb/spell
+import pondering_my_orb/wand
 import tiramisu
 import tiramisu/asset
 import tiramisu/background
@@ -31,6 +33,7 @@ pub type Id {
   Cube2
   Enemy
   Player
+  Projectile(Int)
 }
 
 pub type Model {
@@ -44,6 +47,8 @@ pub type Model {
     pointer_locked: Bool,
     camera_distance: Float,
     camera_height: Float,
+    // Projectiles
+    projectiles: List(spell.Projectile),
   )
 }
 
@@ -101,6 +106,7 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), option.Option(_)) {
       pointer_locked: False,
       camera_distance: 5.0,
       camera_height: 2.0,
+      projectiles: [],
     ),
     effects,
     option.Some(physics_world),
@@ -178,12 +184,22 @@ fn update(
         |> result.map(transform.position)
         |> result.unwrap(or: model.enemy.position)
 
-      let player =
+      let enemy = model.enemy |> enemy.with_position(position: enemy_position)
+      let #(player, cast_result) =
         player
         |> player.with_position(player_position)
-        |> player.update(ctx.delta_time)
+        |> player.update(enemy.position, ctx.delta_time)
 
-      let enemy = model.enemy |> enemy.with_position(position: enemy_position)
+      let projectiles = case cast_result {
+        option.Some(wand.CastSuccess(projectile, _, _)) -> {
+          [projectile, ..model.projectiles]
+        }
+        _ -> model.projectiles
+      }
+
+      // TODO: Apply damage to enemy
+      let #(updated_projectiles, _total_damage) =
+        spell.update(projectiles, enemy_position, ctx.delta_time)
 
       let enemy_can_damage = enemy.can_damage(enemy, player.position)
 
@@ -197,7 +213,13 @@ fn update(
         False -> model.pointer_locked
       }
       #(
-        Model(..model, player:, pointer_locked:, enemy:),
+        Model(
+          ..model,
+          player:,
+          pointer_locked:,
+          enemy:,
+          projectiles: updated_projectiles,
+        ),
         effect.batch([
           effect.tick(Tick),
           pointer_lock_effect,
@@ -313,12 +335,15 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
     option.None -> []
   }
 
+  let projectiles = spell.view(Projectile, model.projectiles)
+
   let enemy = [enemy.render(model.enemy)]
 
   list.flatten([
     enemy,
     ground,
     boxes,
+    projectiles,
     [
       player.render(Player, model.player),
       scene.Camera(
