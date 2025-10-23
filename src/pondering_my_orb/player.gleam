@@ -1,6 +1,10 @@
+import gleam/float
 import gleam/int
+import gleam/list
 import gleam/option
+import gleam/result
 import gleam_community/maths
+import pondering_my_orb/enemy
 import pondering_my_orb/spell
 import pondering_my_orb/wand
 import tiramisu/geometry
@@ -324,19 +328,50 @@ pub fn take_damage(player: Player, damage: Int) -> Player {
 
 pub fn update(
   player: Player,
-  enemy_position: vec3.Vec3(Float),
+  nearest_enemy_position: vec3.Vec3(Float),
+  delta_time: Float,
+) -> #(Player, option.Option(wand.CastResult)) {
+  let #(player, cast_result) =
+    cast_spell(player, nearest_enemy_position, delta_time /. 1000.0)
+
+  let time_since_taking_damage =
+    player.time_since_taking_damage +. delta_time /. 1000.0
+  let is_vulnerable =
+    time_since_taking_damage >=. player.invulnerability_duration
+
+  let player = Player(..player, time_since_taking_damage:, is_vulnerable:)
+
+  let player = case
+    player.time_since_taking_damage >=. player.passive_heal_delay
+  {
+    True -> {
+      let time_since_last_passive_heal =
+        player.time_since_last_passive_heal +. delta_time /. 1000.0
+
+      case time_since_last_passive_heal >=. player.passive_heal_interval {
+        True -> passive_heal(player)
+        False -> Player(..player, time_since_last_passive_heal:)
+      }
+    }
+    False -> player
+  }
+
+  #(player, cast_result)
+}
+
+fn cast_spell(
+  player: Player,
+  nearest_enemy_position: vec3.Vec3(Float),
   delta_time: Float,
 ) -> #(Player, option.Option(wand.CastResult)) {
   let time_since_last_cast = player.auto_cast.time_since_last_cast +. delta_time
-  let #(player, cast_result) = case
-    time_since_last_cast >=. player.wand.cast_delay
-  {
+  case echo time_since_last_cast >=. player.wand.cast_delay {
     True -> {
       let normalized_direction =
         vec3.Vec3(
-          enemy_position.x -. player.position.x,
-          enemy_position.y -. player.position.y,
-          enemy_position.z -. player.position.z,
+          nearest_enemy_position.x -. player.position.x,
+          nearest_enemy_position.y -. player.position.y,
+          nearest_enemy_position.z -. player.position.z,
         )
         |> vec3f.normalize()
 
@@ -353,29 +388,23 @@ pub fn update(
       option.None,
     )
   }
+}
 
-  let time_since_taking_damage = player.time_since_taking_damage +. delta_time
-  let is_vulnerable =
-    time_since_taking_damage >=. player.invulnerability_duration
-
-  let player = Player(..player, time_since_taking_damage:, is_vulnerable:)
-
-  let player = case
-    player.time_since_taking_damage >=. player.passive_heal_delay
-  {
-    True -> {
-      let time_since_last_passive_heal =
-        player.time_since_last_passive_heal +. delta_time
-
-      case time_since_last_passive_heal >=. player.passive_heal_interval {
-        True -> passive_heal(player)
-        False -> Player(..player, time_since_last_passive_heal:)
-      }
-    }
-    False -> player
-  }
-
-  #(player, cast_result)
+pub fn nearest_enemy_position(
+  player: Player,
+  enemies: List(enemy.Enemy(id)),
+) -> vec3.Vec3(Float) {
+  let nearest_enemy_position: vec3.Vec3(Float) =
+    list.sort(enemies, fn(enemy1, enemy2) {
+      float.compare(
+        vec3f.distance_squared(enemy1.position, player.position),
+        vec3f.distance_squared(enemy2.position, player.position),
+      )
+    })
+    |> list.first()
+    |> result.map(fn(enemy) { enemy.position })
+    |> result.unwrap(vec3.Vec3(x: float.random(), y: 0.0, z: float.random()))
+  nearest_enemy_position
 }
 
 fn passive_heal(player: Player) -> Player {

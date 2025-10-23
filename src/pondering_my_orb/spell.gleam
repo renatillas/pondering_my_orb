@@ -204,7 +204,7 @@ pub fn update(
   delta_time: Float,
 ) -> #(List(Projectile), Float) {
   let #(collided, remaining) =
-    list.map(projectiles, update_position(_, delta_time))
+    list.map(projectiles, update_position(_, delta_time /. 1000.0))
     |> list.partition(collided_with_enemy(_, nearest_enemy_position))
 
   let total_damage =
