@@ -1,5 +1,6 @@
 import gleam/option
 import gleam/result
+import pondering_my_orb/id
 import tiramisu/effect
 import tiramisu/geometry
 import tiramisu/material
@@ -87,8 +88,7 @@ pub fn update(
   enemy: Enemy(id),
   target target: vec3.Vec3(Float),
   enemy_velocity enemy_velocity: vec3.Vec3(Float),
-  physics_world physics_world: physics.PhysicsWorld(id),
-  player_id player_id: id,
+  physics_world physics_world: physics.PhysicsWorld(id.Id),
   enemy_attacks_player_msg enemy_attacks_player_msg: fn(Int) -> msg,
 ) -> #(Enemy(id), effect.Effect(msg)) {
   // Calculate direction to target (keep it horizontal)
@@ -103,7 +103,7 @@ pub fn update(
   }
 
   let climb_velocity =
-    climb_velocity(enemy, direction, physics_world, player_id, enemy_velocity)
+    climb_velocity(enemy, direction, physics_world, enemy_velocity)
 
   let velocity =
     vec3.Vec3(horizontal_velocity.x, climb_velocity, horizontal_velocity.z)
@@ -122,8 +122,7 @@ pub fn update(
 fn climb_velocity(
   enemy: Enemy(id),
   direction: vec3.Vec3(Float),
-  physics_world: physics.PhysicsWorld(id),
-  player_id: id,
+  physics_world: physics.PhysicsWorld(id.Id),
   enemy_velocity: vec3.Vec3(Float),
 ) -> Float {
   // Normalize direction for raycast
@@ -151,7 +150,8 @@ fn climb_velocity(
       max_distance: 1.0,
     )
   {
-    Ok(hit) if hit.id == player_id -> enemy_velocity.y
+    Ok(hit) if hit.id.layer == id.PlayerLayer || hit.id.layer == id.EnemyLayer ->
+      enemy_velocity.y
     Ok(_) -> jump_velocity
     Error(Nil) -> enemy_velocity.y
   }
