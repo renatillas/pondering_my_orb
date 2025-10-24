@@ -2,6 +2,8 @@ import gleam/int
 import gleam/list
 import gleam/option
 import iv
+import pondering_my_orb/enemy
+import tiramisu/effect
 import tiramisu/geometry
 import tiramisu/material
 import tiramisu/scene
@@ -200,12 +202,13 @@ pub fn lightning() -> Spell {
 
 pub fn update(
   projectiles: List(Projectile),
-  nearest_enemy_position: vec3.Vec3(Float),
+  nearest_enemy: Result(enemy.Enemy(id), Nil),
   delta_time: Float,
-) -> #(List(Projectile), Float) {
+  damage_nearest_enemy_msg: fn(id, Float) -> msg,
+) -> #(List(Projectile), effect.Effect(msg)) {
   let #(collided, remaining) =
-    list.map(projectiles, update_position(_, delta_time))
-    |> list.partition(collided_with_enemy(_, nearest_enemy_position))
+    list.map(projectiles, update_position(_, delta_time /. 1000.0))
+    |> list.partition(collided_with_enemy(_, nearest_enemy))
 
   let total_damage =
     list.fold(collided, 0.0, fn(acc, projectile) {
@@ -218,7 +221,15 @@ pub fn update(
       projectile.time_alive <. projectile.spell.final_lifetime
     })
 
-  #(final_projectiles, total_damage)
+  let effect = case nearest_enemy {
+    Error(_) -> effect.none()
+    Ok(enemy) ->
+      effect.from(fn(dispatch) {
+        dispatch(damage_nearest_enemy_msg(enemy.id, total_damage))
+      })
+  }
+
+  #(final_projectiles, effect)
 }
 
 fn update_position(projectile: Projectile, delta_time: Float) -> Projectile {
@@ -241,10 +252,12 @@ fn update_position(projectile: Projectile, delta_time: Float) -> Projectile {
 
 fn collided_with_enemy(
   projectile: Projectile,
-  nearest_enemy_position: vec3.Vec3(Float),
+  enemy: Result(enemy.Enemy(id), Nil),
 ) -> Bool {
-  let distance = vec3f.distance(projectile.position, nearest_enemy_position)
-  distance <=. 1.0
+  case enemy {
+    Ok(enemy) -> vec3f.distance(projectile.position, enemy.position) <=. 1.0
+    Error(_) -> False
+  }
 }
 
 pub fn view(

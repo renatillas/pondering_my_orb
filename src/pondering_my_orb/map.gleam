@@ -1,4 +1,5 @@
 import gleam/option
+import pondering_my_orb/id
 import tiramisu/asset
 import tiramisu/physics
 import tiramisu/scene
@@ -24,7 +25,7 @@ pub fn ground(model: asset.Object3D, instances: List(transform.Transform)) {
   Ground(model:, instances:)
 }
 
-pub fn render_box(box: Obstacle(Box), id: id) -> scene.Node(id) {
+pub fn view_box(box: Obstacle(Box), id: id.Id) -> scene.Node(id.Id) {
   scene.instanced_model(
     id:,
     object: box.model,
@@ -43,7 +44,7 @@ pub fn render_box(box: Obstacle(Box), id: id) -> scene.Node(id) {
   )
 }
 
-pub fn render_ground(ground: Obstacle(Ground), id: id) -> scene.Node(id) {
+pub fn view_ground(ground: Obstacle(Ground), id: id) -> scene.Node(id) {
   scene.instanced_model(
     id: id,
     object: ground.model,

@@ -6,6 +6,7 @@ import gleam/option
 import gleam/result
 import gleam_community/maths
 import pondering_my_orb/enemy
+import pondering_my_orb/id
 import pondering_my_orb/map
 import pondering_my_orb/player
 import pondering_my_orb/spell
@@ -23,22 +24,10 @@ import tiramisu/scene
 import tiramisu/transform
 import vec/vec3
 
-pub type Id {
-  Camera
-  Boxes
-  Ambient
-  Directional
-  Ground
-  Cube1
-  Cube2
-  Enemy
-  Player
-  Projectile(Int)
-}
-
 pub type Model {
   Model(
-    enemy: enemy.Enemy(Id),
+    next_enemy_id: Int,
+    enemies: List(enemy.Enemy(id.Id)),
     ground: option.Option(map.Obstacle(map.Ground)),
     boxes: option.Option(map.Obstacle(map.Box)),
     player: player.Player,
@@ -54,6 +43,11 @@ pub type Model {
 
 pub type Msg {
   Tick
+  EnemyAttacksPlayer(Int)
+  EnemyKilled(id.Id)
+  ProjectileDamagedEnemy(id.Id, Float)
+  EnemySpawned
+  EnemySpawnStarted(Int)
   AssetsLoaded(assets: asset.BatchLoadResult)
   PointerLocked
   PointerLockFailed
@@ -69,7 +63,9 @@ pub fn main() -> Nil {
   )
 }
 
-fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), option.Option(_)) {
+fn init(
+  _ctx: tiramisu.Context(id.Id),
+) -> #(Model, Effect(Msg), option.Option(_)) {
   let assets = [
     asset.FBXAsset("PSX_Dungeon/Models/Box.fbx", option.None),
     asset.FBXAsset(
@@ -79,6 +75,9 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), option.Option(_)) {
     asset.TextureAsset("PSX_Dungeon/Textures/TEX_Ground_04.png"),
     asset.TextureAsset("PSX_Dungeon/Textures/TEX_Crate_01.png"),
   ]
+
+  let start_spawning_enemies =
+    effect.interval(ms: 500, msg: EnemySpawned, on_created: EnemySpawnStarted)
 
   let physics_world =
     physics.new_world(physics.WorldConfig(gravity: vec3.Vec3(0.0, -9.81, 0.0)))
@@ -91,22 +90,23 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), option.Option(_)) {
       )),
       effect.tick(Tick),
       effect.from(fn(_) { debug.show_collider_wireframes(physics_world, True) }),
+      start_spawning_enemies,
     ])
 
-  let enemy = enemy.basic(Enemy, position: vec3.Vec3(10.0, 5.5, 10.0))
   let player_bindings = player.default_bindings()
 
   #(
     Model(
       ground: option.None,
       boxes: option.None,
-      enemy:,
+      enemies: [],
       player: player.init(),
       player_bindings:,
       pointer_locked: False,
       camera_distance: 5.0,
       camera_height: 2.0,
       projectiles: [],
+      next_enemy_id: 0,
     ),
     effects,
     option.Some(physics_world),
@@ -116,114 +116,90 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), option.Option(_)) {
 fn update(
   model: Model,
   msg: Msg,
-  ctx: tiramisu.Context(Id),
+  ctx: tiramisu.Context(id.Id),
 ) -> #(Model, Effect(Msg), option.Option(_)) {
   let assert option.Some(physics_world) = ctx.physics_world
 
   case msg {
     Tick -> {
-      let should_request_lock = case model.pointer_locked {
-        False ->
-          input.is_left_button_just_pressed(ctx.input)
-          || input.is_key_just_pressed(ctx.input, input.KeyC)
-        True -> False
-      }
-
-      let pointer_lock_effect = case should_request_lock {
-        True ->
-          effect.request_pointer_lock(
-            on_success: PointerLocked,
-            on_error: PointerLockFailed,
-          )
-        False -> effect.none()
-      }
-
-      let #(should_exit_pointer_lock, exit_lock_effect) = case
-        input.is_key_just_pressed(ctx.input, input.Escape),
-        model.pointer_locked
-      {
-        True, True -> #(True, effect.exit_pointer_lock())
-        _, _ -> #(False, effect.none())
-      }
-
-      let #(player, player_desired_velocity, impulse) =
+      let #(player, impulse, pointer_locked, input_effects) =
         player.handle_input(
           model.player,
-          velocity: physics.get_velocity(physics_world, Player)
+          velocity: physics.get_velocity(physics_world, id.player())
             |> result.unwrap(vec3.Vec3(0.0, 0.0, 0.0)),
           input_state: ctx.input,
           bindings: model.player_bindings,
           pointer_locked: model.pointer_locked,
           physics_world:,
+          pointer_locked_msg: PointerLocked,
+          pointer_lock_failed_msg: PointerLockFailed,
         )
 
-      let enemy_desired_velocity =
-        enemy.follow(
-          model.enemy,
-          target: player.position,
-          enemy_velocity: physics.get_velocity(physics_world, Enemy)
-            |> result.unwrap(vec3.Vec3(0.0, 0.0, 0.0)),
-          physics_world:,
-          player_id: Player,
-        )
+      let #(enemies, enemy_effects) =
+        list.map(model.enemies, fn(enemy) {
+          enemy.update(
+            enemy,
+            target: player.position,
+            enemy_velocity: physics.get_velocity(physics_world, enemy.id)
+              |> result.unwrap(vec3.Vec3(0.0, 0.0, 0.0)),
+            physics_world:,
+            enemy_attacks_player_msg: EnemyAttacksPlayer,
+          )
+        })
+        |> list.unzip()
 
       let physics_world =
-        physics.set_velocity(physics_world, Player, player_desired_velocity)
-        |> physics.apply_impulse(Player, impulse)
-        |> physics.set_velocity(Enemy, enemy_desired_velocity)
+        physics.set_velocity(physics_world, id.player(), player.velocity)
+        |> physics.apply_impulse(id.player(), impulse)
+        |> list.fold(over: enemies, from: _, with: fn(acc, enemy) {
+          physics.set_velocity(acc, enemy.id, enemy.velocity)
+        })
 
       let physics_world = physics.step(physics_world)
 
       let player_position =
-        physics.get_transform(physics_world, Player)
+        physics.get_transform(physics_world, id.player())
         |> result.map(transform.position)
         |> result.unwrap(or: model.player.position)
 
-      let enemy_position =
-        physics.get_transform(physics_world, Enemy)
-        |> result.map(transform.position)
-        |> result.unwrap(or: model.enemy.position)
+      let enemies =
+        list.map(enemies, enemy.after_physics_update(_, physics_world))
 
-      let enemy = model.enemy |> enemy.with_position(position: enemy_position)
+      let nearest_enemy = player.nearest_enemy_position(player, enemies)
+
       let #(player, cast_result) =
         player
         |> player.with_position(player_position)
-        |> player.update(enemy.position, ctx.delta_time)
+        |> player.update(nearest_enemy, ctx.delta_time)
 
       let projectiles = case cast_result {
-        option.Some(wand.CastSuccess(projectile, _, _)) -> {
+        Ok(wand.CastSuccess(projectile, _, _)) -> {
           [projectile, ..model.projectiles]
         }
         _ -> model.projectiles
       }
 
-      // TODO: Apply damage to enemy
-      let #(updated_projectiles, _total_damage) =
-        spell.update(projectiles, enemy_position, ctx.delta_time)
+      let #(updated_projectiles, spell_effect) =
+        spell.update(
+          projectiles,
+          nearest_enemy,
+          ctx.delta_time,
+          ProjectileDamagedEnemy,
+        )
 
-      let enemy_can_damage = enemy.can_damage(enemy, player.position)
-
-      let player = case enemy_can_damage {
-        True -> player.take_damage(player, model.enemy.damage)
-        False -> player
-      }
-
-      let pointer_locked = case should_exit_pointer_lock {
-        True -> False
-        False -> model.pointer_locked
-      }
       #(
         Model(
           ..model,
           player:,
           pointer_locked:,
-          enemy:,
+          enemies:,
           projectiles: updated_projectiles,
         ),
         effect.batch([
           effect.tick(Tick),
-          pointer_lock_effect,
-          exit_lock_effect,
+          effect.batch(enemy_effects),
+          effect.batch(input_effects),
+          spell_effect,
         ]),
         option.Some(physics_world),
       )
@@ -239,14 +215,74 @@ fn update(
       effect.none(),
       ctx.physics_world,
     )
+    EnemyAttacksPlayer(amount) -> {
+      #(
+        Model(..model, player: player.take_damage(model.player, amount)),
+        effect.none(),
+        option.Some(physics_world),
+      )
+    }
+    EnemySpawned -> #(
+      Model(
+        ..model,
+        enemies: [
+          enemy.basic(
+            id.enemy(model.next_enemy_id),
+            position: vec3.Vec3(0.0, 3.0, 0.0),
+          ),
+          ..model.enemies
+        ],
+        next_enemy_id: model.next_enemy_id + 1,
+      ),
+      effect.none(),
+      option.Some(physics_world),
+    )
+    EnemySpawnStarted(_) -> #(model, effect.none(), option.Some(physics_world))
+    ProjectileDamagedEnemy(id, damage) -> {
+      let enemy =
+        list.find(model.enemies, fn(enemy) { enemy.id == id })
+        |> result.map(fn(enemy) {
+          enemy.Enemy(
+            ..enemy,
+            current_health: enemy.current_health - float.round(damage),
+          )
+        })
+      case enemy {
+        Ok(killed_enemy) if killed_enemy.current_health <= 0 -> #(
+          Model(
+            ..model,
+            enemies: list.filter(model.enemies, fn(enemy) {
+              killed_enemy.id != enemy.id
+            }),
+          ),
+          effect.from(fn(dispatch) { dispatch(EnemyKilled(killed_enemy.id)) }),
+          option.Some(physics_world),
+        )
+        Ok(damaged_enemy) -> #(
+          Model(
+            ..model,
+            enemies: list.map(model.enemies, fn(enemy) {
+              case enemy.id == damaged_enemy.id {
+                True -> damaged_enemy
+                False -> enemy
+              }
+            }),
+          ),
+          effect.none(),
+          option.Some(physics_world),
+        )
+        _ -> #(model, effect.none(), option.Some(physics_world))
+      }
+    }
+    EnemyKilled(_) -> #(model, effect.none(), option.Some(physics_world))
   }
 }
 
 fn update_model_with_assets(
   model: Model,
   assets: asset.BatchLoadResult,
-  ctx: tiramisu.Context(Id),
-) -> #(Model, Effect(Msg), option.Option(physics.PhysicsWorld(Id))) {
+  ctx: tiramisu.Context(id.Id),
+) -> #(Model, Effect(Msg), option.Option(physics.PhysicsWorld(id.Id))) {
   let assert Ok(floor_fbx) =
     asset.get_fbx(assets.cache, "PSX_Dungeon/Models/Floor_Tiles.fbx")
   let assert Ok(floor_texture) =
@@ -306,7 +342,7 @@ fn update_model_with_assets(
   #(Model(..model, ground:, boxes:), effects, ctx.physics_world)
 }
 
-fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
+fn view(model: Model, _ctx: tiramisu.Context(id.Id)) -> List(scene.Node(id.Id)) {
   let assert Ok(cam) =
     camera.perspective(field_of_view: 75.0, near: 0.1, far: 1000.0)
 
@@ -326,28 +362,27 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
   let look_at_target = vec3.Vec3(player_x, player_y +. 1.0, player_z)
 
   let ground = case model.ground {
-    option.Some(ground) -> [map.render_ground(ground, Ground)]
+    option.Some(ground) -> [map.view_ground(ground, id.ground())]
     option.None -> []
   }
 
   let boxes = case model.boxes {
-    option.Some(boxes) -> [map.render_box(boxes, Boxes)]
+    option.Some(boxes) -> [map.view_box(boxes, id.box())]
     option.None -> []
   }
 
-  let projectiles = spell.view(Projectile, model.projectiles)
+  let projectiles = spell.view(id.projectile, model.projectiles)
 
-  let enemy = [enemy.render(model.enemy)]
-
+  let enemy = model.enemies |> list.map(enemy.render)
   list.flatten([
     enemy,
     ground,
     boxes,
     projectiles,
     [
-      player.render(Player, model.player),
+      player.render(id.player(), model.player),
       scene.camera(
-        id: Camera,
+        id: id.camera(),
         camera: cam,
         transform: transform.at(position: camera_position),
         look_at: option.Some(look_at_target),
@@ -355,7 +390,7 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
         viewport: option.None,
       ),
       scene.light(
-        id: Ambient,
+        id: id.ambient(),
         light: {
           let assert Ok(light) = light.ambient(color: 0xffffff, intensity: 0.5)
           light
@@ -363,7 +398,7 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
         transform: transform.identity,
       ),
       scene.light(
-        id: Directional,
+        id: id.directional(),
         light: {
           let assert Ok(light) =
             light.directional(color: 0xffffff, intensity: 2.0)

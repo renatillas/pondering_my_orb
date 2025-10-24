@@ -1,8 +1,13 @@
+import gleam/float
 import gleam/int
+import gleam/list
 import gleam/option
+import gleam/result
 import gleam_community/maths
+import pondering_my_orb/enemy
 import pondering_my_orb/spell
 import pondering_my_orb/wand
+import tiramisu/effect
 import tiramisu/geometry
 import tiramisu/input
 import tiramisu/material
@@ -45,6 +50,7 @@ pub type Player {
     speed: Float,
     position: vec3.Vec3(Float),
     rotation: vec3.Vec3(Float),
+    velocity: vec3.Vec3(Float),
     // Taking damage
     invulnerability_duration: Float,
     time_since_taking_damage: Float,
@@ -90,6 +96,7 @@ pub fn new(
     time_since_last_passive_heal:,
     wand:,
     auto_cast:,
+    velocity: vec3f.zero,
   )
 }
 
@@ -241,7 +248,16 @@ pub fn handle_input(
   bindings bindings: input.InputBindings(PlayerAction),
   pointer_locked pointer_locked: Bool,
   physics_world physics_world: physics.PhysicsWorld(id),
-) -> #(Player, vec3.Vec3(Float), vec3.Vec3(Float)) {
+  pointer_locked_msg pointer_locked_msg: msg,
+  pointer_lock_failed_msg pointer_lock_failed_msg: msg,
+) -> #(Player, vec3.Vec3(Float), Bool, List(effect.Effect(msg))) {
+  let #(pointer_locked, effects) =
+    handle_pointer_locked(
+      pointer_locked,
+      input_state,
+      pointer_locked_msg,
+      pointer_lock_failed_msg,
+    )
   let vec3.Vec3(player_pitch, player_yaw, player_roll) = player.rotation
   let #(mouse_dx, _mouse_dy) = input.mouse_delta(input_state)
 
@@ -264,9 +280,13 @@ pub fn handle_input(
   let impulse = calculate_jump(player, physics_world, input_state, bindings)
 
   let updated_player =
-    Player(..player, rotation: vec3.Vec3(player_pitch, player_yaw, player_roll))
+    Player(
+      ..player,
+      rotation: vec3.Vec3(player_pitch, player_yaw, player_roll),
+      velocity:,
+    )
 
-  #(updated_player, velocity, impulse)
+  #(updated_player, impulse, pointer_locked, effects)
 }
 
 fn calculate_jump(
@@ -324,37 +344,15 @@ pub fn take_damage(player: Player, damage: Int) -> Player {
 
 pub fn update(
   player: Player,
-  enemy_position: vec3.Vec3(Float),
+  nearest_enemy: Result(enemy.Enemy(id), Nil),
   delta_time: Float,
-) -> #(Player, option.Option(wand.CastResult)) {
-  let time_since_last_cast = player.auto_cast.time_since_last_cast +. delta_time
-  let #(player, cast_result) = case
-    time_since_last_cast >=. player.wand.cast_delay
-  {
-    True -> {
-      let normalized_direction =
-        vec3.Vec3(
-          enemy_position.x -. player.position.x,
-          enemy_position.y -. player.position.y,
-          enemy_position.z -. player.position.z,
-        )
-        |> vec3f.normalize()
+) -> #(Player, Result(wand.CastResult, Nil)) {
+  let #(player, cast_result) =
+    result.map(nearest_enemy, cast_spell(player, _, delta_time /. 1000.0))
+    |> result.unwrap(#(player, Error(Nil)))
 
-      let #(cast_result, wand) =
-        wand.cast(player.wand, 0, player.position, normalized_direction, 0)
-
-      #(
-        Player(..player, auto_cast: AutoCast(time_since_last_cast: 0.0), wand:),
-        option.Some(cast_result),
-      )
-    }
-    False -> #(
-      Player(..player, auto_cast: AutoCast(time_since_last_cast)),
-      option.None,
-    )
-  }
-
-  let time_since_taking_damage = player.time_since_taking_damage +. delta_time
+  let time_since_taking_damage =
+    player.time_since_taking_damage +. delta_time /. 1000.0
   let is_vulnerable =
     time_since_taking_damage >=. player.invulnerability_duration
 
@@ -365,7 +363,7 @@ pub fn update(
   {
     True -> {
       let time_since_last_passive_heal =
-        player.time_since_last_passive_heal +. delta_time
+        player.time_since_last_passive_heal +. delta_time /. 1000.0
 
       case time_since_last_passive_heal >=. player.passive_heal_interval {
         True -> passive_heal(player)
@@ -376,6 +374,52 @@ pub fn update(
   }
 
   #(player, cast_result)
+}
+
+fn cast_spell(
+  player: Player,
+  nearest_enemy: enemy.Enemy(id),
+  delta_time: Float,
+) -> #(Player, Result(wand.CastResult, Nil)) {
+  let time_since_last_cast = player.auto_cast.time_since_last_cast +. delta_time
+  case echo time_since_last_cast >=. player.wand.cast_delay {
+    True -> {
+      let normalized_direction =
+        vec3.Vec3(
+          nearest_enemy.position.x -. player.position.x,
+          nearest_enemy.position.y -. player.position.y,
+          nearest_enemy.position.z -. player.position.z,
+        )
+        |> vec3f.normalize()
+
+      let #(cast_result, wand) =
+        wand.cast(player.wand, 0, player.position, normalized_direction, 0)
+
+      #(
+        Player(..player, auto_cast: AutoCast(time_since_last_cast: 0.0), wand:),
+        Ok(cast_result),
+      )
+    }
+    False -> #(
+      Player(..player, auto_cast: AutoCast(time_since_last_cast)),
+      Error(Nil),
+    )
+  }
+}
+
+pub fn nearest_enemy_position(
+  player: Player,
+  enemies: List(enemy.Enemy(id)),
+) -> Result(enemy.Enemy(id), Nil) {
+  let nearest_enemy_position =
+    list.sort(enemies, fn(enemy1, enemy2) {
+      float.compare(
+        vec3f.distance_squared(enemy1.position, player.position),
+        vec3f.distance_squared(enemy2.position, player.position),
+      )
+    })
+    |> list.first()
+  nearest_enemy_position
 }
 
 fn passive_heal(player: Player) -> Player {
@@ -397,4 +441,39 @@ fn passive_heal(player: Player) -> Player {
     current_health: capped_health,
     time_since_last_passive_heal: 0.0,
   )
+}
+
+fn handle_pointer_locked(
+  pointer_locked: Bool,
+  input: input.InputState,
+  pointer_locked_msg: msg,
+  pointer_lock_failed_msg: msg,
+) -> #(Bool, List(effect.Effect(msg))) {
+  let should_request_lock = case pointer_locked {
+    False -> input.is_left_button_just_pressed(input)
+    True -> False
+  }
+
+  let pointer_lock_effect = case should_request_lock {
+    True ->
+      effect.request_pointer_lock(
+        on_success: pointer_locked_msg,
+        on_error: pointer_lock_failed_msg,
+      )
+    False -> effect.none()
+  }
+
+  let #(should_exit_pointer_lock, exit_lock_effect) = case
+    input.is_key_just_pressed(input, input.Escape),
+    pointer_locked
+  {
+    True, True -> #(True, effect.exit_pointer_lock())
+    _, _ -> #(False, effect.none())
+  }
+
+  let pointer_locked = case should_exit_pointer_lock {
+    True -> False
+    False -> pointer_locked
+  }
+  #(pointer_locked, [pointer_lock_effect, exit_lock_effect])
 }
