@@ -20,7 +20,7 @@ import vec/vec3f
 
 const mouse_sensitivity = 0.003
 
-const jumping_speed = 15.0
+const jumping_speed = 500.0
 
 const passive_heal_delay = 6.0
 
@@ -306,8 +306,8 @@ fn calculate_jump(
   let raycast_origin =
     Vec3(player.position.x, player.position.y -. 1.6, player.position.z)
 
-  // Cast ray purely horizontally forward
-  let raycast_direction = Vec3(0.0, -0.5, 0.0)
+  // Cast ray downward to detect ground
+  let raycast_direction = Vec3(0.0, -1.0, 0.0)
 
   case
     physics.raycast(
@@ -318,7 +318,10 @@ fn calculate_jump(
     ),
     input.is_action_just_pressed(input_state, bindings, Jump)
   {
-    Ok(_), True -> Vec3(0.0, jumping_speed, 0.0)
+    Ok(_), True -> {
+      echo "JUMP! Applying impulse"
+      Vec3(0.0, jumping_speed, 0.0)
+    }
     _, _ -> vec3f.zero
   }
 }
