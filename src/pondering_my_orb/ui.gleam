@@ -174,7 +174,7 @@ fn render_pixel_bar(
       // Filled portion
       html.div(
         [
-          attribute.class(color_class <> " h-full transition-all duration-300"),
+          attribute.class(color_class <> " h-full"),
           attribute.style("width", float.to_string(percentage) <> "%"),
         ],
         [],
