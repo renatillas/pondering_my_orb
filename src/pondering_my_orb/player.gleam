@@ -1,7 +1,7 @@
 import gleam/float
 import gleam/int
 import gleam/list
-import gleam/option
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam_community/maths
 import pondering_my_orb/enemy.{type Enemy}
@@ -149,7 +149,7 @@ pub fn init() -> Player {
       max_mana: 100.0,
       mana_recharge_rate: 10.0,
       cast_delay: 1.0,
-      recharge_time: 1.0,
+      recharge_time: 10.0,
     )
     |> wand.set_spell(0, spell.fireball())
 
@@ -346,10 +346,35 @@ pub fn update(
   player: Player,
   nearest_enemy: Result(Enemy(id), Nil),
   delta_time: Float,
-) -> #(Player, Result(wand.CastResult, Nil)) {
+) -> #(Player, Option(spell.Projectile)) {
   let #(player, cast_result) =
     result.map(nearest_enemy, cast_spell(player, _, delta_time /. 1000.0))
     |> result.unwrap(#(player, Error(Nil)))
+
+  // TODO: Handle next cast index & other cases
+  let #(player, projectile) = case cast_result {
+    Ok(wand.CastSuccess(projectile, remaining_mana, _next_cast_index)) -> {
+      let player =
+        Player(
+          ..player,
+          wand: wand.Wand(..player.wand, current_mana: remaining_mana),
+        )
+
+      #(player, Some(projectile))
+    }
+    Ok(wand.NotEnoughMana(_required, _available)) -> {
+      #(player, None)
+    }
+    Ok(wand.NoSpellToCast) -> {
+      #(player, None)
+    }
+    Ok(wand.WandEmpty) -> {
+      #(player, None)
+    }
+    Error(_) -> {
+      #(player, None)
+    }
+  }
 
   let time_since_taking_damage =
     player.time_since_taking_damage +. delta_time /. 1000.0
@@ -373,7 +398,13 @@ pub fn update(
     False -> player
   }
 
-  #(player, cast_result)
+  let player =
+    Player(
+      ..player,
+      wand: wand.recharge_mana(player.wand, delta_time /. 1000.0),
+    )
+
+  #(player, projectile)
 }
 
 fn cast_spell(
@@ -382,7 +413,7 @@ fn cast_spell(
   delta_time: Float,
 ) -> #(Player, Result(wand.CastResult, Nil)) {
   let time_since_last_cast = player.auto_cast.time_since_last_cast +. delta_time
-  case echo time_since_last_cast >=. player.wand.cast_delay {
+  case time_since_last_cast >=. player.wand.cast_delay {
     True -> {
       let normalized_direction =
         Vec3(
