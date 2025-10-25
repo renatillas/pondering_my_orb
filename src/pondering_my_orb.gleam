@@ -10,11 +10,7 @@ import pondering_my_orb/id.{type Id}
 import pondering_my_orb/map
 import pondering_my_orb/player
 import pondering_my_orb/spell
-<<<<<<< HEAD
 import pondering_my_orb/ui
-import pondering_my_orb/wand
-=======
->>>>>>> a2c47c5 (recharge mana)
 import tiramisu
 import tiramisu/asset
 import tiramisu/background
@@ -90,11 +86,7 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), Option(_)) {
   ]
 
   let start_spawning_enemies =
-<<<<<<< HEAD
-    effect.interval(ms: 5000, msg: EnemySpawned, on_created: EnemySpawnStarted)
-=======
     effect.interval(ms: 2000, msg: EnemySpawned, on_created: EnemySpawnStarted)
->>>>>>> a2c47c5 (recharge mana)
 
   let physics_world =
     physics.new_world(physics.WorldConfig(gravity: Vec3(0.0, -9.81, 0.0)))
