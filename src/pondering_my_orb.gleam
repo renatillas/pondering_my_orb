@@ -193,13 +193,15 @@ fn update(
         )
 
       let ui_effect =
-        tiramisu_ui.dispatch_to_lustre(ui.GameStateUpdated(ui.GameState(
-          player_health: player.current_health,
-          player_max_health: player.max_health,
-          player_mana: player.wand.current_mana,
-          player_max_mana: player.wand.max_mana,
-          wand_slots: player.wand.slots,
-        )))
+        tiramisu_ui.dispatch_to_lustre(
+          ui.GameStateUpdated(ui.GameState(
+            player_health: player.current_health,
+            player_max_health: player.max_health,
+            player_mana: player.wand.current_mana,
+            player_max_mana: player.wand.max_mana,
+            wand_slots: player.wand.slots,
+          )),
+        )
 
       #(
         Model(
