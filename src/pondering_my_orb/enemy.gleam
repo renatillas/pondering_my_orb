@@ -1,13 +1,13 @@
-import gleam/option
+import gleam/option.{Some}
 import gleam/result
-import pondering_my_orb/id
-import tiramisu/effect
+import pondering_my_orb/id.{type Id}
+import tiramisu/effect.{type Effect}
 import tiramisu/geometry
 import tiramisu/material
 import tiramisu/physics
 import tiramisu/scene
 import tiramisu/transform
-import vec/vec3
+import vec/vec3.{type Vec3, Vec3}
 import vec/vec3f
 
 const jump_velocity = 5.0
@@ -20,8 +20,8 @@ pub type Enemy(id) {
     damage: Int,
     damage_range: Float,
     speed: Float,
-    position: vec3.Vec3(Float),
-    velocity: vec3.Vec3(Float),
+    position: Vec3(Float),
+    velocity: Vec3(Float),
     physics_body: physics.RigidBody,
   )
 }
@@ -32,7 +32,7 @@ pub fn new(
   damage damage: Int,
   damage_range damage_range: Float,
   speed speed: Float,
-  position position: vec3.Vec3(Float),
+  position position: Vec3(Float),
 ) {
   let physics_body =
     physics.new_rigid_body(physics.Dynamic)
@@ -60,7 +60,7 @@ pub fn new(
   )
 }
 
-pub fn render(enemy: Enemy(id)) {
+pub fn render(enemy: Enemy(id)) -> scene.Node(id) {
   let assert Ok(capsule) =
     geometry.cylinder(
       radius_top: 0.5,
@@ -75,22 +75,22 @@ pub fn render(enemy: Enemy(id)) {
     geometry: capsule,
     material:,
     transform: transform.at(enemy.position),
-    physics: option.Some(enemy.physics_body),
+    physics: Some(enemy.physics_body),
   )
 }
 
-pub fn basic(id id: id, position position: vec3.Vec3(Float)) {
+pub fn basic(id id: id, position position: Vec3(Float)) {
   new(id:, health: 10, damage: 10, damage_range: 1.0, speed: 3.0, position:)
 }
 
 /// Apply velocity to enemy's physics body to move towards target
 pub fn update(
   enemy: Enemy(id),
-  target target: vec3.Vec3(Float),
-  enemy_velocity enemy_velocity: vec3.Vec3(Float),
-  physics_world physics_world: physics.PhysicsWorld(id.Id),
+  target target: Vec3(Float),
+  enemy_velocity enemy_velocity: Vec3(Float),
+  physics_world physics_world: physics.PhysicsWorld(Id),
   enemy_attacks_player_msg enemy_attacks_player_msg: fn(Int) -> msg,
-) -> #(Enemy(id), effect.Effect(msg)) {
+) -> #(Enemy(id), Effect(msg)) {
   // Calculate direction to target (keep it horizontal)
   let direction =
     vec3f.direction(enemy.position, target)
@@ -99,14 +99,14 @@ pub fn update(
   // Dead zone: stop moving if very close to target (within 0.5 units)
   let horizontal_velocity = case vec3f.length(direction) >. 0.5 {
     True -> vec3f.normalize(direction) |> vec3f.scale(enemy.speed)
-    False -> vec3.Vec3(0.0, 0.0, 0.0)
+    False -> Vec3(0.0, 0.0, 0.0)
   }
 
   let climb_velocity =
     climb_velocity(enemy, direction, physics_world, enemy_velocity)
 
   let velocity =
-    vec3.Vec3(horizontal_velocity.x, climb_velocity, horizontal_velocity.z)
+    Vec3(horizontal_velocity.x, climb_velocity, horizontal_velocity.z)
 
   let effects = case can_damage(enemy, target) {
     True ->
@@ -121,9 +121,9 @@ pub fn update(
 
 fn climb_velocity(
   enemy: Enemy(id),
-  direction: vec3.Vec3(Float),
-  physics_world: physics.PhysicsWorld(id.Id),
-  enemy_velocity: vec3.Vec3(Float),
+  direction: Vec3(Float),
+  physics_world: physics.PhysicsWorld(Id),
+  enemy_velocity: Vec3(Float),
 ) -> Float {
   // Normalize direction for raycast
   let normalized_direction = vec3f.normalize(direction)
@@ -131,7 +131,7 @@ fn climb_velocity(
   // Cast ray horizontally forward from lower body (knee height)
   // Start the ray OUTSIDE the enemy's capsule (radius 0.5) to avoid self-hits
   let raycast_origin =
-    vec3.Vec3(
+    Vec3(
       enemy.position.x +. normalized_direction.x *. 0.7,
       enemy.position.y -. 0.7,
       // Lower body level
@@ -140,7 +140,7 @@ fn climb_velocity(
 
   // Cast ray purely horizontally forward
   let raycast_direction =
-    vec3.Vec3(normalized_direction.x, 0.0, normalized_direction.z)
+    Vec3(normalized_direction.x, 0.0, normalized_direction.z)
 
   case
     physics.raycast(
@@ -157,7 +157,7 @@ fn climb_velocity(
   }
 }
 
-pub fn can_damage(enemy: Enemy(id), player_position: vec3.Vec3(Float)) -> Bool {
+pub fn can_damage(enemy: Enemy(id), player_position: Vec3(Float)) -> Bool {
   let distance = vec3f.distance(player_position, enemy.position)
   distance <. enemy.damage_range
 }

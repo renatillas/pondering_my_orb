@@ -2,13 +2,13 @@ import gleam/int
 import gleam/list
 import gleam/option
 import iv
-import pondering_my_orb/enemy
+import pondering_my_orb/enemy.{type Enemy}
 import tiramisu/effect
 import tiramisu/geometry
 import tiramisu/material
 import tiramisu/scene
 import tiramisu/transform
-import vec/vec3
+import vec/vec3.{type Vec3, Vec3}
 import vec/vec3f
 
 pub type Spell {
@@ -47,8 +47,8 @@ pub type Projectile {
   Projectile(
     id: Int,
     spell: ModifiedSpell,
-    position: vec3.Vec3(Float),
-    direction: vec3.Vec3(Float),
+    position: Vec3(Float),
+    direction: Vec3(Float),
     time_alive: Float,
   )
 }
@@ -75,12 +75,12 @@ pub fn damaging_spell(
   projectile_size projectile_size: Float,
 ) -> Spell {
   DamageSpell(Damage(
-    name: name,
-    damage: damage,
-    projectile_speed: projectile_speed,
-    projectile_lifetime: projectile_lifetime,
-    mana_cost: mana_cost,
-    projectile_size: projectile_size,
+    name:,
+    damage:,
+    projectile_speed:,
+    projectile_lifetime:,
+    mana_cost:,
+    projectile_size:,
   ))
 }
 
@@ -202,7 +202,7 @@ pub fn lightning() -> Spell {
 
 pub fn update(
   projectiles: List(Projectile),
-  nearest_enemy: Result(enemy.Enemy(id), Nil),
+  nearest_enemy: Result(Enemy(id), Nil),
   delta_time: Float,
   damage_nearest_enemy_msg: fn(id, Float) -> msg,
 ) -> #(List(Projectile), effect.Effect(msg)) {
@@ -233,8 +233,8 @@ pub fn update(
 }
 
 fn update_position(projectile: Projectile, delta_time: Float) -> Projectile {
-  let vec3.Vec3(x, y, z) = projectile.position
-  let vec3.Vec3(dx, dy, dz) = projectile.direction
+  let Vec3(x, y, z) = projectile.position
+  let Vec3(dx, dy, dz) = projectile.direction
 
   let speed = projectile.spell.final_speed
   let new_x = x +. dx *. speed *. delta_time
@@ -245,14 +245,14 @@ fn update_position(projectile: Projectile, delta_time: Float) -> Projectile {
 
   Projectile(
     ..projectile,
-    position: vec3.Vec3(new_x, new_y, new_z),
+    position: Vec3(new_x, new_y, new_z),
     time_alive: new_time_alive,
   )
 }
 
 fn collided_with_enemy(
   projectile: Projectile,
-  enemy: Result(enemy.Enemy(id), Nil),
+  enemy: Result(Enemy(id), Nil),
 ) -> Bool {
   case enemy {
     Ok(enemy) -> vec3f.distance(projectile.position, enemy.position) <=. 1.0

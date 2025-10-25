@@ -1,11 +1,11 @@
 import gleam/option
-import pondering_my_orb/id
+import pondering_my_orb/id.{type Id}
 import tiramisu/asset
 import tiramisu/geometry
 import tiramisu/material
 import tiramisu/physics
 import tiramisu/scene
-import tiramisu/transform
+import tiramisu/transform.{type Transform}
 import vec/vec3
 
 pub type Box
@@ -13,22 +13,22 @@ pub type Box
 pub type Ground
 
 pub opaque type Obstacle(kind) {
-  Box(model: asset.Object3D, instances: List(transform.Transform))
-  Ground(model: asset.Object3D, instances: List(transform.Transform))
+  Box(model: asset.Object3D, instances: List(Transform))
+  Ground(model: asset.Object3D, instances: List(Transform))
 }
 
-pub fn box(
-  model: asset.Object3D,
-  instances: List(transform.Transform),
-) -> Obstacle(Box) {
+pub fn box(model: asset.Object3D, instances: List(Transform)) -> Obstacle(Box) {
   Box(model:, instances:)
 }
 
-pub fn ground(model: asset.Object3D, instances: List(transform.Transform)) {
+pub fn ground(
+  model: asset.Object3D,
+  instances: List(Transform),
+) -> Obstacle(Ground) {
   Ground(model:, instances:)
 }
 
-pub fn view_box(box: Obstacle(Box), id: id.Id) -> scene.Node(id.Id) {
+pub fn view_box(box: Obstacle(Box), id: Id) -> scene.Node(Id) {
   scene.instanced_model(
     id:,
     object: box.model,
