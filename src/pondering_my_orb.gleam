@@ -10,6 +10,7 @@ import pondering_my_orb/id
 import pondering_my_orb/map
 import pondering_my_orb/player
 import pondering_my_orb/spell
+import pondering_my_orb/ui
 import pondering_my_orb/wand
 import tiramisu
 import tiramisu/asset
@@ -22,6 +23,7 @@ import tiramisu/light
 import tiramisu/physics
 import tiramisu/scene
 import tiramisu/transform
+import tiramisu/ui as tiramisu_ui
 import vec/vec3
 
 pub type Model {
@@ -54,6 +56,9 @@ pub type Msg {
 }
 
 pub fn main() -> Nil {
+  // Start the Lustre UI overlay
+  ui.start()
+
   tiramisu.run(
     dimensions: option.None,
     background: background.Color(0x1a1a2e),
@@ -77,7 +82,7 @@ fn init(
   ]
 
   let start_spawning_enemies =
-    effect.interval(ms: 500, msg: EnemySpawned, on_created: EnemySpawnStarted)
+    effect.interval(ms: 5000, msg: EnemySpawned, on_created: EnemySpawnStarted)
 
   let physics_world =
     physics.new_world(physics.WorldConfig(gravity: vec3.Vec3(0.0, -9.81, 0.0)))
@@ -187,6 +192,15 @@ fn update(
           ProjectileDamagedEnemy,
         )
 
+      let ui_effect =
+        tiramisu_ui.dispatch_to_lustre(ui.GameStateUpdated(ui.GameState(
+          player_health: player.current_health,
+          player_max_health: player.max_health,
+          player_mana: player.wand.current_mana,
+          player_max_mana: player.wand.max_mana,
+          wand_slots: player.wand.slots,
+        )))
+
       #(
         Model(
           ..model,
@@ -200,6 +214,7 @@ fn update(
           effect.batch(enemy_effects),
           effect.batch(input_effects),
           spell_effect,
+          ui_effect,
         ]),
         option.Some(physics_world),
       )
@@ -296,11 +311,10 @@ fn update_model_with_assets(
     list.map(list.range(0, 19), fn(_) {
       transform.identity
       |> transform.with_position(vec3.Vec3(
-        float.random() *. 20.0 -. 10.0,
-        0.5,
-        float.random() *. 20.0 -. 10.0,
+        { float.random() *. 100.0 } -. 50.0,
+        3.788888888,
+        { float.random() *. 100.0 } -. 50.0,
       ))
-      |> transform.scale_by(vec3.Vec3(0.12, 0.12, 0.12))
     })
     |> map.box(box_fbx.scene, _)
     |> option.Some
