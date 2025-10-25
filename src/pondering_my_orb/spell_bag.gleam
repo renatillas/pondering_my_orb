@@ -1,41 +1,41 @@
 import gleam/list
 import gleam/set
-import pondering_my_orb/spell
+import pondering_my_orb/spell.{type Spell}
 import pondering_my_orb/wand
-import tote/bag
+import tote/bag.{type Bag}
 
 pub opaque type SpellBag {
-  SpellBag(spells: bag.Bag(spell.Spell))
+  SpellBag(spells: Bag(Spell))
 }
 
 pub fn new() -> SpellBag {
   SpellBag(spells: bag.new())
 }
 
-pub fn add_spell(bag: SpellBag, spell: spell.Spell) -> SpellBag {
+pub fn add_spell(bag: SpellBag, spell: Spell) -> SpellBag {
   let spells = bag.insert(into: bag.spells, copies: 1, of: spell)
   SpellBag(spells:)
 }
 
-pub fn add_spells(bag: SpellBag, spell: spell.Spell, count: Int) -> SpellBag {
+pub fn add_spells(bag: SpellBag, spell: Spell, count: Int) -> SpellBag {
   let spells = bag.insert(into: bag.spells, copies: count, of: spell)
   SpellBag(spells:)
 }
 
-pub fn remove_spell(bag: SpellBag, spell: spell.Spell) {
+pub fn remove_spell(bag: SpellBag, spell: Spell) {
   bag.remove(from: bag.spells, copies: 1, of: spell)
 }
 
-pub fn get_count(bag: SpellBag, spell: spell.Spell) -> Int {
+pub fn get_count(bag: SpellBag, spell: Spell) -> Int {
   bag.copies(in: bag.spells, of: spell)
 }
 
-pub fn has_spell(bag: SpellBag, spell: spell.Spell) -> Bool {
+pub fn has_spell(bag: SpellBag, spell: Spell) -> Bool {
   bag.contains(bag.spells, spell)
 }
 
 /// Get all unique spells in the bag
-pub fn list_spells(bag: SpellBag) -> List(spell.Spell) {
+pub fn list_spells(bag: SpellBag) -> List(Spell) {
   bag.spells
   |> bag.to_list
   |> list.map(fn(spell_and_count) {
@@ -45,7 +45,7 @@ pub fn list_spells(bag: SpellBag) -> List(spell.Spell) {
 }
 
 /// Get all spell stacks (spell + count)
-pub fn list_spell_stacks(bag: SpellBag) -> List(#(spell.Spell, Int)) {
+pub fn list_spell_stacks(bag: SpellBag) -> List(#(Spell, Int)) {
   bag.spells
   |> bag.to_list
 }
@@ -63,7 +63,7 @@ pub fn unique_spell_count(bag: SpellBag) -> Int {
 
 pub fn transfer_to_wand(
   bag: SpellBag,
-  spell: spell.Spell,
+  spell: Spell,
   wand: wand.Wand,
   slot_index: Int,
 ) -> Result(#(SpellBag, wand.Wand), TransferError) {

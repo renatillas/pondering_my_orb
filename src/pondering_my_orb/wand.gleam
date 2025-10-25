@@ -1,15 +1,15 @@
 import gleam/float
-import gleam/option
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import iv
-import pondering_my_orb/spell
-import vec/vec3
+import pondering_my_orb/spell.{type Spell}
+import vec/vec3.{type Vec3}
 
 /// Represents a wand with spell slots
 pub type Wand {
   Wand(
     name: String,
-    slots: iv.Array(option.Option(spell.Spell)),
+    slots: iv.Array(Option(Spell)),
     max_mana: Float,
     current_mana: Float,
     mana_recharge_rate: Float,
@@ -44,31 +44,27 @@ pub fn new(
   recharge_time recharge_time: Float,
 ) -> Wand {
   Wand(
-    name: name,
-    slots: iv.repeat(option.None, slot_count),
-    max_mana: max_mana,
+    name:,
+    slots: iv.repeat(None, slot_count),
+    max_mana:,
     current_mana: max_mana,
-    mana_recharge_rate: mana_recharge_rate,
-    cast_delay: cast_delay,
-    recharge_time: recharge_time,
+    mana_recharge_rate:,
+    cast_delay:,
+    recharge_time:,
   )
 }
 
-pub fn set_spell(
-  wand: Wand,
-  slot_index: Int,
-  spell: spell.Spell,
-) -> Result(Wand, Nil) {
+pub fn set_spell(wand: Wand, slot_index: Int, spell: Spell) -> Result(Wand, Nil) {
   case iv.get(wand.slots, slot_index) {
-    Ok(option.None) -> {
+    Ok(None) -> {
       use slots <- result.map(iv.insert(
         into: wand.slots,
         at: slot_index,
-        this: option.Some(spell),
+        this: Some(spell),
       ))
       Wand(..wand, slots:)
     }
-    Error(Nil) | Ok(option.Some(_)) -> Error(Nil)
+    Error(Nil) | Ok(Some(_)) -> Error(Nil)
   }
 }
 
@@ -77,10 +73,7 @@ pub fn remove_spell(wand: Wand, slot_index: Int) -> Result(Wand, Nil) {
   Wand(..wand, slots:)
 }
 
-pub fn get_spell(
-  wand: Wand,
-  slot_index: Int,
-) -> Result(option.Option(spell.Spell), Nil) {
+pub fn get_spell(wand: Wand, slot_index: Int) -> Result(Option(Spell), Nil) {
   wand.slots
   |> iv.get(slot_index)
 }
@@ -90,8 +83,8 @@ pub fn get_spell(
 pub fn cast(
   wand: Wand,
   start_index: Int,
-  position: vec3.Vec3(Float),
-  direction: vec3.Vec3(Float),
+  position: Vec3(Float),
+  direction: Vec3(Float),
   projectile_starting_index: Int,
 ) -> #(CastResult, Wand) {
   case start_index >= iv.length(wand.slots) {
@@ -103,8 +96,8 @@ pub fn cast(
         |> iv.drop_first(start_index)
         |> iv.filter_map(fn(slot) {
           case slot {
-            option.Some(spell) -> Ok(spell)
-            option.None -> Error(Nil)
+            Some(spell) -> Ok(spell)
+            None -> Error(Nil)
           }
         })
 
@@ -125,11 +118,11 @@ pub fn cast(
 /// Process a sequence of spells, collecting modifiers until a damaging spell is found
 fn process_spell_sequence(
   wand: Wand,
-  spells: iv.Array(spell.Spell),
+  spells: iv.Array(Spell),
   accumulated_modifiers: iv.Array(spell.ModifierSpell),
   current_index: Int,
-  position: vec3.Vec3(Float),
-  direction: vec3.Vec3(Float),
+  position: Vec3(Float),
+  direction: Vec3(Float),
   projectile_starting_index: Int,
 ) -> #(CastResult, Wand) {
   case spells == iv.new(), accumulated_modifiers == iv.new() {
@@ -208,8 +201,8 @@ pub fn spell_count(wand: Wand) -> Int {
   wand.slots
   |> iv.filter(fn(slot) {
     case slot {
-      option.Some(_) -> True
-      option.None -> False
+      Some(_) -> True
+      None -> False
     }
   })
   |> iv.length
@@ -217,8 +210,8 @@ pub fn spell_count(wand: Wand) -> Int {
 
 pub fn is_slot_empty(wand: Wand, slot_index: Int) -> Bool {
   case get_spell(wand, slot_index) {
-    Ok(option.None) -> True
-    Ok(option.Some(_)) -> False
+    Ok(None) -> True
+    Ok(Some(_)) -> False
     Error(Nil) -> True
   }
 }

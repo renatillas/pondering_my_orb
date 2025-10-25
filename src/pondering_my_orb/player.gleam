@@ -1,20 +1,20 @@
 import gleam/float
 import gleam/int
 import gleam/list
-import gleam/option
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam_community/maths
-import pondering_my_orb/enemy
+import pondering_my_orb/enemy.{type Enemy}
 import pondering_my_orb/spell
 import pondering_my_orb/wand
-import tiramisu/effect
+import tiramisu/effect.{type Effect}
 import tiramisu/geometry
 import tiramisu/input
 import tiramisu/material
 import tiramisu/physics
 import tiramisu/scene
 import tiramisu/transform
-import vec/vec3
+import vec/vec3.{type Vec3, Vec3}
 import vec/vec3f
 
 const mouse_sensitivity = 0.003
@@ -48,9 +48,9 @@ pub type Player {
     current_health: Int,
     // Movement
     speed: Float,
-    position: vec3.Vec3(Float),
-    rotation: vec3.Vec3(Float),
-    velocity: vec3.Vec3(Float),
+    position: Vec3(Float),
+    rotation: Vec3(Float),
+    velocity: Vec3(Float),
     // Taking damage
     invulnerability_duration: Float,
     time_since_taking_damage: Float,
@@ -69,8 +69,8 @@ pub type Player {
 pub fn new(
   health health: Int,
   speed speed: Float,
-  position position: vec3.Vec3(Float),
-  rotation rotation: vec3.Vec3(Float),
+  position position: Vec3(Float),
+  rotation rotation: Vec3(Float),
   invulnerability_duration invulnerability_duration: Float,
   time_since_taking_damage time_since_taking_damage: Float,
   is_vulnerable is_vulnerable: Bool,
@@ -149,15 +149,15 @@ pub fn init() -> Player {
       max_mana: 100.0,
       mana_recharge_rate: 10.0,
       cast_delay: 1.0,
-      recharge_time: 1.0,
+      recharge_time: 10.0,
     )
     |> wand.set_spell(0, spell.fireball())
 
   new(
     health: 100,
     speed: 5.0,
-    position: vec3.Vec3(0.0, 2.0, 0.0),
-    rotation: vec3.Vec3(0.0, 0.0, 0.0),
+    position: Vec3(0.0, 2.0, 0.0),
+    rotation: Vec3(0.0, 0.0, 0.0),
     invulnerability_duration:,
     time_since_taking_damage: 0.0,
     is_vulnerable: False,
@@ -170,7 +170,7 @@ pub fn init() -> Player {
   )
 }
 
-pub fn with_position(player: Player, position: vec3.Vec3(Float)) -> Player {
+pub fn with_position(player: Player, position: Vec3(Float)) -> Player {
   Player(..player, position: position)
 }
 
@@ -196,9 +196,9 @@ fn calculate_velocity(
   input_state: input.InputState,
   bindings: input.InputBindings(PlayerAction),
   player_move_speed: Float,
-  player_velocity: vec3.Vec3(Float),
+  player_velocity: Vec3(Float),
   directions: #(#(Float, Float), #(Float, Float)),
-) -> vec3.Vec3(Float) {
+) -> Vec3(Float) {
   let #(forward_x, forward_z) = directions.0
   let #(right_x, right_z) = directions.1
 
@@ -238,19 +238,19 @@ fn calculate_velocity(
     _, _ -> velocity_z
   }
 
-  vec3.Vec3(velocity_x, player_velocity.y, velocity_z)
+  Vec3(velocity_x, player_velocity.y, velocity_z)
 }
 
 pub fn handle_input(
   player: Player,
-  velocity player_velocity: vec3.Vec3(Float),
+  velocity player_velocity: Vec3(Float),
   input_state input_state: input.InputState,
   bindings bindings: input.InputBindings(PlayerAction),
   pointer_locked pointer_locked: Bool,
   physics_world physics_world: physics.PhysicsWorld(id),
   pointer_locked_msg pointer_locked_msg: msg,
   pointer_lock_failed_msg pointer_lock_failed_msg: msg,
-) -> #(Player, vec3.Vec3(Float), Bool, List(effect.Effect(msg))) {
+) -> #(Player, Vec3(Float), Bool, List(Effect(msg))) {
   let #(pointer_locked, effects) =
     handle_pointer_locked(
       pointer_locked,
@@ -258,7 +258,7 @@ pub fn handle_input(
       pointer_locked_msg,
       pointer_lock_failed_msg,
     )
-  let vec3.Vec3(player_pitch, player_yaw, player_roll) = player.rotation
+  let Vec3(player_pitch, player_yaw, player_roll) = player.rotation
   let #(mouse_dx, _mouse_dy) = input.mouse_delta(input_state)
 
   let player_yaw = case pointer_locked {
@@ -282,7 +282,7 @@ pub fn handle_input(
   let updated_player =
     Player(
       ..player,
-      rotation: vec3.Vec3(player_pitch, player_yaw, player_roll),
+      rotation: Vec3(player_pitch, player_yaw, player_roll),
       velocity:,
     )
 
@@ -294,12 +294,12 @@ fn calculate_jump(
   physics_world: physics.PhysicsWorld(id),
   input_state: input.InputState,
   bindings: input.InputBindings(PlayerAction),
-) -> vec3.Vec3(Float) {
+) -> Vec3(Float) {
   let raycast_origin =
-    vec3.Vec3(player.position.x, player.position.y -. 1.6, player.position.z)
+    Vec3(player.position.x, player.position.y -. 1.6, player.position.z)
 
   // Cast ray purely horizontally forward
-  let raycast_direction = vec3.Vec3(0.0, -0.5, 0.0)
+  let raycast_direction = Vec3(0.0, -0.5, 0.0)
 
   case
     physics.raycast(
@@ -310,7 +310,7 @@ fn calculate_jump(
     ),
     input.is_action_just_pressed(input_state, bindings, Jump)
   {
-    Ok(_), True -> vec3.Vec3(0.0, jumping_speed, 0.0)
+    Ok(_), True -> Vec3(0.0, jumping_speed, 0.0)
     _, _ -> vec3f.zero
   }
 }
@@ -344,12 +344,37 @@ pub fn take_damage(player: Player, damage: Int) -> Player {
 
 pub fn update(
   player: Player,
-  nearest_enemy: Result(enemy.Enemy(id), Nil),
+  nearest_enemy: Result(Enemy(id), Nil),
   delta_time: Float,
-) -> #(Player, Result(wand.CastResult, Nil)) {
+) -> #(Player, Option(spell.Projectile)) {
   let #(player, cast_result) =
     result.map(nearest_enemy, cast_spell(player, _, delta_time /. 1000.0))
     |> result.unwrap(#(player, Error(Nil)))
+
+  // TODO: Handle next cast index & other cases
+  let #(player, projectile) = case cast_result {
+    Ok(wand.CastSuccess(projectile, remaining_mana, _next_cast_index)) -> {
+      let player =
+        Player(
+          ..player,
+          wand: wand.Wand(..player.wand, current_mana: remaining_mana),
+        )
+
+      #(player, Some(projectile))
+    }
+    Ok(wand.NotEnoughMana(_required, _available)) -> {
+      #(player, None)
+    }
+    Ok(wand.NoSpellToCast) -> {
+      #(player, None)
+    }
+    Ok(wand.WandEmpty) -> {
+      #(player, None)
+    }
+    Error(_) -> {
+      #(player, None)
+    }
+  }
 
   let time_since_taking_damage =
     player.time_since_taking_damage +. delta_time /. 1000.0
@@ -373,19 +398,25 @@ pub fn update(
     False -> player
   }
 
-  #(player, cast_result)
+  let player =
+    Player(
+      ..player,
+      wand: wand.recharge_mana(player.wand, delta_time /. 1000.0),
+    )
+
+  #(player, projectile)
 }
 
 fn cast_spell(
   player: Player,
-  nearest_enemy: enemy.Enemy(id),
+  nearest_enemy: Enemy(id),
   delta_time: Float,
 ) -> #(Player, Result(wand.CastResult, Nil)) {
   let time_since_last_cast = player.auto_cast.time_since_last_cast +. delta_time
-  case echo time_since_last_cast >=. player.wand.cast_delay {
+  case time_since_last_cast >=. player.wand.cast_delay {
     True -> {
       let normalized_direction =
-        vec3.Vec3(
+        Vec3(
           nearest_enemy.position.x -. player.position.x,
           nearest_enemy.position.y -. player.position.y,
           nearest_enemy.position.z -. player.position.z,
@@ -409,8 +440,8 @@ fn cast_spell(
 
 pub fn nearest_enemy_position(
   player: Player,
-  enemies: List(enemy.Enemy(id)),
-) -> Result(enemy.Enemy(id), Nil) {
+  enemies: List(Enemy(id)),
+) -> Result(Enemy(id), Nil) {
   let nearest_enemy_position =
     list.sort(enemies, fn(enemy1, enemy2) {
       float.compare(
@@ -448,7 +479,7 @@ fn handle_pointer_locked(
   input: input.InputState,
   pointer_locked_msg: msg,
   pointer_lock_failed_msg: msg,
-) -> #(Bool, List(effect.Effect(msg))) {
+) -> #(Bool, List(Effect(msg))) {
   let should_request_lock = case pointer_locked {
     False -> input.is_left_button_just_pressed(input)
     True -> False
