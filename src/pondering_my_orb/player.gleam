@@ -21,8 +21,6 @@ const mouse_sensitivity = 0.003
 
 const jumping_speed = 15.0
 
-const invulnerability_duration = 3.0
-
 const passive_heal_delay = 6.0
 
 const passive_heal_rate = 2
@@ -52,9 +50,7 @@ pub type Player {
     rotation: Vec3(Float),
     velocity: Vec3(Float),
     // Taking damage
-    invulnerability_duration: Float,
     time_since_taking_damage: Float,
-    is_vulnerable: Bool,
     // Healing
     passive_heal_delay: Float,
     passive_heal_rate: Int,
@@ -71,9 +67,7 @@ pub fn new(
   speed speed: Float,
   position position: Vec3(Float),
   rotation rotation: Vec3(Float),
-  invulnerability_duration invulnerability_duration: Float,
   time_since_taking_damage time_since_taking_damage: Float,
-  is_vulnerable is_vulnerable: Bool,
   passive_heal_delay passive_heal_delay: Float,
   passive_heal_rate passive_heal_rate: Int,
   passive_heal_interval passive_heal_interval: Float,
@@ -87,9 +81,7 @@ pub fn new(
     speed:,
     position:,
     rotation:,
-    invulnerability_duration:,
     time_since_taking_damage:,
-    is_vulnerable:,
     passive_heal_delay:,
     passive_heal_rate:,
     passive_heal_interval:,
@@ -109,16 +101,8 @@ pub fn render(id: id, player: Player) {
       radial_segments: 10,
     )
 
-  let health_percentage = player.current_health * 100 / player.max_health
-  let color = case health_percentage {
-    p if p >= 75 -> 0x00ff00
-    p if p >= 50 -> 0xaaff00
-    p if p >= 25 -> 0xffaa00
-    _ -> 0xff0000
-  }
-
   let assert Ok(material) =
-    material.new() |> material.with_color(color) |> material.build()
+    material.new() |> material.with_color(0xffff00) |> material.build()
   scene.mesh(
     id:,
     geometry: capsule,
@@ -133,6 +117,7 @@ pub fn render(id: id, player: Player) {
         radius: 0.5,
       ))
       |> physics.with_restitution(0.0)
+      |> physics.with_mass(70.0)
       |> physics.with_friction(0.0)
       |> physics.with_lock_rotation_x()
       |> physics.with_lock_rotation_z()
@@ -151,16 +136,14 @@ pub fn init() -> Player {
       cast_delay: 1.0,
       recharge_time: 10.0,
     )
-    |> wand.set_spell(0, spell.fireball())
+    |> wand.set_spell(0, spell.spark())
 
   new(
     health: 100,
     speed: 5.0,
     position: Vec3(0.0, 2.0, 0.0),
     rotation: Vec3(0.0, 0.0, 0.0),
-    invulnerability_duration:,
     time_since_taking_damage: 0.0,
-    is_vulnerable: False,
     passive_heal_delay:,
     passive_heal_rate:,
     passive_heal_interval:,
@@ -247,23 +230,41 @@ pub fn handle_input(
   input_state input_state: input.InputState,
   bindings bindings: input.InputBindings(PlayerAction),
   pointer_locked pointer_locked: Bool,
+  camera_pitch camera_pitch: Float,
   physics_world physics_world: physics.PhysicsWorld(id),
   pointer_locked_msg pointer_locked_msg: msg,
   pointer_lock_failed_msg pointer_lock_failed_msg: msg,
-) -> #(Player, Vec3(Float), Bool, List(Effect(msg))) {
-  let #(pointer_locked, effects) =
+) -> #(Player, Vec3(Float), Float, List(Effect(msg))) {
+  let effects =
     handle_pointer_locked(
       pointer_locked,
       input_state,
       pointer_locked_msg,
       pointer_lock_failed_msg,
     )
-  let Vec3(player_pitch, player_yaw, player_roll) = player.rotation
-  let #(mouse_dx, _mouse_dy) = input.mouse_delta(input_state)
+  let Vec3(_player_pitch, player_yaw, player_roll) = player.rotation
+  let #(mouse_dx, mouse_dy) = input.mouse_delta(input_state)
 
+  // Update player yaw (horizontal rotation only)
   let player_yaw = case pointer_locked {
     True -> player_yaw -. mouse_dx *. mouse_sensitivity
     False -> player_yaw
+  }
+
+  // Update camera pitch (vertical rotation, separate from player)
+  let camera_pitch = case pointer_locked {
+    True -> {
+      let new_pitch = camera_pitch +. mouse_dy *. mouse_sensitivity
+      // Clamp pitch to prevent camera flipping (roughly -89 to 89 degrees)
+      let max_pitch = maths.pi() /. 2.0 -. 0.1
+      let min_pitch = -1.0 *. max_pitch
+      case new_pitch {
+        p if p >. max_pitch -> max_pitch
+        p if p <. min_pitch -> min_pitch
+        _ -> new_pitch
+      }
+    }
+    False -> camera_pitch
   }
 
   let direction = direction_from_yaw(player_yaw)
@@ -280,13 +281,9 @@ pub fn handle_input(
   let impulse = calculate_jump(player, physics_world, input_state, bindings)
 
   let updated_player =
-    Player(
-      ..player,
-      rotation: Vec3(player_pitch, player_yaw, player_roll),
-      velocity:,
-    )
+    Player(..player, rotation: Vec3(0.0, player_yaw, player_roll), velocity:)
 
-  #(updated_player, impulse, pointer_locked, effects)
+  #(updated_player, impulse, camera_pitch, effects)
 }
 
 fn calculate_jump(
@@ -316,30 +313,20 @@ fn calculate_jump(
 }
 
 pub fn take_damage(player: Player, damage: Int) -> Player {
-  case player.is_vulnerable {
-    True -> {
-      let new_health = player.current_health - damage
-      let capped_health = case new_health < 0 {
-        True -> 0
-        False -> new_health
-      }
-
-      echo "Player took "
-        <> int.to_string(damage)
-        <> " damage! Health: "
-        <> int.to_string(capped_health)
-        <> "/"
-        <> int.to_string(player.max_health)
-
-      Player(
-        ..player,
-        current_health: capped_health,
-        time_since_taking_damage: 0.0,
-        is_vulnerable: False,
-      )
-    }
-    False -> player
+  let new_health = player.current_health - damage
+  let capped_health = case new_health < 0 {
+    True -> 0
+    False -> new_health
   }
+
+  echo "Player took "
+    <> int.to_string(damage)
+    <> " damage! Health: "
+    <> int.to_string(capped_health)
+    <> "/"
+    <> int.to_string(player.max_health)
+
+  Player(..player, current_health: capped_health, time_since_taking_damage: 0.0)
 }
 
 pub fn update(
@@ -378,14 +365,10 @@ pub fn update(
 
   let time_since_taking_damage =
     player.time_since_taking_damage +. delta_time /. 1000.0
-  let is_vulnerable =
-    time_since_taking_damage >=. player.invulnerability_duration
 
-  let player = Player(..player, time_since_taking_damage:, is_vulnerable:)
+  let player = Player(..player, time_since_taking_damage:)
 
-  let player = case
-    player.time_since_taking_damage >=. player.passive_heal_delay
-  {
+  let player = case time_since_taking_damage >=. player.passive_heal_delay {
     True -> {
       let time_since_last_passive_heal =
         player.time_since_last_passive_heal +. delta_time /. 1000.0
@@ -479,7 +462,7 @@ fn handle_pointer_locked(
   input: input.InputState,
   pointer_locked_msg: msg,
   pointer_lock_failed_msg: msg,
-) -> #(Bool, List(Effect(msg))) {
+) -> List(Effect(msg)) {
   let should_request_lock = case pointer_locked {
     False -> input.is_left_button_just_pressed(input)
     True -> False
@@ -494,17 +477,13 @@ fn handle_pointer_locked(
     False -> effect.none()
   }
 
-  let #(should_exit_pointer_lock, exit_lock_effect) = case
+  let exit_lock_effect = case
     input.is_key_just_pressed(input, input.Escape),
     pointer_locked
   {
-    True, True -> #(True, effect.exit_pointer_lock())
-    _, _ -> #(False, effect.none())
+    True, True -> effect.exit_pointer_lock()
+    _, _ -> effect.none()
   }
 
-  let pointer_locked = case should_exit_pointer_lock {
-    True -> False
-    False -> pointer_locked
-  }
-  #(pointer_locked, [pointer_lock_effect, exit_lock_effect])
+  [pointer_lock_effect, exit_lock_effect]
 }

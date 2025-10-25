@@ -19,6 +19,8 @@ pub type Enemy(id) {
     current_health: Int,
     damage: Int,
     damage_range: Float,
+    attack_cooldown: Float,
+    time_since_last_attack: Float,
     speed: Float,
     position: Vec3(Float),
     velocity: Vec3(Float),
@@ -31,6 +33,7 @@ pub fn new(
   health health: Int,
   damage damage: Int,
   damage_range damage_range: Float,
+  attack_cooldown attack_cooldown: Float,
   speed speed: Float,
   position position: Vec3(Float),
 ) {
@@ -42,7 +45,7 @@ pub fn new(
       radius: 0.5,
     ))
     |> physics.with_friction(0.0)
-    |> physics.with_angular_damping(100.0)
+    |> physics.with_linear_damping(2.0)
     |> physics.with_lock_rotation_x()
     |> physics.with_lock_rotation_z()
     |> physics.build()
@@ -53,6 +56,8 @@ pub fn new(
     current_health: health,
     damage:,
     damage_range:,
+    attack_cooldown:,
+    time_since_last_attack: attack_cooldown,
     speed:,
     position:,
     velocity: vec3f.zero,
@@ -80,7 +85,15 @@ pub fn render(enemy: Enemy(id)) -> scene.Node(id) {
 }
 
 pub fn basic(id id: id, position position: Vec3(Float)) {
-  new(id:, health: 10, damage: 10, damage_range: 1.0, speed: 3.0, position:)
+  new(
+    id:,
+    health: 20,
+    damage: 10,
+    damage_range: 1.0,
+    attack_cooldown: 1.0,
+    speed: 3.0,
+    position:,
+  )
 }
 
 /// Apply velocity to enemy's physics body to move towards target
@@ -89,7 +102,8 @@ pub fn update(
   target target: Vec3(Float),
   enemy_velocity enemy_velocity: Vec3(Float),
   physics_world physics_world: physics.PhysicsWorld(Id),
-  enemy_attacks_player_msg enemy_attacks_player_msg: fn(Int) -> msg,
+  delta_time delta_time: Float,
+  enemy_attacks_player_msg enemy_attacks_player_msg: fn(Int, Vec3(Float)) -> msg,
 ) -> #(Enemy(id), Effect(msg)) {
   // Calculate direction to target (keep it horizontal)
   let direction =
@@ -108,15 +122,25 @@ pub fn update(
   let velocity =
     Vec3(horizontal_velocity.x, climb_velocity, horizontal_velocity.z)
 
-  let effects = case can_damage(enemy, target) {
-    True ->
+  // Update attack cooldown timer
+  let time_since_last_attack = enemy.time_since_last_attack +. delta_time
+
+  // Check if enemy can attack (in range AND cooldown expired)
+  let can_attack =
+    can_damage(enemy, target)
+    && time_since_last_attack >=. enemy.attack_cooldown
+
+  let #(time_since_last_attack, effects) = case can_attack {
+    True -> #(
+      0.0,
       effect.from(fn(dispatch) {
-        dispatch(enemy_attacks_player_msg(enemy.damage))
-      })
-    False -> effect.none()
+        dispatch(enemy_attacks_player_msg(enemy.damage, enemy.position))
+      }),
+    )
+    False -> #(time_since_last_attack, effect.none())
   }
 
-  #(Enemy(..enemy, velocity:), effects)
+  #(Enemy(..enemy, velocity:, time_since_last_attack:), effects)
 }
 
 fn climb_velocity(

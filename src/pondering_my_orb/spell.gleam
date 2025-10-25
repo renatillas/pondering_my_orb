@@ -200,36 +200,84 @@ pub fn lightning() -> Spell {
   )
 }
 
-pub fn update(
+pub type ProjectileHit(id) {
+  ProjectileHit(enemy_id: id, damage: Float, projectile_direction: Vec3(Float))
+}
+
+/// Update projectiles and return hit information for knockback
+pub fn update_with_hits(
   projectiles: List(Projectile),
-  nearest_enemy: Result(Enemy(id), Nil),
+  enemies: List(Enemy(id)),
   delta_time: Float,
-  damage_nearest_enemy_msg: fn(id, Float) -> msg,
-) -> #(List(Projectile), effect.Effect(msg)) {
-  let #(collided, remaining) =
+  damage_enemy_msg: fn(id, Float, Vec3(Float)) -> msg,
+) -> #(List(Projectile), effect.Effect(msg), List(ProjectileHit(id))) {
+  let updated_projectiles =
     list.map(projectiles, update_position(_, delta_time /. 1000.0))
-    |> list.partition(collided_with_enemy(_, nearest_enemy))
 
-  let total_damage =
-    list.fold(collided, 0.0, fn(acc, projectile) {
-      acc +. projectile.spell.final_damage
-    })
+  // Check each projectile against each enemy for collisions
+  let #(hits, remaining_projectiles) =
+    list.fold(
+      over: updated_projectiles,
+      from: #([], []),
+      with: fn(acc, projectile) {
+        let #(hits, remaining) = acc
 
+        // Find which enemy (if any) this projectile hit
+        let hit_enemy =
+          list.find(enemies, fn(enemy) {
+            vec3f.distance(projectile.position, enemy.position) <=. 1.0
+          })
+
+        case hit_enemy {
+          Ok(enemy) -> {
+            // Projectile hit this enemy
+            let hit =
+              ProjectileHit(
+                enemy.id,
+                projectile.spell.final_damage,
+                projectile.direction,
+              )
+            #([hit, ..hits], remaining)
+          }
+          Error(_) -> {
+            // Projectile didn't hit anything, keep it
+            #(hits, [projectile, ..remaining])
+          }
+        }
+      },
+    )
+
+  // Filter out projectiles that have exceeded their lifetime
   let final_projectiles =
-    remaining
+    remaining_projectiles
     |> list.filter(fn(projectile) {
       projectile.time_alive <. projectile.spell.final_lifetime
     })
 
-  let effect = case nearest_enemy {
-    Error(_) -> effect.none()
-    Ok(enemy) ->
+  // Create effects for each hit enemy
+  let effects =
+    list.map(hits, fn(hit) {
       effect.from(fn(dispatch) {
-        dispatch(damage_nearest_enemy_msg(enemy.id, total_damage))
+        dispatch(damage_enemy_msg(
+          hit.enemy_id,
+          hit.damage,
+          hit.projectile_direction,
+        ))
       })
-  }
+    })
 
-  #(final_projectiles, effect)
+  #(final_projectiles, effect.batch(effects), hits)
+}
+
+pub fn update(
+  projectiles: List(Projectile),
+  enemies: List(Enemy(id)),
+  delta_time: Float,
+  damage_enemy_msg: fn(id, Float, Vec3(Float)) -> msg,
+) -> #(List(Projectile), effect.Effect(msg)) {
+  let #(projectiles, effect, _hits) =
+    update_with_hits(projectiles, enemies, delta_time, damage_enemy_msg)
+  #(projectiles, effect)
 }
 
 fn update_position(projectile: Projectile, delta_time: Float) -> Projectile {
@@ -248,16 +296,6 @@ fn update_position(projectile: Projectile, delta_time: Float) -> Projectile {
     position: Vec3(new_x, new_y, new_z),
     time_alive: new_time_alive,
   )
-}
-
-fn collided_with_enemy(
-  projectile: Projectile,
-  enemy: Result(Enemy(id), Nil),
-) -> Bool {
-  case enemy {
-    Ok(enemy) -> vec3f.distance(projectile.position, enemy.position) <=. 1.0
-    Error(_) -> False
-  }
 }
 
 pub fn view(

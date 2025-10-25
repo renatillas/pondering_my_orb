@@ -57,10 +57,10 @@ pub fn new(
 pub fn set_spell(wand: Wand, slot_index: Int, spell: Spell) -> Result(Wand, Nil) {
   case iv.get(wand.slots, slot_index) {
     Ok(None) -> {
-      use slots <- result.map(iv.insert(
-        into: wand.slots,
+      use slots <- result.map(iv.set(
+        wand.slots,
         at: slot_index,
-        this: Some(spell),
+        to: Some(spell),
       ))
       Wand(..wand, slots:)
     }
