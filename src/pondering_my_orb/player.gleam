@@ -6,6 +6,7 @@ import gleam/result
 import gleam_community/maths
 import pondering_my_orb/enemy.{type Enemy}
 import pondering_my_orb/spell
+import pondering_my_orb/spell_bag
 import pondering_my_orb/wand
 import tiramisu/effect.{type Effect}
 import tiramisu/geometry
@@ -36,7 +37,7 @@ pub type PlayerAction {
 }
 
 pub type AutoCast {
-  AutoCast(time_since_last_cast: Float)
+  AutoCast(time_since_last_cast: Float, current_spell_index: Int)
 }
 
 pub type Player {
@@ -58,6 +59,7 @@ pub type Player {
     time_since_last_passive_heal: Float,
     // Spell casting
     wand: wand.Wand,
+    spell_bag: spell_bag.SpellBag,
     auto_cast: AutoCast,
   )
 }
@@ -73,6 +75,7 @@ pub fn new(
   passive_heal_interval passive_heal_interval: Float,
   time_since_last_passive_heal time_since_last_passive_heal: Float,
   wand wand: wand.Wand,
+  spell_bag spell_bag: spell_bag.SpellBag,
   auto_cast auto_cast: AutoCast,
 ) -> Player {
   Player(
@@ -87,6 +90,7 @@ pub fn new(
     passive_heal_interval:,
     time_since_last_passive_heal:,
     wand:,
+    spell_bag:,
     auto_cast:,
     velocity: vec3f.zero,
   )
@@ -130,13 +134,19 @@ pub fn init() -> Player {
   let assert Ok(wand) =
     wand.new(
       name: "Player's Wand",
-      slot_count: 1,
+      slot_count: 5,
       max_mana: 100.0,
       mana_recharge_rate: 10.0,
-      cast_delay: 1.0,
-      recharge_time: 10.0,
+      cast_delay: 0.01,
+      recharge_time: 0.5,
     )
     |> wand.set_spell(0, spell.spark())
+
+  let spell_bag =
+    spell_bag.new()
+    |> spell_bag.add_spells(spell.spark(), 3)
+    |> spell_bag.add_spells(spell.fireball(), 2)
+    |> spell_bag.add_spell(spell.lightning())
 
   new(
     health: 100,
@@ -149,7 +159,8 @@ pub fn init() -> Player {
     passive_heal_interval:,
     time_since_last_passive_heal: 0.0,
     wand:,
-    auto_cast: AutoCast(time_since_last_cast: 0.0),
+    spell_bag:,
+    auto_cast: AutoCast(time_since_last_cast: 0.0, current_spell_index: 0),
   )
 }
 
@@ -338,24 +349,46 @@ pub fn update(
     result.map(nearest_enemy, cast_spell(player, _, delta_time /. 1000.0))
     |> result.unwrap(#(player, Error(Nil)))
 
-  // TODO: Handle next cast index & other cases
   let #(player, projectile) = case cast_result {
-    Ok(wand.CastSuccess(projectile, remaining_mana, _next_cast_index)) -> {
+    Ok(wand.CastSuccess(projectile, remaining_mana, next_cast_index)) -> {
       let player =
         Player(
           ..player,
           wand: wand.Wand(..player.wand, current_mana: remaining_mana),
+          auto_cast: AutoCast(
+            time_since_last_cast: player.auto_cast.time_since_last_cast,
+            current_spell_index: next_cast_index,
+          ),
         )
 
       #(player, Some(projectile))
     }
     Ok(wand.NotEnoughMana(_required, _available)) -> {
+      // Keep current index, don't reset timer - wait for more mana
       #(player, None)
     }
     Ok(wand.NoSpellToCast) -> {
+      // No damage spell found, reset to beginning after recharge_time
+      let player =
+        Player(
+          ..player,
+          auto_cast: AutoCast(
+            time_since_last_cast: -1.0 *. player.wand.recharge_time,
+            current_spell_index: 0,
+          ),
+        )
       #(player, None)
     }
     Ok(wand.WandEmpty) -> {
+      // Finished all spells, reset to beginning after recharge_time
+      let player =
+        Player(
+          ..player,
+          auto_cast: AutoCast(
+            time_since_last_cast: -1.0 *. player.wand.recharge_time,
+            current_spell_index: 0,
+          ),
+        )
       #(player, None)
     }
     Error(_) -> {
@@ -407,15 +440,34 @@ fn cast_spell(
         |> vec3f.normalize()
 
       let #(cast_result, wand) =
-        wand.cast(player.wand, 0, player.position, normalized_direction, 0)
+        wand.cast(
+          player.wand,
+          player.auto_cast.current_spell_index,
+          player.position,
+          normalized_direction,
+          0,
+        )
 
       #(
-        Player(..player, auto_cast: AutoCast(time_since_last_cast: 0.0), wand:),
+        Player(
+          ..player,
+          auto_cast: AutoCast(
+            time_since_last_cast: 0.0,
+            current_spell_index: player.auto_cast.current_spell_index,
+          ),
+          wand:,
+        ),
         Ok(cast_result),
       )
     }
     False -> #(
-      Player(..player, auto_cast: AutoCast(time_since_last_cast)),
+      Player(
+        ..player,
+        auto_cast: AutoCast(
+          time_since_last_cast,
+          current_spell_index: player.auto_cast.current_spell_index,
+        ),
+      ),
       Error(Nil),
     )
   }

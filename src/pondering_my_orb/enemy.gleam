@@ -1,5 +1,7 @@
 import gleam/option.{Some}
 import gleam/result
+import gleam_community/maths
+import pondering_my_orb/health_bar
 import pondering_my_orb/id.{type Id}
 import tiramisu/effect.{type Effect}
 import tiramisu/geometry
@@ -65,7 +67,13 @@ pub fn new(
   )
 }
 
-pub fn render(enemy: Enemy(id)) -> scene.Node(id) {
+pub fn render(enemy: Enemy(Id), camera_position: Vec3(Float)) -> scene.Node(Id) {
+  // Extract the enemy ID number
+  let enemy_id_num = case enemy.id {
+    id.Enemy(_, num) -> num
+    _ -> 0
+  }
+
   let assert Ok(capsule) =
     geometry.cylinder(
       radius_top: 0.5,
@@ -75,12 +83,44 @@ pub fn render(enemy: Enemy(id)) -> scene.Node(id) {
     )
   let assert Ok(material) =
     material.new() |> material.with_color(0xff0000) |> material.build()
-  scene.mesh(
-    enemy.id,
-    geometry: capsule,
-    material:,
-    transform: transform.at(enemy.position),
-    physics: Some(enemy.physics_body),
+
+  // Create health bar picture
+  let health_bar_picture =
+    health_bar.create(enemy.current_health, enemy.max_health)
+
+  // Calculate billboard rotation to face camera
+  let health_bar_position =
+    Vec3(enemy.position.x, enemy.position.y +. 1.5, enemy.position.z)
+
+  // Calculate direction from health bar to camera (for billboard)
+  let to_camera = vec3f.subtract(camera_position, health_bar_position)
+  // Use atan2 to get Y rotation to face camera
+  let y_rotation = maths.atan2(to_camera.x, to_camera.z)
+
+  scene.group(
+    id: id.enemy_group(enemy_id_num),
+    transform: transform.identity,
+    children: [
+      // Enemy mesh - physics controls its position
+      scene.mesh(
+        enemy.id,
+        geometry: capsule,
+        material:,
+        transform: transform.at(enemy.position),
+        physics: Some(enemy.physics_body),
+      ),
+      // Health bar sprite above enemy - billboard to face camera
+      scene.sprite(
+        id: id.enemy_health_bar(enemy_id_num),
+        picture: health_bar_picture,
+        texture_width: 128,
+        texture_height: 32,
+        width: 1.5,
+        height: 0.15,
+        transform: transform.at(position: health_bar_position)
+          |> transform.with_euler_rotation(Vec3(0.0, y_rotation, 0.0)),
+      ),
+    ],
   )
 }
 

@@ -9,6 +9,8 @@ import lustre/effect
 import lustre/element
 import lustre/element/html
 import pondering_my_orb/spell
+import pondering_my_orb/spell_bag
+import sortable
 import tiramisu/ui as tiramisu_ui
 
 pub type Model {
@@ -18,11 +20,26 @@ pub type Model {
     player_mana: Float,
     player_max_mana: Float,
     wand_slots: iv.Array(option.Option(spell.Spell)),
+    spell_bag: spell_bag.SpellBag,
+    drag_state: sortable.DragState,
+    inventory_open: Bool,
   )
 }
 
 pub type Msg {
   GameStateUpdated(GameState)
+  WandSortableMsg(sortable.SortableMsg(Msg))
+  BagSortableMsg(sortable.SortableMsg(Msg))
+  ToggleInventory
+  SyncInventoryToGame
+  NoOp
+}
+
+pub type UiToGameMsg {
+  UpdatePlayerInventory(
+    wand_slots: iv.Array(option.Option(spell.Spell)),
+    spell_bag: spell_bag.SpellBag,
+  )
 }
 
 pub type GameState {
@@ -32,6 +49,8 @@ pub type GameState {
     player_mana: Float,
     player_max_mana: Float,
     wand_slots: iv.Array(option.Option(spell.Spell)),
+    spell_bag: spell_bag.SpellBag,
+    inventory_open: Bool,
   )
 }
 
@@ -43,23 +62,237 @@ pub fn init(_flags) -> #(Model, effect.Effect(Msg)) {
       player_mana: 100.0,
       player_max_mana: 100.0,
       wand_slots: iv.new(),
+      spell_bag: spell_bag.new(),
+      drag_state: sortable.NoDrag,
+      inventory_open: False,
     ),
     tiramisu_ui.register_lustre(),
   )
 }
 
-pub fn update(_model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
+pub fn update(model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
   case msg {
-    GameStateUpdated(state) -> #(
-      Model(
-        player_health: state.player_health,
-        player_max_health: state.player_max_health,
-        player_mana: state.player_mana,
-        player_max_mana: state.player_max_mana,
-        wand_slots: state.wand_slots,
-      ),
-      effect.none(),
-    )
+    GameStateUpdated(state) -> {
+      // Detect inventory closing (transition from True to False) and sync changes
+      let sync_effect = case model.inventory_open, state.inventory_open {
+        True, False ->
+          tiramisu_ui.dispatch_to_tiramisu(UpdatePlayerInventory(
+            model.wand_slots,
+            model.spell_bag,
+          ))
+        _, _ -> effect.none()
+      }
+
+      // Don't overwrite wand_slots and spell_bag when inventory is open
+      // to preserve user's drag-and-drop changes
+      let #(wand_slots, spell_bag) = case model.inventory_open {
+        True -> #(model.wand_slots, model.spell_bag)
+        False -> #(state.wand_slots, state.spell_bag)
+      }
+
+      #(
+        Model(
+          player_health: state.player_health,
+          player_max_health: state.player_max_health,
+          player_mana: state.player_mana,
+          player_max_mana: state.player_max_mana,
+          wand_slots: wand_slots,
+          spell_bag: spell_bag,
+          drag_state: model.drag_state,
+          inventory_open: state.inventory_open,
+        ),
+        sync_effect,
+      )
+    }
+    ToggleInventory -> {
+      // When closing inventory, sync changes back to game
+      let sync_effect = case model.inventory_open {
+        True ->
+          tiramisu_ui.dispatch_to_tiramisu(UpdatePlayerInventory(
+            model.wand_slots,
+            model.spell_bag,
+          ))
+        False -> effect.none()
+      }
+
+      #(
+        Model(..model, inventory_open: !model.inventory_open),
+        sync_effect,
+      )
+    }
+    SyncInventoryToGame -> #(model, effect.none())
+    WandSortableMsg(sortable_msg) -> {
+      let wand_config =
+        sortable.SortableConfig(
+          on_reorder: fn(_from, _to) { WandSortableMsg(sortable.UserMsg(NoOp)) },
+          container_id: "wand-slots",
+          container_class: "flex gap-2",
+          item_class: "sortable-item",
+          dragging_class: "opacity-50 scale-105",
+          drag_over_class: "ring-2 ring-blue-400",
+          ghost_class: "opacity-30",
+          accept_from: ["spell-bag"],
+        )
+
+      let #(new_drag_state, maybe_action) =
+        sortable.update_sortable(sortable_msg, model.drag_state, wand_config)
+
+      case maybe_action {
+        option.None -> #(
+          Model(..model, drag_state: new_drag_state),
+          effect.none(),
+        )
+        option.Some(sortable.SameContainer(from_index, to_index)) -> {
+          // Reorder within wand
+          let new_slots = reorder_array(model.wand_slots, from_index, to_index)
+          #(
+            Model(..model, wand_slots: new_slots, drag_state: new_drag_state),
+            effect.none(),
+          )
+        }
+        option.Some(sortable.CrossContainer(
+          from_container,
+          from_index,
+          _to_container,
+          to_index,
+        )) -> {
+          case from_container {
+            "spell-bag" -> {
+              // Transfer from bag to wand
+              let spell_stacks = spell_bag.list_spell_stacks(model.spell_bag)
+              case
+                spell_stacks
+                |> list.drop(from_index)
+                |> list.first()
+              {
+                Ok(#(spell_to_add, _count)) -> {
+                  // Check if target slot already has a spell and add it back to bag
+                  let new_bag = case iv.get(model.wand_slots, to_index) {
+                    Ok(option.Some(existing_spell)) -> {
+                      // Add existing spell back to bag
+                      spell_bag.add_spell(model.spell_bag, existing_spell)
+                    }
+                    _ -> model.spell_bag
+                  }
+
+                  // Remove spell from bag
+                  let new_bag = spell_bag.remove_spell(new_bag, spell_to_add)
+
+                  // Add to wand at the drop position
+                  let new_slots = case
+                    iv.set(
+                      model.wand_slots,
+                      to_index,
+                      option.Some(spell_to_add),
+                    )
+                  {
+                    Ok(slots) -> slots
+                    Error(_) -> model.wand_slots
+                  }
+
+                  #(
+                    Model(
+                      ..model,
+                      wand_slots: new_slots,
+                      spell_bag: new_bag,
+                      drag_state: new_drag_state,
+                    ),
+                    effect.none(),
+                  )
+                }
+                Error(_) -> #(
+                  Model(..model, drag_state: new_drag_state),
+                  effect.none(),
+                )
+              }
+            }
+            _ -> #(Model(..model, drag_state: new_drag_state), effect.none())
+          }
+        }
+      }
+    }
+    BagSortableMsg(sortable_msg) -> {
+      let bag_config =
+        sortable.SortableConfig(
+          on_reorder: fn(_from, _to) { BagSortableMsg(sortable.UserMsg(NoOp)) },
+          container_id: "spell-bag",
+          container_class: "grid grid-cols-4 gap-2",
+          item_class: "sortable-item",
+          dragging_class: "opacity-50 scale-105",
+          drag_over_class: "ring-2 ring-purple-400",
+          ghost_class: "opacity-30",
+          accept_from: ["wand-slots"],
+        )
+
+      let #(new_drag_state, maybe_action) =
+        sortable.update_sortable(sortable_msg, model.drag_state, bag_config)
+
+      case maybe_action {
+        option.None -> #(
+          Model(..model, drag_state: new_drag_state),
+          effect.none(),
+        )
+        option.Some(sortable.CrossContainer(
+          from_container,
+          from_index,
+          _to_container,
+          _to_index,
+        )) -> {
+          case from_container {
+            "wand-slots" -> {
+              // Transfer from wand to bag
+              case iv.get(model.wand_slots, from_index) {
+                Ok(option.Some(spell)) -> {
+                  // Remove from wand
+                  let new_slots = case
+                    iv.set(model.wand_slots, from_index, option.None)
+                  {
+                    Ok(slots) -> slots
+                    Error(_) -> model.wand_slots
+                  }
+
+                  // Add to bag
+                  let new_bag = spell_bag.add_spell(model.spell_bag, spell)
+
+                  #(
+                    Model(
+                      ..model,
+                      wand_slots: new_slots,
+                      spell_bag: new_bag,
+                      drag_state: new_drag_state,
+                    ),
+                    effect.none(),
+                  )
+                }
+                _ -> #(
+                  Model(..model, drag_state: new_drag_state),
+                  effect.none(),
+                )
+              }
+            }
+            _ -> #(Model(..model, drag_state: new_drag_state), effect.none())
+          }
+        }
+        _ -> #(Model(..model, drag_state: new_drag_state), effect.none())
+      }
+    }
+    NoOp -> #(model, effect.none())
+  }
+}
+
+fn reorder_array(
+  items: iv.Array(a),
+  from_index: Int,
+  to_index: Int,
+) -> iv.Array(a) {
+  case iv.get(items, from_index), iv.delete(items, from_index) {
+    Ok(removed_item), Ok(list_without_item) -> {
+      case iv.insert(list_without_item, to_index, removed_item) {
+        Ok(reordered) -> reordered
+        Error(_) -> items
+      }
+    }
+    _, _ -> items
   }
 }
 
@@ -71,7 +304,7 @@ pub fn view(model: Model) -> element.Element(Msg) {
       ),
     ],
     [
-      // Top left corner - Player stats
+      // Top left corner - Player stats (always visible, never blurred)
       html.div(
         [
           attribute.class(
@@ -79,6 +312,7 @@ pub fn view(model: Model) -> element.Element(Msg) {
           ),
           attribute.style("image-rendering", "pixelated"),
           attribute.style("backdrop-filter", "blur(4px)"),
+          attribute.style("z-index", "200"),
         ],
         [
           // Health section
@@ -142,10 +376,58 @@ pub fn view(model: Model) -> element.Element(Msg) {
                 html.text("WAND"),
               ]),
             ]),
-            render_wand_slots(model.wand_slots),
+            render_wand_slots(model.wand_slots, model.drag_state),
           ]),
         ],
       ),
+      // Inventory screen (spell bag) - only show when inventory is open
+      case model.inventory_open {
+        True ->
+          html.div(
+            [
+              attribute.class(
+                "absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm pointer-events-auto",
+              ),
+              attribute.style("z-index", "100"),
+            ],
+            [
+              html.div(
+                [
+                  attribute.class(
+                    "p-8 bg-gradient-to-br from-purple-900/95 to-indigo-900/95 border-4 border-amber-400 rounded-lg shadow-2xl pointer-events-auto",
+                  ),
+                  attribute.style("image-rendering", "pixelated"),
+                  attribute.style("max-width", "800px"),
+                ],
+                [
+                  html.div(
+                    [attribute.class("flex items-center justify-between mb-4")],
+                    [
+                      html.div([attribute.class("flex items-center gap-2")], [
+                        html.span([attribute.class("text-purple-400 text-2xl")], [
+                          html.text("📦"),
+                        ]),
+                        html.span(
+                          [
+                            attribute.class(
+                              "text-white font-bold text-2xl tracking-wider",
+                            ),
+                          ],
+                          [html.text("SPELL BAG")],
+                        ),
+                      ]),
+                      html.div([attribute.class("text-gray-300 text-sm")], [
+                        html.text("Press I to close"),
+                      ]),
+                    ],
+                  ),
+                  render_spell_bag(model.spell_bag, model.drag_state),
+                ],
+              ),
+            ],
+          )
+        False -> html.div([], [])
+      },
     ],
   )
 }
@@ -207,16 +489,44 @@ fn health_color_class(current: Int, max: Int) -> String {
 
 fn render_wand_slots(
   slots: iv.Array(option.Option(spell.Spell)),
+  drag_state: sortable.DragState,
 ) -> element.Element(Msg) {
-  let slot_elements =
+  let sortable_items =
     slots
     |> iv.to_list()
-    |> list.map(render_spell_slot)
+    |> list.index_map(fn(slot, index) {
+      sortable.create_sortable_item("wand-" <> int.to_string(index), slot)
+    })
 
-  html.div([attribute.class("flex gap-2")], slot_elements)
+  let config =
+    sortable.SortableConfig(
+      on_reorder: fn(_from, _to) { WandSortableMsg(sortable.UserMsg(NoOp)) },
+      container_id: "wand-slots",
+      container_class: "flex gap-2 pointer-events-auto",
+      item_class: "sortable-item",
+      dragging_class: "opacity-50 scale-105",
+      drag_over_class: "ring-2 ring-blue-400",
+      ghost_class: "opacity-30",
+      accept_from: ["spell-bag"],
+    )
+
+  element.map(
+    sortable.sortable_container(
+      config,
+      drag_state,
+      sortable_items,
+      render_wand_slot_item,
+    ),
+    WandSortableMsg,
+  )
 }
 
-fn render_spell_slot(slot: option.Option(spell.Spell)) -> element.Element(Msg) {
+fn render_wand_slot_item(
+  item: sortable.SortableItem(option.Option(spell.Spell)),
+  _index: Int,
+  _drag_state: sortable.DragState,
+) -> element.Element(Msg) {
+  let slot = sortable.item_data(item)
   let #(content, bg_class, border_class, text_class) = case slot {
     option.Some(spell.DamageSpell(damage_spell)) -> #(
       spell_icon(damage_spell),
@@ -242,12 +552,108 @@ fn render_spell_slot(slot: option.Option(spell.Spell)) -> element.Element(Msg) {
         <> border_class
         <> " flex items-center justify-center text-xl font-bold "
         <> text_class
-        <> " shadow-lg relative transition-all hover:scale-110",
+        <> " shadow-lg relative transition-all hover:scale-110 cursor-move pointer-events-auto",
       ),
       attribute.style("image-rendering", "pixelated"),
     ],
     [
       html.text(content),
+      // Inner shadow effect
+      html.div(
+        [
+          attribute.class("absolute inset-0 opacity-20 pointer-events-none"),
+          attribute.style("box-shadow", "inset 0 2px 4px rgba(0,0,0,0.5)"),
+        ],
+        [],
+      ),
+    ],
+  )
+}
+
+fn render_spell_bag(
+  bag: spell_bag.SpellBag,
+  drag_state: sortable.DragState,
+) -> element.Element(Msg) {
+  let spell_stacks = spell_bag.list_spell_stacks(bag)
+
+  let sortable_items =
+    spell_stacks
+    |> list.index_map(fn(stack, index) {
+      sortable.create_sortable_item("bag-" <> int.to_string(index), stack)
+    })
+
+  let config =
+    sortable.SortableConfig(
+      on_reorder: fn(_from, _to) { BagSortableMsg(sortable.UserMsg(NoOp)) },
+      container_id: "spell-bag",
+      container_class: "grid grid-cols-4 gap-2 pointer-events-auto",
+      item_class: "sortable-item",
+      dragging_class: "opacity-50 scale-105",
+      drag_over_class: "ring-2 ring-purple-400",
+      ghost_class: "opacity-30",
+      accept_from: ["wand-slots"],
+    )
+
+  element.map(
+    sortable.sortable_container(
+      config,
+      drag_state,
+      sortable_items,
+      render_bag_spell_item,
+    ),
+    BagSortableMsg,
+  )
+}
+
+fn render_bag_spell_item(
+  item: sortable.SortableItem(#(spell.Spell, Int)),
+  _index: Int,
+  _drag_state: sortable.DragState,
+) -> element.Element(Msg) {
+  let #(spell_item, count) = sortable.item_data(item)
+  let #(content, bg_class, border_class, text_class) = case spell_item {
+    spell.DamageSpell(damage_spell) -> #(
+      spell_icon(damage_spell),
+      "bg-red-600",
+      "border-red-400",
+      "text-white",
+    )
+    spell.ModifierSpell(_) -> #(
+      "✨",
+      "bg-green-600",
+      "border-green-400",
+      "text-white",
+    )
+  }
+
+  html.div(
+    [
+      attribute.class(
+        "w-12 h-12 "
+        <> bg_class
+        <> " border-2 "
+        <> border_class
+        <> " flex items-center justify-center text-xl font-bold "
+        <> text_class
+        <> " shadow-lg relative transition-all hover:scale-110 cursor-move pointer-events-auto",
+      ),
+      attribute.style("image-rendering", "pixelated"),
+    ],
+    [
+      html.text(content),
+      // Count badge
+      case count > 1 {
+        True ->
+          html.div(
+            [
+              attribute.class(
+                "absolute -top-1 -right-1 bg-amber-500 border border-amber-700 rounded-full w-5 h-5 flex items-center justify-center text-xs font-bold text-black",
+              ),
+            ],
+            [html.text(int.to_string(count))],
+          )
+        False -> html.div([], [])
+      },
       // Inner shadow effect
       html.div(
         [

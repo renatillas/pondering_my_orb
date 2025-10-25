@@ -4,13 +4,17 @@ import gleam/javascript/promise
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import iv
+import paint/canvas
 import pondering_my_orb/camera
 import pondering_my_orb/enemy.{type Enemy}
 import pondering_my_orb/id.{type Id}
 import pondering_my_orb/map
 import pondering_my_orb/player
 import pondering_my_orb/spell
+import pondering_my_orb/spell_bag
 import pondering_my_orb/ui
+import pondering_my_orb/wand
 import tiramisu
 import tiramisu/asset
 import tiramisu/background
@@ -43,6 +47,8 @@ pub type Model {
     // Enemies
     enemies: List(Enemy(Id)),
     next_enemy_id: Int,
+    // Inventory
+    inventory_open: Bool,
   )
 }
 
@@ -60,9 +66,18 @@ pub type Msg {
   // Camera
   PointerLocked
   PointerLockFailed
+  // Inventory
+  ToggleInventory
+  UpdatePlayerInventory(
+    wand_slots: iv.Array(option.Option(spell.Spell)),
+    spell_bag: spell_bag.SpellBag,
+  )
 }
 
 pub fn main() -> Nil {
+  // Initialize paint library for sprite rendering
+  canvas.define_web_component()
+
   // Start the Lustre UI overlay
   ui.start()
 
@@ -116,6 +131,7 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), Option(_)) {
       projectiles: [],
       enemies: [],
       next_enemy_id: 0,
+      inventory_open: False,
     ),
     effects,
     Some(physics_world),
@@ -130,20 +146,66 @@ fn update(
   let assert Some(physics_world) = ctx.physics_world
 
   case msg {
+    ToggleInventory -> {
+      let new_inventory_state = !model.inventory_open
+
+      // Exit pointer lock when opening inventory, request it when closing
+      let pointer_lock_effect = case new_inventory_state {
+        True -> effect.exit_pointer_lock()
+        False ->
+          effect.request_pointer_lock(
+            on_success: PointerLocked,
+            on_error: PointerLockFailed,
+          )
+      }
+
+      // Update camera pointer_locked state when closing inventory
+      let new_camera = case new_inventory_state {
+        False -> camera.Camera(..model.camera, pointer_locked: False)
+        True -> model.camera
+      }
+
+      #(
+        Model(..model, inventory_open: new_inventory_state, camera: new_camera),
+        pointer_lock_effect,
+        ctx.physics_world,
+      )
+    }
     Tick -> {
-      let #(player, impulse, camera_pitch, input_effects) =
-        player.handle_input(
-          model.player,
-          velocity: physics.get_velocity(physics_world, id.player())
-            |> result.unwrap(Vec3(0.0, 0.0, 0.0)),
-          input_state: ctx.input,
-          bindings: model.player_bindings,
-          pointer_locked: model.camera.pointer_locked,
-          camera_pitch: model.camera.pitch,
-          physics_world:,
-          pointer_locked_msg: PointerLocked,
-          pointer_lock_failed_msg: PointerLockFailed,
-        )
+      // Check for I key press to toggle inventory
+      let inventory_toggle_effect = case
+        input.is_key_just_pressed(ctx.input, input.KeyI)
+      {
+        True -> effect.from(fn(dispatch) { dispatch(ToggleInventory) })
+        False -> effect.none()
+      }
+
+      // Apply time scale when inventory is open (stop game completely)
+      let time_scale = case model.inventory_open {
+        True -> 0.0
+        False -> 1.0
+      }
+      let scaled_delta = ctx.delta_time *. time_scale
+
+      // Only handle player input if inventory is closed
+      let #(player, impulse, camera_pitch, input_effects) = case
+        model.inventory_open
+      {
+        False ->
+          player.handle_input(
+            model.player,
+            velocity: physics.get_velocity(physics_world, id.player())
+              |> result.unwrap(Vec3(0.0, 0.0, 0.0)),
+            input_state: ctx.input,
+            bindings: model.player_bindings,
+            pointer_locked: model.camera.pointer_locked,
+            camera_pitch: model.camera.pitch,
+            physics_world:,
+            pointer_locked_msg: PointerLocked,
+            pointer_lock_failed_msg: PointerLockFailed,
+          )
+        True -> #(model.player, vec3f.zero, model.camera.pitch, [])
+      }
 
       let #(enemies, enemy_effects) =
         list.map(model.enemies, fn(enemy) {
@@ -153,7 +215,7 @@ fn update(
             enemy_velocity: physics.get_velocity(physics_world, enemy.id)
               |> result.unwrap(Vec3(0.0, 0.0, 0.0)),
             physics_world:,
-            delta_time: ctx.delta_time /. 1000.0,
+            delta_time: scaled_delta /. 1000.0,
             enemy_attacks_player_msg: EnemyAttacksPlayer,
           )
         })
@@ -163,37 +225,42 @@ fn update(
         spell.update_with_hits(
           model.projectiles,
           model.enemies,
-          ctx.delta_time,
+          scaled_delta,
           ProjectileDamagedEnemy,
         )
 
-      let physics_world =
-        physics.set_velocity(physics_world, id.player(), player.velocity)
-        |> physics.apply_impulse(id.player(), impulse)
-        // Apply pending player knockback AFTER setting velocity
-        |> fn(pw) {
-          case model.pending_player_knockback {
-            Some(knockback) -> physics.apply_impulse(pw, id.player(), knockback)
-            _ -> pw
+      // Only update physics if game is not paused (inventory closed)
+      let physics_world = case model.inventory_open {
+        False -> {
+          physics.set_velocity(physics_world, id.player(), player.velocity)
+          |> physics.apply_impulse(id.player(), impulse)
+          // Apply pending player knockback AFTER setting velocity
+          |> fn(pw) {
+            case model.pending_player_knockback {
+              Some(knockback) ->
+                physics.apply_impulse(pw, id.player(), knockback)
+              _ -> pw
+            }
           }
+          |> list.fold(over: enemies, from: _, with: fn(acc, enemy) {
+            physics.set_velocity(acc, enemy.id, enemy.velocity)
+          })
+          // Apply projectile knockback to enemies
+          |> list.fold(over: projectile_hits, from: _, with: fn(pw, hit) {
+            let knockback_force = 80.0
+            let Vec3(horizontal_x, _, horizontal_z) =
+              Vec3(hit.projectile_direction.x, 0.0, hit.projectile_direction.z)
+              |> vec3f.normalize()
+              |> vec3f.scale(knockback_force)
+
+            let total_knockback = Vec3(horizontal_x, 1.0, horizontal_z)
+
+            physics.apply_impulse(pw, hit.enemy_id, total_knockback)
+          })
+          |> physics.step()
         }
-        |> list.fold(over: enemies, from: _, with: fn(acc, enemy) {
-          physics.set_velocity(acc, enemy.id, enemy.velocity)
-        })
-        // Apply projectile knockback to enemies
-        |> list.fold(over: projectile_hits, from: _, with: fn(pw, hit) {
-          let knockback_force = 80.0
-          let Vec3(horizontal_x, _, horizontal_z) =
-            Vec3(hit.projectile_direction.x, 0.0, hit.projectile_direction.z)
-            |> vec3f.normalize()
-            |> vec3f.scale(knockback_force)
-
-          let total_knockback = Vec3(horizontal_x, 1.0, horizontal_z)
-
-          physics.apply_impulse(pw, hit.enemy_id, total_knockback)
-        })
-
-      let physics_world = physics.step(physics_world)
+        True -> physics_world
+      }
 
       let player_position =
         physics.get_transform(physics_world, id.player())
@@ -208,7 +275,7 @@ fn update(
       let #(player, cast_result) =
         player
         |> player.with_position(player_position)
-        |> player.update(nearest_enemy, ctx.delta_time)
+        |> player.update(nearest_enemy, scaled_delta)
 
       // Add newly cast projectile
       let updated_projectiles = case cast_result {
@@ -224,6 +291,8 @@ fn update(
             player_mana: player.wand.current_mana,
             player_max_mana: player.wand.max_mana,
             wand_slots: player.wand.slots,
+            spell_bag: player.spell_bag,
+            inventory_open: model.inventory_open,
           )),
         )
 
@@ -233,7 +302,7 @@ fn update(
           model.camera,
           player:,
           new_pitch: camera_pitch,
-          delta_time: ctx.delta_time,
+          delta_time: scaled_delta,
         )
 
       #(
@@ -251,6 +320,7 @@ fn update(
           effect.batch(input_effects),
           spell_effect,
           ui_effect,
+          inventory_toggle_effect,
         ]),
         Some(physics_world),
       )
@@ -299,21 +369,27 @@ fn update(
         ctx.physics_world,
       )
     }
-    EnemySpawned -> #(
-      Model(
-        ..model,
-        enemies: [
-          enemy.basic(
-            id.enemy(model.next_enemy_id),
-            position: Vec3(0.0, 3.0, 0.0),
+    EnemySpawned -> {
+      // Don't spawn enemies when inventory is open or game is paused
+      case model.inventory_open {
+        True -> #(model, effect.none(), Some(physics_world))
+        False -> #(
+          Model(
+            ..model,
+            enemies: [
+              enemy.basic(
+                id.enemy(model.next_enemy_id),
+                position: Vec3(0.0, 3.0, 0.0),
+              ),
+              ..model.enemies
+            ],
+            next_enemy_id: model.next_enemy_id + 1,
           ),
-          ..model.enemies
-        ],
-        next_enemy_id: model.next_enemy_id + 1,
-      ),
-      effect.none(),
-      Some(physics_world),
-    )
+          effect.none(),
+          Some(physics_world),
+        )
+      }
+    }
     EnemySpawnStarted(_) -> #(model, effect.none(), Some(physics_world))
     ProjectileDamagedEnemy(enemy_id, damage, _knockback_direction) -> {
       // Knockback is now applied during Tick, so just handle damage here
@@ -354,6 +430,18 @@ fn update(
       }
     }
     EnemyKilled(_) -> #(model, effect.none(), Some(physics_world))
+    UpdatePlayerInventory(wand_slots, spell_bag) -> {
+      // Update player's wand and spell bag from UI changes
+      let updated_wand = wand.Wand(..model.player.wand, slots: wand_slots)
+      let updated_player =
+        player.Player(..model.player, wand: updated_wand, spell_bag: spell_bag)
+
+      #(
+        Model(..model, player: updated_player),
+        effect.none(),
+        ctx.physics_world,
+      )
+    }
   }
 }
 
@@ -435,7 +523,8 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
 
   let projectiles = spell.view(id.projectile, model.projectiles)
 
-  let enemy = model.enemies |> list.map(enemy.render)
+  // Pass camera position for billboard rotation
+  let enemy = model.enemies |> list.map(enemy.render(_, model.camera.position))
   list.flatten([
     enemy,
     ground,
