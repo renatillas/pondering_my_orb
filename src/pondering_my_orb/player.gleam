@@ -1,11 +1,11 @@
 import gleam/float
-import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam_community/maths
 import pondering_my_orb/enemy.{type Enemy}
 import pondering_my_orb/spell
+import pondering_my_orb/spell_bag
 import pondering_my_orb/wand
 import tiramisu/effect.{type Effect}
 import tiramisu/geometry
@@ -19,13 +19,11 @@ import vec/vec3f
 
 const mouse_sensitivity = 0.003
 
-const jumping_speed = 15.0
-
-const invulnerability_duration = 3.0
+const jumping_speed = 500.0
 
 const passive_heal_delay = 6.0
 
-const passive_heal_rate = 2
+const passive_heal_rate = 2.0
 
 const passive_heal_interval = 0.5
 
@@ -38,47 +36,47 @@ pub type PlayerAction {
 }
 
 pub type AutoCast {
-  AutoCast(time_since_last_cast: Float)
+  AutoCast(time_since_last_cast: Float, current_spell_index: Int)
 }
 
 pub type Player {
   Player(
     // Health
-    max_health: Int,
-    current_health: Int,
+    max_health: Float,
+    current_health: Float,
     // Movement
     speed: Float,
     position: Vec3(Float),
     rotation: Vec3(Float),
     velocity: Vec3(Float),
     // Taking damage
-    invulnerability_duration: Float,
     time_since_taking_damage: Float,
-    is_vulnerable: Bool,
     // Healing
     passive_heal_delay: Float,
-    passive_heal_rate: Int,
+    passive_heal_rate: Float,
     passive_heal_interval: Float,
     time_since_last_passive_heal: Float,
+    healed_amount: Float,
     // Spell casting
     wand: wand.Wand,
+    spell_bag: spell_bag.SpellBag,
     auto_cast: AutoCast,
   )
 }
 
 pub fn new(
-  health health: Int,
+  health health: Float,
   speed speed: Float,
   position position: Vec3(Float),
   rotation rotation: Vec3(Float),
-  invulnerability_duration invulnerability_duration: Float,
   time_since_taking_damage time_since_taking_damage: Float,
-  is_vulnerable is_vulnerable: Bool,
   passive_heal_delay passive_heal_delay: Float,
-  passive_heal_rate passive_heal_rate: Int,
+  passive_heal_rate passive_heal_rate: Float,
   passive_heal_interval passive_heal_interval: Float,
   time_since_last_passive_heal time_since_last_passive_heal: Float,
+  healed_amount healed_amount: Float,
   wand wand: wand.Wand,
+  spell_bag spell_bag: spell_bag.SpellBag,
   auto_cast auto_cast: AutoCast,
 ) -> Player {
   Player(
@@ -87,14 +85,14 @@ pub fn new(
     speed:,
     position:,
     rotation:,
-    invulnerability_duration:,
     time_since_taking_damage:,
-    is_vulnerable:,
     passive_heal_delay:,
     passive_heal_rate:,
     passive_heal_interval:,
     time_since_last_passive_heal:,
+    healed_amount:,
     wand:,
+    spell_bag:,
     auto_cast:,
     velocity: vec3f.zero,
   )
@@ -109,16 +107,8 @@ pub fn render(id: id, player: Player) {
       radial_segments: 10,
     )
 
-  let health_percentage = player.current_health * 100 / player.max_health
-  let color = case health_percentage {
-    p if p >= 75 -> 0x00ff00
-    p if p >= 50 -> 0xaaff00
-    p if p >= 25 -> 0xffaa00
-    _ -> 0xff0000
-  }
-
   let assert Ok(material) =
-    material.new() |> material.with_color(color) |> material.build()
+    material.new() |> material.with_color(0xffff00) |> material.build()
   scene.mesh(
     id:,
     geometry: capsule,
@@ -133,6 +123,7 @@ pub fn render(id: id, player: Player) {
         radius: 0.5,
       ))
       |> physics.with_restitution(0.0)
+      |> physics.with_mass(70.0)
       |> physics.with_friction(0.0)
       |> physics.with_lock_rotation_x()
       |> physics.with_lock_rotation_z()
@@ -145,28 +136,34 @@ pub fn init() -> Player {
   let assert Ok(wand) =
     wand.new(
       name: "Player's Wand",
-      slot_count: 1,
+      slot_count: 5,
       max_mana: 100.0,
       mana_recharge_rate: 10.0,
-      cast_delay: 1.0,
-      recharge_time: 10.0,
+      cast_delay: 0.01,
+      recharge_time: 0.5,
     )
-    |> wand.set_spell(0, spell.fireball())
+    |> wand.set_spell(0, spell.spark())
+
+  let spell_bag =
+    spell_bag.new()
+    |> spell_bag.add_spells(spell.spark(), 3)
+    |> spell_bag.add_spells(spell.fireball(), 2)
+    |> spell_bag.add_spell(spell.lightning())
 
   new(
-    health: 100,
+    health: 100.0,
     speed: 5.0,
     position: Vec3(0.0, 2.0, 0.0),
     rotation: Vec3(0.0, 0.0, 0.0),
-    invulnerability_duration:,
     time_since_taking_damage: 0.0,
-    is_vulnerable: False,
     passive_heal_delay:,
     passive_heal_rate:,
     passive_heal_interval:,
     time_since_last_passive_heal: 0.0,
+    healed_amount: 0.0,
     wand:,
-    auto_cast: AutoCast(time_since_last_cast: 0.0),
+    spell_bag:,
+    auto_cast: AutoCast(time_since_last_cast: 0.0, current_spell_index: 0),
   )
 }
 
@@ -247,23 +244,41 @@ pub fn handle_input(
   input_state input_state: input.InputState,
   bindings bindings: input.InputBindings(PlayerAction),
   pointer_locked pointer_locked: Bool,
+  camera_pitch camera_pitch: Float,
   physics_world physics_world: physics.PhysicsWorld(id),
   pointer_locked_msg pointer_locked_msg: msg,
   pointer_lock_failed_msg pointer_lock_failed_msg: msg,
-) -> #(Player, Vec3(Float), Bool, List(Effect(msg))) {
-  let #(pointer_locked, effects) =
+) -> #(Player, Vec3(Float), Float, List(Effect(msg))) {
+  let effects =
     handle_pointer_locked(
       pointer_locked,
       input_state,
       pointer_locked_msg,
       pointer_lock_failed_msg,
     )
-  let Vec3(player_pitch, player_yaw, player_roll) = player.rotation
-  let #(mouse_dx, _mouse_dy) = input.mouse_delta(input_state)
+  let Vec3(_player_pitch, player_yaw, player_roll) = player.rotation
+  let #(mouse_dx, mouse_dy) = input.mouse_delta(input_state)
 
+  // Update player yaw (horizontal rotation only)
   let player_yaw = case pointer_locked {
     True -> player_yaw -. mouse_dx *. mouse_sensitivity
     False -> player_yaw
+  }
+
+  // Update camera pitch (vertical rotation, separate from player)
+  let camera_pitch = case pointer_locked {
+    True -> {
+      let new_pitch = camera_pitch +. mouse_dy *. mouse_sensitivity
+      // Clamp pitch to prevent camera flipping (roughly -89 to 89 degrees)
+      let max_pitch = maths.pi() /. 2.0 -. 0.1
+      let min_pitch = -1.0 *. max_pitch
+      case new_pitch {
+        p if p >. max_pitch -> max_pitch
+        p if p <. min_pitch -> min_pitch
+        _ -> new_pitch
+      }
+    }
+    False -> camera_pitch
   }
 
   let direction = direction_from_yaw(player_yaw)
@@ -280,13 +295,9 @@ pub fn handle_input(
   let impulse = calculate_jump(player, physics_world, input_state, bindings)
 
   let updated_player =
-    Player(
-      ..player,
-      rotation: Vec3(player_pitch, player_yaw, player_roll),
-      velocity:,
-    )
+    Player(..player, rotation: Vec3(0.0, player_yaw, player_roll), velocity:)
 
-  #(updated_player, impulse, pointer_locked, effects)
+  #(updated_player, impulse, camera_pitch, effects)
 }
 
 fn calculate_jump(
@@ -298,8 +309,8 @@ fn calculate_jump(
   let raycast_origin =
     Vec3(player.position.x, player.position.y -. 1.6, player.position.z)
 
-  // Cast ray purely horizontally forward
-  let raycast_direction = Vec3(0.0, -0.5, 0.0)
+  // Cast ray downward to detect ground
+  let raycast_direction = Vec3(0.0, -1.0, 0.0)
 
   case
     physics.raycast(
@@ -315,31 +326,14 @@ fn calculate_jump(
   }
 }
 
-pub fn take_damage(player: Player, damage: Int) -> Player {
-  case player.is_vulnerable {
-    True -> {
-      let new_health = player.current_health - damage
-      let capped_health = case new_health < 0 {
-        True -> 0
-        False -> new_health
-      }
-
-      echo "Player took "
-        <> int.to_string(damage)
-        <> " damage! Health: "
-        <> int.to_string(capped_health)
-        <> "/"
-        <> int.to_string(player.max_health)
-
-      Player(
-        ..player,
-        current_health: capped_health,
-        time_since_taking_damage: 0.0,
-        is_vulnerable: False,
-      )
-    }
-    False -> player
+pub fn take_damage(player: Player, damage: Float) -> Player {
+  let new_health = player.current_health -. damage
+  let capped_health = case new_health <. 0.0 {
+    True -> 0.0
+    False -> new_health
   }
+
+  Player(..player, current_health: capped_health, time_since_taking_damage: 0.0)
 }
 
 pub fn update(
@@ -351,24 +345,46 @@ pub fn update(
     result.map(nearest_enemy, cast_spell(player, _, delta_time /. 1000.0))
     |> result.unwrap(#(player, Error(Nil)))
 
-  // TODO: Handle next cast index & other cases
   let #(player, projectile) = case cast_result {
-    Ok(wand.CastSuccess(projectile, remaining_mana, _next_cast_index)) -> {
+    Ok(wand.CastSuccess(projectile, remaining_mana, next_cast_index)) -> {
       let player =
         Player(
           ..player,
           wand: wand.Wand(..player.wand, current_mana: remaining_mana),
+          auto_cast: AutoCast(
+            time_since_last_cast: player.auto_cast.time_since_last_cast,
+            current_spell_index: next_cast_index,
+          ),
         )
 
       #(player, Some(projectile))
     }
     Ok(wand.NotEnoughMana(_required, _available)) -> {
+      // Keep current index, don't reset timer - wait for more mana
       #(player, None)
     }
     Ok(wand.NoSpellToCast) -> {
+      // No damage spell found, reset to beginning after recharge_time
+      let player =
+        Player(
+          ..player,
+          auto_cast: AutoCast(
+            time_since_last_cast: -1.0 *. player.wand.recharge_time,
+            current_spell_index: 0,
+          ),
+        )
       #(player, None)
     }
     Ok(wand.WandEmpty) -> {
+      // Finished all spells, reset to beginning after recharge_time
+      let player =
+        Player(
+          ..player,
+          auto_cast: AutoCast(
+            time_since_last_cast: -1.0 *. player.wand.recharge_time,
+            current_spell_index: 0,
+          ),
+        )
       #(player, None)
     }
     Error(_) -> {
@@ -378,20 +394,16 @@ pub fn update(
 
   let time_since_taking_damage =
     player.time_since_taking_damage +. delta_time /. 1000.0
-  let is_vulnerable =
-    time_since_taking_damage >=. player.invulnerability_duration
 
-  let player = Player(..player, time_since_taking_damage:, is_vulnerable:)
+  let player = Player(..player, time_since_taking_damage:)
 
-  let player = case
-    player.time_since_taking_damage >=. player.passive_heal_delay
-  {
+  let player = case time_since_taking_damage >=. player.passive_heal_delay {
     True -> {
       let time_since_last_passive_heal =
         player.time_since_last_passive_heal +. delta_time /. 1000.0
 
       case time_since_last_passive_heal >=. player.passive_heal_interval {
-        True -> passive_heal(player)
+        True -> passive_heal(player, delta_time)
         False -> Player(..player, time_since_last_passive_heal:)
       }
     }
@@ -424,15 +436,34 @@ fn cast_spell(
         |> vec3f.normalize()
 
       let #(cast_result, wand) =
-        wand.cast(player.wand, 0, player.position, normalized_direction, 0)
+        wand.cast(
+          player.wand,
+          player.auto_cast.current_spell_index,
+          player.position,
+          normalized_direction,
+          0,
+        )
 
       #(
-        Player(..player, auto_cast: AutoCast(time_since_last_cast: 0.0), wand:),
+        Player(
+          ..player,
+          auto_cast: AutoCast(
+            time_since_last_cast: 0.0,
+            current_spell_index: player.auto_cast.current_spell_index,
+          ),
+          wand:,
+        ),
         Ok(cast_result),
       )
     }
     False -> #(
-      Player(..player, auto_cast: AutoCast(time_since_last_cast)),
+      Player(
+        ..player,
+        auto_cast: AutoCast(
+          time_since_last_cast,
+          current_spell_index: player.auto_cast.current_spell_index,
+        ),
+      ),
       Error(Nil),
     )
   }
@@ -453,25 +484,22 @@ pub fn nearest_enemy_position(
   nearest_enemy_position
 }
 
-fn passive_heal(player: Player) -> Player {
-  let new_health = player.current_health + player.passive_heal_rate
-  let capped_health = case new_health > player.max_health {
-    True -> player.max_health
-    False -> new_health
+fn passive_heal(player: Player, delta_time: Float) -> Player {
+  let heal_amount = player.passive_heal_rate *. delta_time /. 1000.0
+  let new_healed_amount = player.healed_amount +. heal_amount
+  let new_health = player.current_health +. heal_amount
+
+  case new_healed_amount >=. player.passive_heal_rate {
+    True -> {
+      Player(..player, healed_amount: 0.0, time_since_last_passive_heal: 0.0)
+    }
+    False ->
+      Player(
+        ..player,
+        healed_amount: new_healed_amount,
+        current_health: float.min(player.max_health, new_health),
+      )
   }
-
-  echo "Player healed "
-    <> int.to_string(player.passive_heal_rate)
-    <> " HP! Health: "
-    <> int.to_string(capped_health)
-    <> "/"
-    <> int.to_string(player.max_health)
-
-  Player(
-    ..player,
-    current_health: capped_health,
-    time_since_last_passive_heal: 0.0,
-  )
 }
 
 fn handle_pointer_locked(
@@ -479,7 +507,7 @@ fn handle_pointer_locked(
   input: input.InputState,
   pointer_locked_msg: msg,
   pointer_lock_failed_msg: msg,
-) -> #(Bool, List(Effect(msg))) {
+) -> List(Effect(msg)) {
   let should_request_lock = case pointer_locked {
     False -> input.is_left_button_just_pressed(input)
     True -> False
@@ -494,17 +522,13 @@ fn handle_pointer_locked(
     False -> effect.none()
   }
 
-  let #(should_exit_pointer_lock, exit_lock_effect) = case
+  let exit_lock_effect = case
     input.is_key_just_pressed(input, input.Escape),
     pointer_locked
   {
-    True, True -> #(True, effect.exit_pointer_lock())
-    _, _ -> #(False, effect.none())
+    True, True -> effect.exit_pointer_lock()
+    _, _ -> effect.none()
   }
 
-  let pointer_locked = case should_exit_pointer_lock {
-    True -> False
-    False -> pointer_locked
-  }
-  #(pointer_locked, [pointer_lock_effect, exit_lock_effect])
+  [pointer_lock_effect, exit_lock_effect]
 }

@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Read(//Users/renata-amutio/Projects/renatillas/sortable/examples/**)",
-      "Bash(gleam run:*)"
+      "Bash(gleam run:*)",
+      "Read(//Users/renata-amutio/Projects/renatillas/sortable/**)"
     ],
     "deny": [],
     "ask": []

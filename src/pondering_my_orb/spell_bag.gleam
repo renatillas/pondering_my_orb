@@ -22,8 +22,9 @@ pub fn add_spells(bag: SpellBag, spell: Spell, count: Int) -> SpellBag {
   SpellBag(spells:)
 }
 
-pub fn remove_spell(bag: SpellBag, spell: Spell) {
-  bag.remove(from: bag.spells, copies: 1, of: spell)
+pub fn remove_spell(bag: SpellBag, spell: Spell) -> SpellBag {
+  let new_spells = bag.remove(from: bag.spells, copies: 1, of: spell)
+  SpellBag(spells: new_spells)
 }
 
 pub fn get_count(bag: SpellBag, spell: Spell) -> Int {
@@ -69,7 +70,7 @@ pub fn transfer_to_wand(
 ) -> Result(#(SpellBag, wand.Wand), TransferError) {
   let new_bag = remove_spell(bag, spell)
   case wand.set_spell(wand, slot_index, spell) {
-    Ok(new_wand) -> Ok(#(SpellBag(new_bag), new_wand))
+    Ok(new_wand) -> Ok(#(new_bag, new_wand))
     Error(Nil) -> {
       Error(InvalidSlot)
     }
