@@ -18,14 +18,20 @@ pub fn create(current_health: Int, max_health: Int) -> p.Picture {
 
   // Determine bar color based on health percentage
   let fill_color = case health_percent {
-    h if h >. 0.7 -> p.colour_rgb(76, 175, 80)  // Green
-    h if h >. 0.3 -> p.colour_rgb(255, 193, 7)  // Yellow
-    _ -> p.colour_rgb(244, 67, 54)  // Red
+    h if h >. 0.7 -> p.colour_rgb(76, 175, 80)
+    // Green
+    h if h >. 0.3 -> p.colour_rgb(255, 193, 7)
+    // Yellow
+    _ -> p.colour_rgb(244, 67, 54)
+    // Red
   }
 
   p.combine([
     // Background (dark gray)
-    p.rectangle(bar_width +. border_width *. 2.0, bar_height +. border_width *. 2.0)
+    p.rectangle(
+      bar_width +. border_width *. 2.0,
+      bar_height +. border_width *. 2.0,
+    )
       |> p.translate_xy(0.0, 0.0)
       |> p.fill(p.colour_rgb(50, 50, 50)),
     // Border (white)
