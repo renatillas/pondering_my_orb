@@ -59,7 +59,7 @@ pub type Msg {
   // Enemies
   EnemySpawnStarted(Int)
   EnemySpawned
-  EnemyAttacksPlayer(damage: Int, enemy_position: Vec3(Float))
+  EnemyAttacksPlayer(damage: Float, enemy_position: Vec3(Float))
   // Projectiles
   ProjectileDamagedEnemy(Id, Float, Vec3(Float))
   EnemyKilled(Id)

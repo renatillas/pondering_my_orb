@@ -15,8 +15,8 @@ import tiramisu/ui as tiramisu_ui
 
 pub type Model {
   Model(
-    player_health: Int,
-    player_max_health: Int,
+    player_health: Float,
+    player_max_health: Float,
     player_mana: Float,
     player_max_mana: Float,
     wand_slots: iv.Array(option.Option(spell.Spell)),
@@ -44,8 +44,8 @@ pub type UiToGameMsg {
 
 pub type GameState {
   GameState(
-    player_health: Int,
-    player_max_health: Int,
+    player_health: Float,
+    player_max_health: Float,
     player_mana: Float,
     player_max_mana: Float,
     wand_slots: iv.Array(option.Option(spell.Spell)),
@@ -57,8 +57,8 @@ pub type GameState {
 pub fn init(_flags) -> #(Model, effect.Effect(Msg)) {
   #(
     Model(
-      player_health: 100,
-      player_max_health: 100,
+      player_health: 100.0,
+      player_max_health: 100.0,
       player_mana: 100.0,
       player_max_mana: 100.0,
       wand_slots: iv.new(),
@@ -115,10 +115,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
         False -> effect.none()
       }
 
-      #(
-        Model(..model, inventory_open: !model.inventory_open),
-        sync_effect,
-      )
+      #(Model(..model, inventory_open: !model.inventory_open), sync_effect)
     }
     SyncInventoryToGame -> #(model, effect.none())
     WandSortableMsg(sortable_msg) -> {
@@ -219,7 +216,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
           container_class: "grid grid-cols-4 gap-2",
           item_class: "sortable-item",
           dragging_class: "opacity-50 scale-105",
-          drag_over_class: "ring-2 ring-purple-400",
+          drag_over_class: "[&>div]:ring-2 [&>div]:ring-purple-400",
           ghost_class: "opacity-30",
           accept_from: ["wand-slots"],
         )
@@ -327,14 +324,14 @@ pub fn view(model: Model) -> element.Element(Msg) {
             ]),
             html.div([attribute.class("text-gray-300 text-sm mb-1")], [
               html.text(
-                int.to_string(model.player_health)
+                float_to_string_rounded(model.player_health)
                 <> " / "
-                <> int.to_string(model.player_max_health),
+                <> float_to_string_rounded(model.player_max_health),
               ),
             ]),
             render_pixel_bar(
-              current: int.to_float(model.player_health),
-              max: int.to_float(model.player_max_health),
+              current: model.player_health,
+              max: model.player_max_health,
               color_class: health_color_class(
                 model.player_health,
                 model.player_max_health,
@@ -404,9 +401,12 @@ pub fn view(model: Model) -> element.Element(Msg) {
                     [attribute.class("flex items-center justify-between mb-4")],
                     [
                       html.div([attribute.class("flex items-center gap-2")], [
-                        html.span([attribute.class("text-purple-400 text-2xl")], [
-                          html.text("📦"),
-                        ]),
+                        html.span(
+                          [attribute.class("text-purple-400 text-2xl")],
+                          [
+                            html.text("📦"),
+                          ],
+                        ),
                         html.span(
                           [
                             attribute.class(
@@ -477,12 +477,12 @@ fn render_pixel_bar(
   )
 }
 
-fn health_color_class(current: Int, max: Int) -> String {
-  let percentage = current * 100 / max
+fn health_color_class(current: Float, max: Float) -> String {
+  let percentage = current /. max *. 100.0
   case percentage {
-    p if p >= 75 -> "bg-green-500"
-    p if p >= 50 -> "bg-lime-500"
-    p if p >= 25 -> "bg-orange-500"
+    p if p >=. 75.0 -> "bg-green-500"
+    p if p >=. 50.0 -> "bg-lime-500"
+    p if p >=. 25.0 -> "bg-orange-500"
     _ -> "bg-red-500"
   }
 }
@@ -589,7 +589,7 @@ fn render_spell_bag(
       container_class: "grid grid-cols-4 gap-2 pointer-events-auto",
       item_class: "sortable-item",
       dragging_class: "opacity-50 scale-105",
-      drag_over_class: "ring-2 ring-purple-400",
+      drag_over_class: "[&>div]:ring-2 [&>div]:ring-purple-400",
       ghost_class: "opacity-30",
       accept_from: ["wand-slots"],
     )

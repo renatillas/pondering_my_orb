@@ -19,7 +19,7 @@ pub type Enemy(id) {
     id: id,
     max_health: Int,
     current_health: Int,
-    damage: Int,
+    damage: Float,
     damage_range: Float,
     attack_cooldown: Float,
     time_since_last_attack: Float,
@@ -33,7 +33,7 @@ pub type Enemy(id) {
 pub fn new(
   id id: id,
   health health: Int,
-  damage damage: Int,
+  damage damage: Float,
   damage_range damage_range: Float,
   attack_cooldown attack_cooldown: Float,
   speed speed: Float,
@@ -128,7 +128,7 @@ pub fn basic(id id: id, position position: Vec3(Float)) {
   new(
     id:,
     health: 20,
-    damage: 10,
+    damage: 10.0,
     damage_range: 1.0,
     attack_cooldown: 1.0,
     speed: 3.0,
@@ -143,7 +143,8 @@ pub fn update(
   enemy_velocity enemy_velocity: Vec3(Float),
   physics_world physics_world: physics.PhysicsWorld(Id),
   delta_time delta_time: Float,
-  enemy_attacks_player_msg enemy_attacks_player_msg: fn(Int, Vec3(Float)) -> msg,
+  enemy_attacks_player_msg enemy_attacks_player_msg: fn(Float, Vec3(Float)) ->
+    msg,
 ) -> #(Enemy(id), Effect(msg)) {
   // Calculate direction to target (keep it horizontal)
   let direction =

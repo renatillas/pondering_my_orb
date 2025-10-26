@@ -1,5 +1,4 @@
 import gleam/float
-import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -24,7 +23,7 @@ const jumping_speed = 500.0
 
 const passive_heal_delay = 6.0
 
-const passive_heal_rate = 2
+const passive_heal_rate = 2.0
 
 const passive_heal_interval = 0.5
 
@@ -43,8 +42,8 @@ pub type AutoCast {
 pub type Player {
   Player(
     // Health
-    max_health: Int,
-    current_health: Int,
+    max_health: Float,
+    current_health: Float,
     // Movement
     speed: Float,
     position: Vec3(Float),
@@ -54,9 +53,10 @@ pub type Player {
     time_since_taking_damage: Float,
     // Healing
     passive_heal_delay: Float,
-    passive_heal_rate: Int,
+    passive_heal_rate: Float,
     passive_heal_interval: Float,
     time_since_last_passive_heal: Float,
+    healed_amount: Float,
     // Spell casting
     wand: wand.Wand,
     spell_bag: spell_bag.SpellBag,
@@ -65,15 +65,16 @@ pub type Player {
 }
 
 pub fn new(
-  health health: Int,
+  health health: Float,
   speed speed: Float,
   position position: Vec3(Float),
   rotation rotation: Vec3(Float),
   time_since_taking_damage time_since_taking_damage: Float,
   passive_heal_delay passive_heal_delay: Float,
-  passive_heal_rate passive_heal_rate: Int,
+  passive_heal_rate passive_heal_rate: Float,
   passive_heal_interval passive_heal_interval: Float,
   time_since_last_passive_heal time_since_last_passive_heal: Float,
+  healed_amount healed_amount: Float,
   wand wand: wand.Wand,
   spell_bag spell_bag: spell_bag.SpellBag,
   auto_cast auto_cast: AutoCast,
@@ -89,6 +90,7 @@ pub fn new(
     passive_heal_rate:,
     passive_heal_interval:,
     time_since_last_passive_heal:,
+    healed_amount:,
     wand:,
     spell_bag:,
     auto_cast:,
@@ -149,7 +151,7 @@ pub fn init() -> Player {
     |> spell_bag.add_spell(spell.lightning())
 
   new(
-    health: 100,
+    health: 100.0,
     speed: 5.0,
     position: Vec3(0.0, 2.0, 0.0),
     rotation: Vec3(0.0, 0.0, 0.0),
@@ -158,6 +160,7 @@ pub fn init() -> Player {
     passive_heal_rate:,
     passive_heal_interval:,
     time_since_last_passive_heal: 0.0,
+    healed_amount: 0.0,
     wand:,
     spell_bag:,
     auto_cast: AutoCast(time_since_last_cast: 0.0, current_spell_index: 0),
@@ -318,27 +321,17 @@ fn calculate_jump(
     ),
     input.is_action_just_pressed(input_state, bindings, Jump)
   {
-    Ok(_), True -> {
-      echo "JUMP! Applying impulse"
-      Vec3(0.0, jumping_speed, 0.0)
-    }
+    Ok(_), True -> Vec3(0.0, jumping_speed, 0.0)
     _, _ -> vec3f.zero
   }
 }
 
-pub fn take_damage(player: Player, damage: Int) -> Player {
-  let new_health = player.current_health - damage
-  let capped_health = case new_health < 0 {
-    True -> 0
+pub fn take_damage(player: Player, damage: Float) -> Player {
+  let new_health = player.current_health -. damage
+  let capped_health = case new_health <. 0.0 {
+    True -> 0.0
     False -> new_health
   }
-
-  echo "Player took "
-    <> int.to_string(damage)
-    <> " damage! Health: "
-    <> int.to_string(capped_health)
-    <> "/"
-    <> int.to_string(player.max_health)
 
   Player(..player, current_health: capped_health, time_since_taking_damage: 0.0)
 }
@@ -410,7 +403,7 @@ pub fn update(
         player.time_since_last_passive_heal +. delta_time /. 1000.0
 
       case time_since_last_passive_heal >=. player.passive_heal_interval {
-        True -> passive_heal(player)
+        True -> passive_heal(player, delta_time)
         False -> Player(..player, time_since_last_passive_heal:)
       }
     }
@@ -491,25 +484,22 @@ pub fn nearest_enemy_position(
   nearest_enemy_position
 }
 
-fn passive_heal(player: Player) -> Player {
-  let new_health = player.current_health + player.passive_heal_rate
-  let capped_health = case new_health > player.max_health {
-    True -> player.max_health
-    False -> new_health
+fn passive_heal(player: Player, delta_time: Float) -> Player {
+  let heal_amount = player.passive_heal_rate *. delta_time /. 1000.0
+  let new_healed_amount = player.healed_amount +. heal_amount
+  let new_health = player.current_health +. heal_amount
+
+  case new_healed_amount >=. player.passive_heal_rate {
+    True -> {
+      Player(..player, healed_amount: 0.0, time_since_last_passive_heal: 0.0)
+    }
+    False ->
+      Player(
+        ..player,
+        healed_amount: new_healed_amount,
+        current_health: float.min(player.max_health, new_health),
+      )
   }
-
-  echo "Player healed "
-    <> int.to_string(player.passive_heal_rate)
-    <> " HP! Health: "
-    <> int.to_string(capped_health)
-    <> "/"
-    <> int.to_string(player.max_health)
-
-  Player(
-    ..player,
-    current_health: capped_health,
-    time_since_last_passive_heal: 0.0,
-  )
 }
 
 fn handle_pointer_locked(

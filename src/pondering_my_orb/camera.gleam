@@ -52,7 +52,7 @@ pub fn update(
     )
 
   // Lerp camera position towards target (smooth follow)
-  let lerp_speed = 10.0
+  let lerp_speed = 25.0
   let lerp_factor = float.min(1.0, lerp_speed *. delta_time /. 1000.0)
 
   Camera(
