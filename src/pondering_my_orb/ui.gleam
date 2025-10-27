@@ -14,7 +14,7 @@ import pondering_my_orb/spell_bag
 import sortable
 import tiramisu/ui as tiramisu_ui
 
-pub type Model {
+pub type Model(tiramisu_msg) {
   Model(
     game_phase: GamePhase,
     player_health: Float,
@@ -25,6 +25,7 @@ pub type Model {
     spell_bag: spell_bag.SpellBag,
     drag_state: sortable.DragState,
     inventory_open: Bool,
+    wrapper: fn(UiToGameMsg) -> tiramisu_msg,
   )
 }
 
@@ -45,10 +46,6 @@ pub type Msg {
   ToggleInventory
   SyncInventoryToGame
   NoOp
-}
-
-pub type OutMsg {
-  UIMessage(UiToGameMsg)
 }
 
 pub type UiToGameMsg {
@@ -72,7 +69,7 @@ pub type GameState {
   )
 }
 
-pub fn init(_flags) -> #(Model, effect.Effect(Msg)) {
+pub fn init(wrapper) -> #(Model(tiramisu_msg), effect.Effect(Msg)) {
   #(
     Model(
       game_phase: StartScreen,
@@ -84,12 +81,16 @@ pub fn init(_flags) -> #(Model, effect.Effect(Msg)) {
       spell_bag: spell_bag.new(),
       drag_state: sortable.NoDrag,
       inventory_open: False,
+      wrapper:,
     ),
     tiramisu_ui.register_lustre(),
   )
 }
 
-pub fn update(model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
+pub fn update(
+  model: Model(tiramisu_msg),
+  msg: Msg,
+) -> #(Model(tiramisu_msg), effect.Effect(Msg)) {
   case msg {
     GamePhaseChanged(game_phase) -> #(
       Model(..model, game_phase:),
@@ -97,18 +98,21 @@ pub fn update(model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
     )
     StartButtonClicked -> #(
       model,
-      tiramisu_ui.dispatch_to_tiramisu(UIMessage(GameStarted)),
+      tiramisu_ui.dispatch_to_tiramisu(model.wrapper(GameStarted)),
     )
     RestartButtonClicked -> #(
       model,
-      tiramisu_ui.dispatch_to_tiramisu(UIMessage(GameRestarted)),
+      tiramisu_ui.dispatch_to_tiramisu(model.wrapper(GameRestarted)),
     )
     GameStateUpdated(state) -> {
       // Detect inventory closing (transition from True to False) and sync changes
       let sync_effect = case model.inventory_open, state.inventory_open {
         True, False ->
           tiramisu_ui.dispatch_to_tiramisu(
-            UIMessage(UpdatePlayerInventory(model.wand_slots, model.spell_bag)),
+            model.wrapper(UpdatePlayerInventory(
+              model.wand_slots,
+              model.spell_bag,
+            )),
           )
         _, _ -> effect.none()
       }
@@ -122,6 +126,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
 
       #(
         Model(
+          ..model,
           game_phase: model.game_phase,
           player_health: state.player_health,
           player_max_health: state.player_max_health,
@@ -139,10 +144,12 @@ pub fn update(model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
       // When closing inventory, sync changes back to game
       let sync_effect = case model.inventory_open {
         True ->
-          tiramisu_ui.dispatch_to_tiramisu(UpdatePlayerInventory(
-            model.wand_slots,
-            model.spell_bag,
-          ))
+          tiramisu_ui.dispatch_to_tiramisu(
+            model.wrapper(UpdatePlayerInventory(
+              model.wand_slots,
+              model.spell_bag,
+            )),
+          )
         False -> effect.none()
       }
 
@@ -324,7 +331,7 @@ fn reorder_array(
   }
 }
 
-pub fn view(model: Model) -> element.Element(Msg) {
+pub fn view(model: Model(tiramisu_msg)) -> element.Element(Msg) {
   case model.game_phase {
     StartScreen -> view_start_screen()
     LoadingScreen -> view_loading_screen()
@@ -433,7 +440,7 @@ fn view_loading_screen() -> element.Element(Msg) {
   )
 }
 
-fn view_playing(model: Model) -> element.Element(Msg) {
+fn view_playing(model: Model(tiramisu_msg)) -> element.Element(Msg) {
   html.div(
     [
       attribute.class(
@@ -572,7 +579,7 @@ fn view_playing(model: Model) -> element.Element(Msg) {
   )
 }
 
-fn view_game_over_screen(model: Model) -> element.Element(Msg) {
+fn view_game_over_screen(model: Model(tiramisu_msg)) -> element.Element(Msg) {
   html.div(
     [
       attribute.class(
@@ -876,9 +883,9 @@ fn float_to_string_rounded(value: Float) -> String {
   |> int.to_string()
 }
 
-pub fn start() {
+pub fn start(wrapper: fn(UiToGameMsg) -> a) -> Nil {
   let assert Ok(_) =
     lustre.application(init, update, view)
-    |> lustre.start("#ui", Nil)
+    |> lustre.start("#ui", wrapper)
   Nil
 }

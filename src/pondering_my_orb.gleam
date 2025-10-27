@@ -90,7 +90,7 @@ pub fn main() -> Nil {
   canvas.define_web_component()
 
   // Start the Lustre UI overlay
-  ui.start()
+  ui.start(UIMessage)
 
   tiramisu.run(
     dimensions: None,
