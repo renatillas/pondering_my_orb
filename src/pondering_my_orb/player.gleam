@@ -340,7 +340,8 @@ pub fn update(
   player: Player,
   nearest_enemy: Result(Enemy(id), Nil),
   delta_time: Float,
-) -> #(Player, Option(spell.Projectile)) {
+  player_died_msg player_died_msg: msg,
+) -> #(Player, Option(spell.Projectile), Effect(msg)) {
   let #(player, cast_result) =
     result.map(nearest_enemy, cast_spell(player, _, delta_time /. 1000.0))
     |> result.unwrap(#(player, Error(Nil)))
@@ -416,7 +417,12 @@ pub fn update(
       wand: wand.recharge_mana(player.wand, delta_time /. 1000.0),
     )
 
-  #(player, projectile)
+  let death_effect = case player.current_health <=. 0.0 {
+    True -> effect.from(fn(dispatch) { dispatch(player_died_msg) })
+    False -> effect.none()
+  }
+
+  #(player, projectile, death_effect)
 }
 
 fn cast_spell(

@@ -1,10 +1,10 @@
+import gleam/bool
 import gleam/float
 import gleam/int
 import gleam/javascript/promise
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import iv
 import paint/canvas
 import pondering_my_orb/camera
 import pondering_my_orb/enemy.{type Enemy}
@@ -12,7 +12,6 @@ import pondering_my_orb/id.{type Id}
 import pondering_my_orb/map
 import pondering_my_orb/player
 import pondering_my_orb/spell
-import pondering_my_orb/spell_bag
 import pondering_my_orb/ui
 import pondering_my_orb/wand
 import tiramisu
@@ -31,8 +30,17 @@ import vec/vec3f
 
 const screen_shake_duration = 0.5
 
+pub type GamePhase {
+  StartScreen
+  LoadingScreen
+  Playing
+  GameOver
+}
+
 pub type Model {
   Model(
+    game_phase: GamePhase,
+    restarted: Bool,
     // Map
     ground: Option(map.Obstacle(map.Ground)),
     boxes: Option(map.Obstacle(map.Box)),
@@ -46,6 +54,7 @@ pub type Model {
     projectiles: List(spell.Projectile),
     // Enemies
     enemies: List(Enemy(Id)),
+    enemy_spawner_id: Option(Int),
     next_enemy_id: Int,
     // Inventory
     inventory_open: Bool,
@@ -54,6 +63,10 @@ pub type Model {
 
 pub type Msg {
   Tick
+  // Game Phase
+  GameStarted
+  PlayerDied
+  GameRestarted
   // Map
   AssetsLoaded(assets: asset.BatchLoadResult)
   // Enemies
@@ -68,10 +81,8 @@ pub type Msg {
   PointerLockFailed
   // Inventory
   ToggleInventory
-  UpdatePlayerInventory(
-    wand_slots: iv.Array(option.Option(spell.Spell)),
-    spell_bag: spell_bag.SpellBag,
-  )
+  // UI
+  UIMessage(ui.UiToGameMsg)
 }
 
 pub fn main() -> Nil {
@@ -79,7 +90,7 @@ pub fn main() -> Nil {
   canvas.define_web_component()
 
   // Start the Lustre UI overlay
-  ui.start()
+  ui.start(UIMessage)
 
   tiramisu.run(
     dimensions: None,
@@ -91,37 +102,20 @@ pub fn main() -> Nil {
 }
 
 fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), Option(_)) {
-  let assets = [
-    asset.FBXAsset("PSX_Dungeon/Models/Box.fbx", None),
-    asset.FBXAsset(
-      "PSX_Dungeon/Models/Floor_Tiles.fbx",
-      Some("PSX_Dungeon/Textures/"),
-    ),
-    asset.TextureAsset("PSX_Dungeon/Textures/TEX_Ground_04.png"),
-    asset.TextureAsset("PSX_Dungeon/Textures/TEX_Crate_01.png"),
-  ]
-
-  let start_spawning_enemies =
-    effect.interval(ms: 2000, msg: EnemySpawned, on_created: EnemySpawnStarted)
-
   let physics_world =
     physics.new_world(physics.WorldConfig(gravity: Vec3(0.0, -9.81, 0.0)))
 
   let effects =
     effect.batch([
-      effect.from_promise(promise.map(
-        asset.load_batch_simple(assets),
-        AssetsLoaded,
-      )),
-      effect.tick(Tick),
       effect.from(fn(_) { debug.show_collider_wireframes(physics_world, True) }),
-      start_spawning_enemies,
     ])
 
   let player_bindings = player.default_bindings()
 
   #(
     Model(
+      game_phase: StartScreen,
+      restarted: False,
       ground: None,
       boxes: None,
       player: player.init(),
@@ -130,6 +124,7 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), Option(_)) {
       camera: camera.init(),
       projectiles: [],
       enemies: [],
+      enemy_spawner_id: None,
       next_enemy_id: 0,
       inventory_open: False,
     ),
@@ -145,7 +140,60 @@ fn update(
 ) -> #(Model, Effect(Msg), Option(_)) {
   let assert Some(physics_world) = ctx.physics_world
 
+  echo msg
+
   case msg {
+    GameStarted -> {
+      let assets = [
+        asset.FBXAsset("PSX_Dungeon/Models/Box.fbx", None),
+        asset.FBXAsset(
+          "PSX_Dungeon/Models/Floor_Tiles.fbx",
+          Some("PSX_Dungeon/Textures/"),
+        ),
+        asset.TextureAsset("PSX_Dungeon/Textures/TEX_Ground_04.png"),
+        asset.TextureAsset("PSX_Dungeon/Textures/TEX_Crate_01.png"),
+      ]
+
+      let effects =
+        effect.batch([
+          effect.from_promise(promise.map(
+            asset.load_batch_simple(assets),
+            AssetsLoaded,
+          )),
+          tiramisu_ui.dispatch_to_lustre(ui.GamePhaseChanged(ui.LoadingScreen)),
+        ])
+
+      #(Model(..model, game_phase: LoadingScreen), effects, ctx.physics_world)
+    }
+    PlayerDied -> {
+      let effect =
+        effect.batch([
+          effect.exit_pointer_lock(),
+          tiramisu_ui.dispatch_to_lustre(ui.GamePhaseChanged(ui.GameOver)),
+        ])
+
+      #(Model(..model, game_phase: GameOver), effect, ctx.physics_world)
+    }
+    GameRestarted -> {
+      let cancel_spawner_effect = case model.enemy_spawner_id {
+        Some(id) -> effect.cancel_interval(id)
+        None -> effect.none()
+      }
+
+      echo model.enemy_spawner_id
+
+      let #(new_model, new_effects, new_physics_world) = init(ctx)
+
+      #(
+        Model(..new_model, restarted: True),
+        effect.batch([
+          new_effects,
+          cancel_spawner_effect,
+          tiramisu_ui.dispatch_to_lustre(ui.GamePhaseChanged(ui.StartScreen)),
+        ]),
+        new_physics_world,
+      )
+    }
     ToggleInventory -> {
       let new_inventory_state = !model.inventory_open
 
@@ -172,6 +220,14 @@ fn update(
       )
     }
     Tick -> {
+      // Only process game logic if game is in playing phase
+      use <- bool.guard(model.game_phase != Playing, return: #(
+        model,
+        effect.none(),
+        // NOTE: do tick?
+        ctx.physics_world,
+      ))
+
       // Check for I key press to toggle inventory
       let inventory_toggle_effect = case
         input.is_key_just_pressed(ctx.input, input.KeyI)
@@ -272,10 +328,10 @@ fn update(
 
       let nearest_enemy = player.nearest_enemy_position(player, enemies)
 
-      let #(player, cast_result) =
+      let #(player, cast_result, death_effect) =
         player
         |> player.with_position(player_position)
-        |> player.update(nearest_enemy, scaled_delta)
+        |> player.update(nearest_enemy, scaled_delta, PlayerDied)
 
       // Add newly cast projectile
       let updated_projectiles = case cast_result {
@@ -305,6 +361,17 @@ fn update(
           delta_time: scaled_delta,
         )
 
+      let effects =
+        effect.batch([
+          effect.tick(Tick),
+          effect.batch(enemy_effects),
+          effect.batch(input_effects),
+          spell_effect,
+          ui_effect,
+          inventory_toggle_effect,
+          death_effect,
+        ])
+
       #(
         Model(
           ..model,
@@ -314,14 +381,7 @@ fn update(
           enemies:,
           pending_player_knockback: None,
         ),
-        effect.batch([
-          effect.tick(Tick),
-          effect.batch(enemy_effects),
-          effect.batch(input_effects),
-          spell_effect,
-          ui_effect,
-          inventory_toggle_effect,
-        ]),
+        effects,
         Some(physics_world),
       )
     }
@@ -390,7 +450,11 @@ fn update(
         )
       }
     }
-    EnemySpawnStarted(_) -> #(model, effect.none(), Some(physics_world))
+    EnemySpawnStarted(id) -> #(
+      Model(..model, enemy_spawner_id: Some(id)),
+      effect.none(),
+      Some(physics_world),
+    )
     ProjectileDamagedEnemy(enemy_id, damage, _knockback_direction) -> {
       // Knockback is now applied during Tick, so just handle damage here
       let enemy =
@@ -430,17 +494,35 @@ fn update(
       }
     }
     EnemyKilled(_) -> #(model, effect.none(), Some(physics_world))
-    UpdatePlayerInventory(wand_slots, spell_bag) -> {
-      // Update player's wand and spell bag from UI changes
-      let updated_wand = wand.Wand(..model.player.wand, slots: wand_slots)
-      let updated_player =
-        player.Player(..model.player, wand: updated_wand, spell_bag: spell_bag)
+    UIMessage(ui_msg) -> {
+      case ui_msg {
+        ui.GameStarted -> #(
+          model,
+          effect.from(fn(dispatch) { dispatch(GameStarted) }),
+          Some(physics_world),
+        )
+        ui.GameRestarted -> #(
+          model,
+          effect.from(fn(dispatch) { dispatch(GameRestarted) }),
+          Some(physics_world),
+        )
+        ui.UpdatePlayerInventory(wand_slots, spell_bag) -> {
+          // Update player's wand and spell bag from UI changes
+          let updated_wand = wand.Wand(..model.player.wand, slots: wand_slots)
+          let updated_player =
+            player.Player(
+              ..model.player,
+              wand: updated_wand,
+              spell_bag: spell_bag,
+            )
 
-      #(
-        Model(..model, player: updated_player),
-        effect.none(),
-        ctx.physics_world,
-      )
+          #(
+            Model(..model, player: updated_player),
+            effect.none(),
+            ctx.physics_world,
+          )
+        }
+      }
     }
   }
 }
@@ -497,6 +579,8 @@ fn update_model_with_assets(
           asset.NearestFilter,
         )
       }),
+      effect.tick(Tick),
+      tiramisu_ui.dispatch_to_lustre(ui.GamePhaseChanged(ui.Playing)),
       effect.from(fn(_) {
         asset.apply_texture_to_object(
           box_fbx.scene,
@@ -504,11 +588,22 @@ fn update_model_with_assets(
           asset.NearestFilter,
         )
       }),
+      effect.interval(
+        ms: 2000,
+        msg: EnemySpawned,
+        on_created: EnemySpawnStarted,
+      ),
     ])
-  #(Model(..model, ground:, boxes:), effects, ctx.physics_world)
+  #(
+    Model(..model, ground:, boxes:, game_phase: Playing),
+    effects,
+    ctx.physics_world,
+  )
 }
 
 fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
+  use <- bool.guard(model.game_phase != Playing, return: [])
+
   let camera = camera.view(model.camera, model.player)
 
   let ground = case model.ground {
