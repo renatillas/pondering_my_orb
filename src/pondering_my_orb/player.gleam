@@ -349,7 +349,7 @@ pub fn update(
   player: Player,
   nearest_enemy: Result(Enemy(id), Nil),
   delta_time: Float,
-  player_died_msg player_died_msg: msg,
+  player_died_msg: msg,
   next_projectile_id: Int,
 ) -> #(Player, Option(spell.Projectile), Effect(msg), Int) {
   let #(player, cast_result, next_projectile_id) =

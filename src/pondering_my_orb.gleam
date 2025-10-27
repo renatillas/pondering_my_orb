@@ -162,8 +162,6 @@ fn update(
 ) -> #(Model, Effect(Msg), Option(_)) {
   let assert Some(physics_world) = ctx.physics_world
 
-  echo msg
-
   case msg {
     GameStarted -> {
       let assets = [
@@ -204,8 +202,6 @@ fn update(
         Some(id) -> effect.cancel_interval(id)
         None -> effect.none()
       }
-
-      echo model.enemy_spawner_id
 
       let #(new_model, new_effects, new_physics_world) = init(ctx)
 
