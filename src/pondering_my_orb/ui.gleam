@@ -47,6 +47,10 @@ pub type Msg {
   NoOp
 }
 
+pub type OutMsg {
+  UIMessage(UiToGameMsg)
+}
+
 pub type UiToGameMsg {
   GameStarted
   GameRestarted
@@ -91,22 +95,21 @@ pub fn update(model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
       Model(..model, game_phase:),
       effect.none(),
     )
-    StartButtonClicked -> {
-      echo "Start button clicked"
-      #(model, tiramisu_ui.dispatch_to_tiramisu(GameStarted))
-    }
+    StartButtonClicked -> #(
+      model,
+      tiramisu_ui.dispatch_to_tiramisu(UIMessage(GameStarted)),
+    )
     RestartButtonClicked -> #(
       model,
-      tiramisu_ui.dispatch_to_tiramisu(GameRestarted),
+      tiramisu_ui.dispatch_to_tiramisu(UIMessage(GameRestarted)),
     )
     GameStateUpdated(state) -> {
       // Detect inventory closing (transition from True to False) and sync changes
       let sync_effect = case model.inventory_open, state.inventory_open {
         True, False ->
-          tiramisu_ui.dispatch_to_tiramisu(UpdatePlayerInventory(
-            model.wand_slots,
-            model.spell_bag,
-          ))
+          tiramisu_ui.dispatch_to_tiramisu(
+            UIMessage(UpdatePlayerInventory(model.wand_slots, model.spell_bag)),
+          )
         _, _ -> effect.none()
       }
 

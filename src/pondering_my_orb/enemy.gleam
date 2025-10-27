@@ -128,7 +128,7 @@ pub fn basic(id id: id, position position: Vec3(Float)) {
   new(
     id:,
     health: 20,
-    damage: 10.0,
+    damage: 50.0,
     damage_range: 1.0,
     attack_cooldown: 1.0,
     speed: 3.0,
