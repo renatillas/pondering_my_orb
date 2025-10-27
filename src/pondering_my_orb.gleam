@@ -1,3 +1,4 @@
+import gleam/bool
 import gleam/float
 import gleam/int
 import gleam/javascript/promise
@@ -31,8 +32,16 @@ import vec/vec3f
 
 const screen_shake_duration = 0.5
 
+pub type GamePhase {
+  StartScreen
+  LoadingScreen
+  Playing
+  GameOver
+}
+
 pub type Model {
   Model(
+    game_phase: GamePhase,
     // Map
     ground: Option(map.Obstacle(map.Ground)),
     boxes: Option(map.Obstacle(map.Box)),
@@ -54,6 +63,10 @@ pub type Model {
 
 pub type Msg {
   Tick
+  // Game Phase
+  GameStarted
+  PlayerDied
+  GameRestarted
   // Map
   AssetsLoaded(assets: asset.BatchLoadResult)
   // Enemies
@@ -91,37 +104,19 @@ pub fn main() -> Nil {
 }
 
 fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), Option(_)) {
-  let assets = [
-    asset.FBXAsset("PSX_Dungeon/Models/Box.fbx", None),
-    asset.FBXAsset(
-      "PSX_Dungeon/Models/Floor_Tiles.fbx",
-      Some("PSX_Dungeon/Textures/"),
-    ),
-    asset.TextureAsset("PSX_Dungeon/Textures/TEX_Ground_04.png"),
-    asset.TextureAsset("PSX_Dungeon/Textures/TEX_Crate_01.png"),
-  ]
-
-  let start_spawning_enemies =
-    effect.interval(ms: 2000, msg: EnemySpawned, on_created: EnemySpawnStarted)
-
   let physics_world =
     physics.new_world(physics.WorldConfig(gravity: Vec3(0.0, -9.81, 0.0)))
 
   let effects =
     effect.batch([
-      effect.from_promise(promise.map(
-        asset.load_batch_simple(assets),
-        AssetsLoaded,
-      )),
-      effect.tick(Tick),
       effect.from(fn(_) { debug.show_collider_wireframes(physics_world, True) }),
-      start_spawning_enemies,
     ])
 
   let player_bindings = player.default_bindings()
 
   #(
     Model(
+      game_phase: StartScreen,
       ground: None,
       boxes: None,
       player: player.init(),
@@ -145,7 +140,39 @@ fn update(
 ) -> #(Model, Effect(Msg), Option(_)) {
   let assert Some(physics_world) = ctx.physics_world
 
+  echo #(msg, msg == GameStarted)
+
   case msg {
+    GameStarted -> {
+      echo "!"
+      let assets = [
+        asset.FBXAsset("PSX_Dungeon/Models/Box.fbx", None),
+        asset.FBXAsset(
+          "PSX_Dungeon/Models/Floor_Tiles.fbx",
+          Some("PSX_Dungeon/Textures/"),
+        ),
+        asset.TextureAsset("PSX_Dungeon/Textures/TEX_Ground_04.png"),
+        asset.TextureAsset("PSX_Dungeon/Textures/TEX_Crate_01.png"),
+      ]
+
+      let effects =
+        effect.batch([
+          effect.from_promise(promise.map(
+            asset.load_batch_simple(assets),
+            AssetsLoaded,
+          )),
+          tiramisu_ui.dispatch_to_lustre(ui.GamePhaseChanged(ui.LoadingScreen)),
+        ])
+
+      #(Model(..model, game_phase: LoadingScreen), effects, ctx.physics_world)
+    }
+    PlayerDied -> {
+      let effect =
+        tiramisu_ui.dispatch_to_lustre(ui.GamePhaseChanged(ui.GameOver))
+
+      #(Model(..model, game_phase: GameOver), effect, ctx.physics_world)
+    }
+    GameRestarted -> init(ctx)
     ToggleInventory -> {
       let new_inventory_state = !model.inventory_open
 
@@ -172,6 +199,14 @@ fn update(
       )
     }
     Tick -> {
+      // Only process game logic if game is in playing phase
+      use <- bool.guard(model.game_phase != Playing, return: #(
+        model,
+        effect.tick(Tick),
+        // NOTE: do tick?
+        ctx.physics_world,
+      ))
+
       // Check for I key press to toggle inventory
       let inventory_toggle_effect = case
         input.is_key_just_pressed(ctx.input, input.KeyI)
@@ -272,10 +307,10 @@ fn update(
 
       let nearest_enemy = player.nearest_enemy_position(player, enemies)
 
-      let #(player, cast_result) =
+      let #(player, cast_result, death_effect) =
         player
         |> player.with_position(player_position)
-        |> player.update(nearest_enemy, scaled_delta)
+        |> player.update(nearest_enemy, scaled_delta, PlayerDied)
 
       // Add newly cast projectile
       let updated_projectiles = case cast_result {
@@ -305,6 +340,17 @@ fn update(
           delta_time: scaled_delta,
         )
 
+      let effects =
+        effect.batch([
+          effect.tick(Tick),
+          effect.batch(enemy_effects),
+          effect.batch(input_effects),
+          spell_effect,
+          ui_effect,
+          inventory_toggle_effect,
+          death_effect,
+        ])
+
       #(
         Model(
           ..model,
@@ -314,14 +360,7 @@ fn update(
           enemies:,
           pending_player_knockback: None,
         ),
-        effect.batch([
-          effect.tick(Tick),
-          effect.batch(enemy_effects),
-          effect.batch(input_effects),
-          spell_effect,
-          ui_effect,
-          inventory_toggle_effect,
-        ]),
+        effects,
         Some(physics_world),
       )
     }
@@ -459,6 +498,9 @@ fn update_model_with_assets(
   let assert Ok(box_texture) =
     asset.get_texture(assets.cache, "PSX_Dungeon/Textures/TEX_Crate_01.png")
 
+  let start_spawning_enemies =
+    effect.interval(ms: 2000, msg: EnemySpawned, on_created: EnemySpawnStarted)
+
   let boxes =
     list.map(list.range(0, 19), fn(_) {
       transform.identity
@@ -497,6 +539,9 @@ fn update_model_with_assets(
           asset.NearestFilter,
         )
       }),
+      effect.tick(Tick),
+      start_spawning_enemies,
+      tiramisu_ui.dispatch_to_lustre(ui.GamePhaseChanged(ui.Playing)),
       effect.from(fn(_) {
         asset.apply_texture_to_object(
           box_fbx.scene,
@@ -505,10 +550,16 @@ fn update_model_with_assets(
         )
       }),
     ])
-  #(Model(..model, ground:, boxes:), effects, ctx.physics_world)
+  #(
+    Model(..model, ground:, boxes:, game_phase: Playing),
+    effects,
+    ctx.physics_world,
+  )
 }
 
 fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
+  use <- bool.guard(model.game_phase != Playing, return: [])
+
   let camera = camera.view(model.camera, model.player)
 
   let ground = case model.ground {

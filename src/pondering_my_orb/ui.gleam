@@ -8,6 +8,7 @@ import lustre/attribute
 import lustre/effect
 import lustre/element
 import lustre/element/html
+import lustre/event
 import pondering_my_orb/spell
 import pondering_my_orb/spell_bag
 import sortable
@@ -15,6 +16,7 @@ import tiramisu/ui as tiramisu_ui
 
 pub type Model {
   Model(
+    game_phase: GamePhase,
     player_health: Float,
     player_max_health: Float,
     player_mana: Float,
@@ -26,8 +28,18 @@ pub type Model {
   )
 }
 
+pub type GamePhase {
+  StartScreen
+  LoadingScreen
+  Playing
+  GameOver
+}
+
 pub type Msg {
   GameStateUpdated(GameState)
+  GamePhaseChanged(GamePhase)
+  StartButtonClicked
+  RestartButtonClicked
   WandSortableMsg(sortable.SortableMsg(Msg))
   BagSortableMsg(sortable.SortableMsg(Msg))
   ToggleInventory
@@ -36,6 +48,8 @@ pub type Msg {
 }
 
 pub type UiToGameMsg {
+  GameStarted
+  GameRestarted
   UpdatePlayerInventory(
     wand_slots: iv.Array(option.Option(spell.Spell)),
     spell_bag: spell_bag.SpellBag,
@@ -57,6 +71,7 @@ pub type GameState {
 pub fn init(_flags) -> #(Model, effect.Effect(Msg)) {
   #(
     Model(
+      game_phase: StartScreen,
       player_health: 100.0,
       player_max_health: 100.0,
       player_mana: 100.0,
@@ -72,6 +87,18 @@ pub fn init(_flags) -> #(Model, effect.Effect(Msg)) {
 
 pub fn update(model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
   case msg {
+    GamePhaseChanged(game_phase) -> #(
+      Model(..model, game_phase:),
+      effect.none(),
+    )
+    StartButtonClicked -> {
+      echo "Start button clicked"
+      #(model, tiramisu_ui.dispatch_to_tiramisu(GameStarted))
+    }
+    RestartButtonClicked -> #(
+      model,
+      tiramisu_ui.dispatch_to_tiramisu(GameRestarted),
+    )
     GameStateUpdated(state) -> {
       // Detect inventory closing (transition from True to False) and sync changes
       let sync_effect = case model.inventory_open, state.inventory_open {
@@ -92,6 +119,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
 
       #(
         Model(
+          game_phase: model.game_phase,
           player_health: state.player_health,
           player_max_health: state.player_max_health,
           player_mana: state.player_mana,
@@ -294,6 +322,115 @@ fn reorder_array(
 }
 
 pub fn view(model: Model) -> element.Element(Msg) {
+  case model.game_phase {
+    StartScreen -> view_start_screen()
+    LoadingScreen -> view_loading_screen()
+    Playing -> view_playing(model)
+    GameOver -> view_game_over_screen(model)
+  }
+}
+
+fn view_start_screen() -> element.Element(Msg) {
+  html.div(
+    [
+      attribute.class(
+        "fixed inset-0 flex flex-col items-center justify-center bg-gradient-to-b from-purple-900 via-indigo-900 to-black",
+      ),
+    ],
+    [
+      // Title
+      html.div([attribute.class("text-center mb-12 pointer-events-auto")], [
+        html.h1(
+          [
+            attribute.class(
+              "text-7xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-amber-400 to-orange-500 mb-4",
+            ),
+            attribute.style("text-shadow", "0 0 30px rgba(251, 191, 36, 0.5)"),
+          ],
+          [html.text("PONDERING MY ORB")],
+        ),
+        html.p([attribute.class("text-2xl text-purple-300")], [
+          html.text("A Magical Spell-Casting Adventure"),
+        ]),
+      ]),
+
+      // Start button
+      html.button(
+        [
+          attribute.class(
+            "px-12 py-6 text-3xl font-bold bg-gradient-to-r from-amber-500 to-orange-600 text-white rounded-lg shadow-2xl hover:scale-110 transform transition-all duration-200 border-4 border-amber-300 pointer-events-auto cursor-pointer",
+          ),
+          attribute.style("text-shadow", "2px 2px 4px rgba(0,0,0,0.5)"),
+          event.on_click(StartButtonClicked),
+        ],
+        [html.text("START GAME")],
+      ),
+
+      // Controls info
+      html.div(
+        [
+          attribute.class(
+            "absolute bottom-8 left-1/2 transform -translate-x-1/2 text-center text-purple-300 pointer-events-none",
+          ),
+        ],
+        [
+          html.p([attribute.class("mb-2")], [html.text("Controls:")]),
+          html.p([attribute.class("text-sm")], [
+            html.text(
+              "WASD - Move | Mouse - Look | I - Inventory | ESC - Exit Pointer Lock",
+            ),
+          ]),
+        ],
+      ),
+    ],
+  )
+}
+
+fn view_loading_screen() -> element.Element(Msg) {
+  html.div(
+    [
+      attribute.class(
+        "fixed inset-0 flex flex-col items-center justify-center bg-gradient-to-b from-purple-900 via-indigo-900 to-black",
+      ),
+    ],
+    [
+      html.div([attribute.class("text-center")], [
+        html.h2(
+          [
+            attribute.class("text-5xl font-bold text-amber-400 mb-8"),
+            attribute.style("text-shadow", "0 0 20px rgba(251, 191, 36, 0.5)"),
+          ],
+          [html.text("Loading...")],
+        ),
+
+        // Animated loading indicator
+        html.div(
+          [attribute.class("flex gap-3 justify-center")],
+          list.map([1, 2, 3, 4, 5], fn(i) {
+            html.div(
+              [
+                attribute.class(
+                  "w-4 h-4 bg-amber-400 rounded-full animate-pulse",
+                ),
+                attribute.style(
+                  "animation-delay",
+                  float.to_string(int.to_float(i) *. 0.2) <> "s",
+                ),
+              ],
+              [],
+            )
+          }),
+        ),
+
+        html.p([attribute.class("mt-8 text-purple-300 text-xl")], [
+          html.text("Preparing your magical arsenal..."),
+        ]),
+      ]),
+    ],
+  )
+}
+
+fn view_playing(model: Model) -> element.Element(Msg) {
   html.div(
     [
       attribute.class(
@@ -428,6 +565,62 @@ pub fn view(model: Model) -> element.Element(Msg) {
           )
         False -> html.div([], [])
       },
+    ],
+  )
+}
+
+fn view_game_over_screen(model: Model) -> element.Element(Msg) {
+  html.div(
+    [
+      attribute.class(
+        "fixed inset-0 flex flex-col items-center justify-center bg-gradient-to-b from-red-900 via-purple-900 to-black pointer-events-auto",
+      ),
+    ],
+    [
+      html.div([attribute.class("text-center mb-12")], [
+        html.h1(
+          [
+            attribute.class(
+              "text-8xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-red-500 to-orange-500 mb-6",
+            ),
+            attribute.style("text-shadow", "0 0 40px rgba(239, 68, 68, 0.5)"),
+          ],
+          [html.text("GAME OVER")],
+        ),
+
+        html.p([attribute.class("text-3xl text-purple-300 mb-8")], [
+          html.text("Your journey has ended..."),
+        ]),
+
+        // Stats
+        html.div(
+          [
+            attribute.class(
+              "bg-black/50 p-8 rounded-lg border-4 border-red-500 mb-8",
+            ),
+          ],
+          [
+            html.p([attribute.class("text-2xl text-white mb-2")], [
+              html.text("Final Stats"),
+            ]),
+            html.p([attribute.class("text-xl text-gray-300")], [
+              html.text("Health: " <> float.to_string(model.player_health)),
+            ]),
+          ],
+        ),
+      ]),
+
+      // Restart button
+      html.button(
+        [
+          attribute.class(
+            "px-12 py-6 text-3xl font-bold bg-gradient-to-r from-green-500 to-emerald-600 text-white rounded-lg shadow-2xl hover:scale-110 transform transition-all duration-200 border-4 border-green-300 cursor-pointer",
+          ),
+          attribute.style("text-shadow", "2px 2px 4px rgba(0,0,0,0.5)"),
+          event.on_click(RestartButtonClicked),
+        ],
+        [html.text("TRY AGAIN")],
+      ),
     ],
   )
 }
