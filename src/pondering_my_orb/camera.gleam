@@ -11,26 +11,24 @@ import vec/vec3.{type Vec3, Vec3}
 pub type Camera {
   Camera(
     pointer_locked: Bool,
-    pitch: Float,
-    roll: Float,
     distance: Float,
     height: Float,
     position: Vec3(Float),
     rotation: transform.Quaternion,
     shake_time: Float,
+    pitch: Float,
   )
 }
 
 pub fn init() {
   Camera(
     pointer_locked: False,
-    pitch: 0.0,
-    roll: 0.0,
     distance: 5.0,
     height: 2.0,
     position: Vec3(0.0, 7.0, -5.0),
     rotation: transform.Quaternion(x: 0.0, y: 0.0, z: 0.0, w: 1.0),
     shake_time: 0.0,
+    pitch: 0.0,
   )
 }
 
@@ -81,13 +79,7 @@ pub fn update(
     transform.look_at(from: from_transform, to: to_transform, up: option.None)
   let rotation = transform.rotation_quaternion(look_at_transform)
 
-  Camera(
-    ..camera,
-    pitch: new_pitch,
-    shake_time:,
-    position: new_position,
-    rotation:,
-  )
+  Camera(..camera, shake_time:, position: new_position, rotation:, pitch: new_pitch)
 }
 
 pub fn view(camera: Camera, player: player.Player) {
