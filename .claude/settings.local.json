@@ -3,7 +3,9 @@
     "allow": [
       "Read(//Users/renata-amutio/Projects/renatillas/sortable/examples/**)",
       "Bash(gleam run:*)",
-      "Read(//Users/renata-amutio/Projects/renatillas/sortable/**)"
+      "Read(//Users/renata-amutio/Projects/renatillas/sortable/**)",
+      "Bash(gleam test:*)",
+      "Read(//Users/renata-amutio/Projects/renatillas/tiramisu/src/tiramisu/**)"
     ],
     "deny": [],
     "ask": []

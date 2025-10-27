@@ -12,9 +12,11 @@ pub type Camera {
   Camera(
     pointer_locked: Bool,
     pitch: Float,
+    roll: Float,
     distance: Float,
     height: Float,
     position: Vec3(Float),
+    rotation: transform.Quaternion,
     shake_time: Float,
   )
 }
@@ -23,9 +25,11 @@ pub fn init() {
   Camera(
     pointer_locked: False,
     pitch: 0.0,
+    roll: 0.0,
     distance: 5.0,
     height: 2.0,
     position: Vec3(0.0, 7.0, -5.0),
+    rotation: transform.Quaternion(x: 0.0, y: 0.0, z: 0.0, w: 1.0),
     shake_time: 0.0,
   )
 }
@@ -55,10 +59,8 @@ pub fn update(
   let lerp_speed = 25.0
   let lerp_factor = float.min(1.0, lerp_speed *. delta_time /. 1000.0)
 
-  Camera(
-    ..camera,
-    shake_time:,
-    position: Vec3(
+  let new_position =
+    Vec3(
       camera.position.x
         +. { target_camera_position.x -. camera.position.x }
         *. lerp_factor,
@@ -68,7 +70,23 @@ pub fn update(
       camera.position.z
         +. { target_camera_position.z -. camera.position.z }
         *. lerp_factor,
-    ),
+    )
+
+  // Calculate camera rotation quaternion by looking at the player
+  let look_at_target =
+    Vec3(player.position.x, player.position.y +. 1.0, player.position.z)
+  let from_transform = transform.at(position: new_position)
+  let to_transform = transform.at(position: look_at_target)
+  let look_at_transform =
+    transform.look_at(from: from_transform, to: to_transform, up: option.None)
+  let rotation = transform.rotation_quaternion(look_at_transform)
+
+  Camera(
+    ..camera,
+    pitch: new_pitch,
+    shake_time:,
+    position: new_position,
+    rotation:,
   )
 }
 

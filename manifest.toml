@@ -49,7 +49,7 @@ packages = [
   { name = "sortable", version = "2.0.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "lustre"], source = "git", repo = "https://github.com/renatillas/sortable", commit = "da5702872f4b2e0c6e38852636bbd5cd580dd0e9" },
   { name = "structures", version = "1.0.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "structures", source = "hex", outer_checksum = "25002A9EBBB373C4AA4333F4CDC3745F2CCE227E79730AAAB36064F6A351C967" },
   { name = "telemetry", version = "1.3.0", build_tools = ["rebar3"], requirements = [], otp_app = "telemetry", source = "hex", outer_checksum = "7015FC8919DBE63764F4B4B87A95B7C0996BD539E0D499BE6EC9D7F3875B79E6" },
-  { name = "tiramisu", version = "4.0.3", build_tools = ["gleam"], requirements = ["gleam_community_maths", "gleam_javascript", "gleam_stdlib", "lustre", "paint", "plinth", "structures", "vec"], source = "git", repo = "https://github.com/renatillas/tiramisu", commit = "86809c9e02a5948adc96b5e68c061de1e8a7eed7" },
+  { name = "tiramisu", version = "5.0.0", build_tools = ["gleam"], requirements = ["gleam_community_maths", "gleam_javascript", "gleam_stdlib", "iv", "lustre", "paint", "plinth", "structures", "vec"], otp_app = "tiramisu", source = "hex", outer_checksum = "9A51914DA4E7B318367497B9A8606B72C6ACDBF999EE4DA1AAD37643664E7DEA" },
   { name = "tom", version = "2.0.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "gleam_time"], otp_app = "tom", source = "hex", outer_checksum = "74D0C5A3761F7A7D06994755D4D5AD854122EF8E9F9F76A3E7547606D8C77091" },
   { name = "tote", version = "1.0.2", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "tote", source = "hex", outer_checksum = "A249892E26A53C668897F8D47845B0007EEE07707A1A03437487F0CD5A452CA5" },
   { name = "vec", version = "3.0.1", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "vec", source = "hex", outer_checksum = "7658595B4792E29B150FF8854D15DEAC6D3F4EAFB31EEECE473845794ABA7198" },
@@ -67,6 +67,6 @@ lustre_dev_tools = { version = ">= 2.1.3 and < 3.0.0" }
 mascarpone = { version = ">= 1.3.0 and < 2.0.0" }
 paint = { version = "== 0.4.0" }
 sortable = { git = "https://github.com/renatillas/sortable", ref = "main" }
-tiramisu = { git = "https://github.com/renatillas/tiramisu", ref = "main" }
+tiramisu = { version = ">= 5.0.0 and < 6.0.0" }
 tote = { version = ">= 1.0.2 and < 2.0.0" }
 vec = { version = ">= 3.0.1 and < 4.0.0" }

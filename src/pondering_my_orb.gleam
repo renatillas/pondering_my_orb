@@ -14,6 +14,7 @@ import pondering_my_orb/player
 import pondering_my_orb/spell
 import pondering_my_orb/ui
 import pondering_my_orb/wand
+import pondering_my_orb/xp_shard
 import tiramisu
 import tiramisu/asset
 import tiramisu/background
@@ -23,6 +24,7 @@ import tiramisu/input
 import tiramisu/light
 import tiramisu/physics
 import tiramisu/scene
+import tiramisu/spritesheet
 import tiramisu/transform
 import tiramisu/ui as tiramisu_ui
 import vec/vec3.{type Vec3, Vec3}
@@ -52,10 +54,21 @@ pub type Model {
     camera: camera.Camera,
     // Projectiles
     projectiles: List(spell.Projectile),
+    projectile_hits: List(spell.ProjectileHit(Id)),
+    next_projectile_id: Int,
     // Enemies
     enemies: List(Enemy(Id)),
     enemy_spawner_id: Option(Int),
     next_enemy_id: Int,
+    // XP System
+    xp_shards: List(xp_shard.XPShard),
+    next_xp_shard_id: Int,
+    xp_spritesheet: Option(spritesheet.Spritesheet),
+    xp_animation: Option(spritesheet.Animation),
+    // Spell Effects
+    fireball_spritesheet: Option(spritesheet.Spritesheet),
+    fireball_animation: Option(spritesheet.Animation),
+    explosion_spritesheet: Option(spritesheet.Spritesheet),
     // Inventory
     inventory_open: Bool,
   )
@@ -123,9 +136,18 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), Option(_)) {
       pending_player_knockback: None,
       camera: camera.init(),
       projectiles: [],
+      projectile_hits: [],
+      next_projectile_id: 0,
       enemies: [],
       enemy_spawner_id: None,
       next_enemy_id: 0,
+      xp_shards: [],
+      next_xp_shard_id: 0,
+      xp_spritesheet: None,
+      xp_animation: None,
+      fireball_spritesheet: None,
+      fireball_animation: None,
+      explosion_spritesheet: None,
       inventory_open: False,
     ),
     effects,
@@ -152,6 +174,9 @@ fn update(
         ),
         asset.TextureAsset("PSX_Dungeon/Textures/TEX_Ground_04.png"),
         asset.TextureAsset("PSX_Dungeon/Textures/TEX_Crate_01.png"),
+        asset.TextureAsset("spr_coin_azu.png"),
+        asset.TextureAsset("SPRITESHEET_Files/FireBall_2_64x64.png"),
+        asset.TextureAsset("SPRITESHEET_Files/Explosion_2_64x64.png"),
       ]
 
       let effects =
@@ -277,13 +302,18 @@ fn update(
         })
         |> list.unzip()
 
-      let #(updated_projectiles, spell_effect, projectile_hits) =
-        spell.update_with_hits(
+      // Update projectiles and create explosions on collision
+      let #(updated_projectiles, projectile_hits, spell_effect) =
+        spell.update(
           model.projectiles,
           model.enemies,
           scaled_delta,
           ProjectileDamagedEnemy,
         )
+
+      // Update existing explosions and add new ones
+      let all_hits = list.append(model.projectile_hits, projectile_hits)
+      let updated_hits = spell.update_projectile_hits(all_hits, scaled_delta)
 
       // Only update physics if game is not paused (inventory closed)
       let physics_world = case model.inventory_open {
@@ -305,7 +335,7 @@ fn update(
           |> list.fold(over: projectile_hits, from: _, with: fn(pw, hit) {
             let knockback_force = 80.0
             let Vec3(horizontal_x, _, horizontal_z) =
-              Vec3(hit.projectile_direction.x, 0.0, hit.projectile_direction.z)
+              Vec3(hit.direction.x, 0.0, hit.direction.z)
               |> vec3f.normalize()
               |> vec3f.scale(knockback_force)
 
@@ -328,10 +358,38 @@ fn update(
 
       let nearest_enemy = player.nearest_enemy_position(player, enemies)
 
-      let #(player, cast_result, death_effect) =
+      // Update XP shards with animation
+      let updated_xp_shards = case model.xp_animation {
+        Some(animation) ->
+          list.map(model.xp_shards, fn(shard) {
+            xp_shard.update(shard, animation, scaled_delta)
+          })
+        None -> model.xp_shards
+      }
+
+      // Check for XP shard collection
+      let #(remaining_shards, collected_xp) =
+        list.fold(updated_xp_shards, #([], 0), fn(acc, shard) {
+          let #(shards, xp) = acc
+          case xp_shard.should_collect(shard, player_position) {
+            True -> #(shards, xp + xp_shard.xp_value)
+            False -> #([shard, ..shards], xp)
+          }
+        })
+
+      let player =
         player
         |> player.with_position(player_position)
-        |> player.update(nearest_enemy, scaled_delta, PlayerDied)
+        |> player.add_xp(collected_xp)
+
+      let #(player, cast_result, death_effect, next_projectile_id) =
+        player.update(
+          player,
+          nearest_enemy,
+          scaled_delta,
+          PlayerDied,
+          model.next_projectile_id,
+        )
 
       // Add newly cast projectile
       let updated_projectiles = case cast_result {
@@ -349,6 +407,9 @@ fn update(
             wand_slots: player.wand.slots,
             spell_bag: player.spell_bag,
             inventory_open: model.inventory_open,
+            player_xp: player.current_xp,
+            player_xp_to_next_level: player.xp_to_next_level,
+            player_level: player.level,
           )),
         )
 
@@ -378,7 +439,10 @@ fn update(
           player:,
           camera:,
           projectiles: updated_projectiles,
+          projectile_hits: updated_hits,
+          next_projectile_id:,
           enemies:,
+          xp_shards: remaining_shards,
           pending_player_knockback: None,
         ),
         effects,
@@ -468,12 +532,7 @@ fn update(
 
       case enemy {
         Ok(killed_enemy) if killed_enemy.current_health <= 0 -> #(
-          Model(
-            ..model,
-            enemies: list.filter(model.enemies, fn(enemy) {
-              killed_enemy.id != enemy.id
-            }),
-          ),
+          model,
           effect.from(fn(dispatch) { dispatch(EnemyKilled(killed_enemy.id)) }),
           ctx.physics_world,
         )
@@ -493,7 +552,26 @@ fn update(
         _ -> #(model, effect.none(), ctx.physics_world)
       }
     }
-    EnemyKilled(_) -> #(model, effect.none(), Some(physics_world))
+    EnemyKilled(enemy_id) -> {
+      // Spawn XP shard at enemy position
+      let enemy_position =
+        list.find(model.enemies, fn(e) { e.id == enemy_id })
+        |> result.map(fn(e) { e.position })
+        |> result.unwrap(Vec3(0.0, 0.0, 0.0))
+
+      let new_shard = xp_shard.new(model.next_xp_shard_id, enemy_position)
+
+      #(
+        Model(
+          ..model,
+          enemies: list.filter(model.enemies, fn(enemy) { enemy_id != enemy.id }),
+          xp_shards: [new_shard, ..model.xp_shards],
+          next_xp_shard_id: model.next_xp_shard_id + 1,
+        ),
+        effect.none(),
+        Some(physics_world),
+      )
+    }
     UIMessage(ui_msg) -> {
       case ui_msg {
         ui.GameStarted -> #(
@@ -540,6 +618,62 @@ fn update_model_with_assets(
     asset.get_fbx(assets.cache, "PSX_Dungeon/Models/Box.fbx")
   let assert Ok(box_texture) =
     asset.get_texture(assets.cache, "PSX_Dungeon/Textures/TEX_Crate_01.png")
+
+  // Load XP coin texture and create spritesheet
+  let assert Ok(xp_texture) =
+    asset.get_texture(assets.cache, "spr_coin_azu.png")
+  let assert Ok(xp_spritesheet) =
+    spritesheet.from_grid(xp_texture, columns: 4, rows: 1)
+
+  let xp_animation =
+    spritesheet.animation(
+      name: "idle",
+      frames: [0, 1, 2, 3],
+      frame_duration: 500.0,
+      loop: spritesheet.Repeat,
+    )
+
+  // Load fireball texture and create spritesheet
+  let assert Ok(fireball_texture) =
+    asset.get_texture(assets.cache, "SPRITESHEET_Files/FireBall_2_64x64.png")
+  let assert Ok(fireball_spritesheet) =
+    spritesheet.from_grid(fireball_texture, columns: 45, rows: 1)
+
+  let fireball_animation =
+    spritesheet.animation(
+      name: "fireball",
+      frames: list.range(1, 45),
+      frame_duration: 50.0,
+      loop: spritesheet.Repeat,
+    )
+
+  // Load explosion texture and create spritesheet
+  let assert Ok(explosion_texture) =
+    asset.get_texture(assets.cache, "SPRITESHEET_Files/Explosion_2_64x64.png")
+  let assert Ok(explosion_spritesheet) =
+    spritesheet.from_grid(explosion_texture, columns: 44, rows: 1)
+
+  let explosion_animation =
+    spritesheet.animation(
+      name: "explosion",
+      frames: list.range(1, 44),
+      frame_duration: 40.0,
+      loop: spritesheet.Once,
+    )
+
+  // Create spell visuals for fireball
+  let fireball_visuals =
+    spell.SpellVisuals(
+      projectile_spritesheet: fireball_spritesheet,
+      projectile_animation: fireball_animation,
+      hit_spritesheet: explosion_spritesheet,
+      hit_animation: explosion_animation,
+    )
+
+  // Set up player's initial spell now that we have visuals
+  let assert Ok(updated_wand) =
+    wand.set_spell(model.player.wand, 0, spell.fireball(fireball_visuals))
+  let updated_player = player.Player(..model.player, wand: updated_wand)
 
   let boxes =
     list.map(list.range(0, 19), fn(_) {
@@ -594,8 +728,20 @@ fn update_model_with_assets(
         on_created: EnemySpawnStarted,
       ),
     ])
+
   #(
-    Model(..model, ground:, boxes:, game_phase: Playing),
+    Model(
+      ..model,
+      player: updated_player,
+      ground:,
+      boxes:,
+      game_phase: Playing,
+      xp_spritesheet: Some(xp_spritesheet),
+      xp_animation: Some(xp_animation),
+      fireball_spritesheet: Some(fireball_spritesheet),
+      fireball_animation: Some(fireball_animation),
+      explosion_spritesheet: Some(explosion_spritesheet),
+    ),
     effects,
     ctx.physics_world,
   )
@@ -616,7 +762,22 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
     None -> []
   }
 
-  let projectiles = spell.view(id.projectile, model.projectiles)
+  // Render projectiles with sprites
+  let projectiles =
+    spell.view(id.projectile, model.projectiles, model.camera.position)
+
+  // Render explosions with sprites
+  let explosions =
+    list.map(model.projectile_hits, spell.view_hits(_, model.camera.position))
+
+  // Render XP shards
+  let xp_shards = case model.xp_spritesheet, model.xp_animation {
+    Some(sheet), Some(animation) ->
+      list.map(model.xp_shards, fn(shard) {
+        xp_shard.render(shard, model.camera.position, sheet, animation)
+      })
+    _, _ -> []
+  }
 
   // Pass camera position for billboard rotation
   let enemy = model.enemies |> list.map(enemy.render(_, model.camera.position))
@@ -625,6 +786,8 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
     ground,
     boxes,
     projectiles,
+    explosions,
+    xp_shards,
     [
       player.render(id.player(), model.player),
       camera,

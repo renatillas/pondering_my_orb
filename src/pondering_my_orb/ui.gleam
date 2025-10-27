@@ -26,6 +26,9 @@ pub type Model(tiramisu_msg) {
     drag_state: sortable.DragState,
     inventory_open: Bool,
     wrapper: fn(UiToGameMsg) -> tiramisu_msg,
+    player_xp: Int,
+    player_xp_to_next_level: Int,
+    player_level: Int,
   )
 }
 
@@ -66,6 +69,9 @@ pub type GameState {
     wand_slots: iv.Array(option.Option(spell.Spell)),
     spell_bag: spell_bag.SpellBag,
     inventory_open: Bool,
+    player_xp: Int,
+    player_xp_to_next_level: Int,
+    player_level: Int,
   )
 }
 
@@ -82,6 +88,9 @@ pub fn init(wrapper) -> #(Model(tiramisu_msg), effect.Effect(Msg)) {
       drag_state: sortable.NoDrag,
       inventory_open: False,
       wrapper:,
+      player_xp: 0,
+      player_xp_to_next_level: 100,
+      player_level: 1,
     ),
     tiramisu_ui.register_lustre(),
   )
@@ -136,6 +145,9 @@ pub fn update(
           spell_bag: spell_bag,
           drag_state: model.drag_state,
           inventory_open: state.inventory_open,
+          player_xp: state.player_xp,
+          player_xp_to_next_level: state.player_xp_to_next_level,
+          player_level: state.player_level,
         ),
         sync_effect,
       )
@@ -575,6 +587,53 @@ fn view_playing(model: Model(tiramisu_msg)) -> element.Element(Msg) {
           )
         False -> html.div([], [])
       },
+      // XP bar at bottom of screen
+      html.div(
+        [
+          attribute.class(
+            "absolute bottom-0 left-0 w-full p-4 bg-gradient-to-t from-black/80 to-transparent pointer-events-none",
+          ),
+          attribute.style("z-index", "150"),
+        ],
+        [
+          html.div(
+            [
+              attribute.class("max-w-screen-lg mx-auto flex items-center gap-4"),
+            ],
+            [
+              // Level indicator
+              html.div(
+                [
+                  attribute.class(
+                    "px-4 py-2 bg-gradient-to-br from-amber-600 to-orange-600 border-2 border-amber-400 rounded-lg shadow-lg",
+                  ),
+                  attribute.style("image-rendering", "pixelated"),
+                ],
+                [
+                  html.div([attribute.class("text-white font-bold text-xl")], [
+                    html.text("LV " <> int.to_string(model.player_level)),
+                  ]),
+                ],
+              ),
+              // XP bar
+              html.div([attribute.class("flex-1")], [
+                html.div([attribute.class("text-amber-300 text-sm mb-1")], [
+                  html.text(
+                    int.to_string(model.player_xp)
+                    <> " / "
+                    <> int.to_string(model.player_xp_to_next_level)
+                    <> " XP",
+                  ),
+                ]),
+                render_xp_bar(
+                  current: int.to_float(model.player_xp),
+                  max: int.to_float(model.player_xp_to_next_level),
+                ),
+              ]),
+            ],
+          ),
+        ],
+      ),
     ],
   )
 }
@@ -688,6 +747,45 @@ fn health_color_class(current: Float, max: Float) -> String {
     p if p >=. 25.0 -> "bg-orange-500"
     _ -> "bg-red-500"
   }
+}
+
+fn render_xp_bar(current current: Float, max max: Float) -> element.Element(Msg) {
+  let percentage = case max >. 0.0 {
+    True -> { current /. max } *. 100.0
+    False -> 0.0
+  }
+
+  html.div(
+    [
+      attribute.class(
+        "w-full h-8 bg-gradient-to-r from-purple-950 to-indigo-950 border-2 border-amber-600 relative overflow-hidden",
+      ),
+      attribute.style("image-rendering", "pixelated"),
+    ],
+    [
+      // Filled portion with gradient
+      html.div(
+        [
+          attribute.class(
+            "h-full bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500",
+          ),
+          attribute.style("width", float.to_string(percentage) <> "%"),
+        ],
+        [],
+      ),
+      // Shine effect overlay
+      html.div(
+        [
+          attribute.class("absolute inset-0 opacity-40"),
+          attribute.style(
+            "background",
+            "repeating-linear-gradient(90deg, transparent, transparent 8px, rgba(255,255,255,0.2) 8px, rgba(255,255,255,0.2) 16px)",
+          ),
+        ],
+        [],
+      ),
+    ],
+  )
 }
 
 fn render_wand_slots(
