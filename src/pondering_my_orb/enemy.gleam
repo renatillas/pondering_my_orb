@@ -110,7 +110,7 @@ pub fn render(enemy: Enemy(Id), camera_position: Vec3(Float)) -> scene.Node(Id) 
         physics: Some(enemy.physics_body),
       ),
       // Health bar sprite above enemy - billboard to face camera
-      scene.sprite(
+      scene.canvas(
         id: id.enemy_health_bar(enemy_id_num),
         picture: health_bar_picture,
         texture_width: 128,

@@ -48,6 +48,7 @@ pub type Player {
     speed: Float,
     position: Vec3(Float),
     rotation: Vec3(Float),
+    quaternion_rotation: transform.Quaternion,
     velocity: Vec3(Float),
     // Taking damage
     time_since_taking_damage: Float,
@@ -61,6 +62,10 @@ pub type Player {
     wand: wand.Wand,
     spell_bag: spell_bag.SpellBag,
     auto_cast: AutoCast,
+    // XP system
+    current_xp: Int,
+    xp_to_next_level: Int,
+    level: Int,
   )
 }
 
@@ -79,12 +84,15 @@ pub fn new(
   spell_bag spell_bag: spell_bag.SpellBag,
   auto_cast auto_cast: AutoCast,
 ) -> Player {
+  let quaternion_rotation = transform.euler_to_quaternion(rotation)
+
   Player(
     max_health: health,
     current_health: health,
     speed:,
     position:,
     rotation:,
+    quaternion_rotation:,
     time_since_taking_damage:,
     passive_heal_delay:,
     passive_heal_rate:,
@@ -95,6 +103,9 @@ pub fn new(
     spell_bag:,
     auto_cast:,
     velocity: vec3f.zero,
+    current_xp: 0,
+    xp_to_next_level: 100,
+    level: 1,
   )
 }
 
@@ -133,7 +144,7 @@ pub fn render(id: id, player: Player) {
 }
 
 pub fn init() -> Player {
-  let assert Ok(wand) =
+  let wand =
     wand.new(
       name: "Player's Wand",
       slot_count: 5,
@@ -142,13 +153,8 @@ pub fn init() -> Player {
       cast_delay: 0.01,
       recharge_time: 0.5,
     )
-    |> wand.set_spell(0, spell.spark())
 
-  let spell_bag =
-    spell_bag.new()
-    |> spell_bag.add_spells(spell.spark(), 3)
-    |> spell_bag.add_spells(spell.fireball(), 2)
-    |> spell_bag.add_spell(spell.lightning())
+  let spell_bag = spell_bag.new()
 
   new(
     health: 100.0,
@@ -294,8 +300,11 @@ pub fn handle_input(
 
   let impulse = calculate_jump(player, physics_world, input_state, bindings)
 
+  let new_rotation = Vec3(0.0, player_yaw, player_roll)
+  let quaternion_rotation = transform.euler_to_quaternion(new_rotation)
+
   let updated_player =
-    Player(..player, rotation: Vec3(0.0, player_yaw, player_roll), velocity:)
+    Player(..player, rotation: new_rotation, quaternion_rotation:, velocity:)
 
   #(updated_player, impulse, camera_pitch, effects)
 }
@@ -340,11 +349,17 @@ pub fn update(
   player: Player,
   nearest_enemy: Result(Enemy(id), Nil),
   delta_time: Float,
-  player_died_msg player_died_msg: msg,
-) -> #(Player, Option(spell.Projectile), Effect(msg)) {
-  let #(player, cast_result) =
-    result.map(nearest_enemy, cast_spell(player, _, delta_time /. 1000.0))
-    |> result.unwrap(#(player, Error(Nil)))
+  player_died_msg: msg,
+  next_projectile_id: Int,
+) -> #(Player, Option(spell.Projectile), Effect(msg), Int) {
+  let #(player, cast_result, next_projectile_id) =
+    result.map(nearest_enemy, cast_spell(
+      player,
+      _,
+      delta_time /. 1000.0,
+      next_projectile_id,
+    ))
+    |> result.unwrap(#(player, Error(Nil), next_projectile_id))
 
   let #(player, projectile) = case cast_result {
     Ok(wand.CastSuccess(projectile, remaining_mana, next_cast_index)) -> {
@@ -422,14 +437,15 @@ pub fn update(
     False -> effect.none()
   }
 
-  #(player, projectile, death_effect)
+  #(player, projectile, death_effect, next_projectile_id)
 }
 
 fn cast_spell(
   player: Player,
   nearest_enemy: Enemy(id),
   delta_time: Float,
-) -> #(Player, Result(wand.CastResult, Nil)) {
+  next_projectile_id: Int,
+) -> #(Player, Result(wand.CastResult, Nil), Int) {
   let time_since_last_cast = player.auto_cast.time_since_last_cast +. delta_time
   case time_since_last_cast >=. player.wand.cast_delay {
     True -> {
@@ -441,14 +457,29 @@ fn cast_spell(
         )
         |> vec3f.normalize()
 
+      // Spawn projectile in front of player with a forward offset
+      let spawn_offset = 1.5
+      let spawn_position =
+        Vec3(
+          player.position.x +. normalized_direction.x *. spawn_offset,
+          player.position.y +. normalized_direction.y *. spawn_offset,
+          player.position.z +. normalized_direction.z *. spawn_offset,
+        )
+
       let #(cast_result, wand) =
         wand.cast(
           player.wand,
           player.auto_cast.current_spell_index,
-          player.position,
+          spawn_position,
           normalized_direction,
-          0,
+          next_projectile_id,
         )
+
+      // Increment projectile ID if cast was successful
+      let new_projectile_id = case cast_result {
+        wand.CastSuccess(..) -> next_projectile_id + 1
+        _ -> next_projectile_id
+      }
 
       #(
         Player(
@@ -460,6 +491,7 @@ fn cast_spell(
           wand:,
         ),
         Ok(cast_result),
+        new_projectile_id,
       )
     }
     False -> #(
@@ -471,6 +503,7 @@ fn cast_spell(
         ),
       ),
       Error(Nil),
+      next_projectile_id,
     )
   }
 }
@@ -537,4 +570,26 @@ fn handle_pointer_locked(
   }
 
   [pointer_lock_effect, exit_lock_effect]
+}
+
+/// Add XP to the player and handle leveling up
+pub fn add_xp(player: Player, xp: Int) -> Player {
+  let new_xp = player.current_xp + xp
+
+  case new_xp >= player.xp_to_next_level {
+    True -> {
+      // Level up!
+      let remaining_xp = new_xp - player.xp_to_next_level
+      let new_level = player.level + 1
+      let new_xp_to_next_level = player.xp_to_next_level + 50
+
+      Player(
+        ..player,
+        current_xp: remaining_xp,
+        xp_to_next_level: new_xp_to_next_level,
+        level: new_level,
+      )
+    }
+    False -> Player(..player, current_xp: new_xp)
+  }
 }

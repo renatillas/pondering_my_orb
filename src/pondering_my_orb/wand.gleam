@@ -3,6 +3,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import iv
 import pondering_my_orb/spell.{type Spell}
+import tiramisu/spritesheet
 import vec/vec3.{type Vec3}
 
 /// Represents a wand with spell slots
@@ -160,6 +161,8 @@ fn process_spell_sequence(
                   position: position,
                   direction: direction,
                   time_alive: 0.0,
+                  animation_state: spritesheet.initial_state("projectile"),
+                  visuals: damaging.visuals,
                 )
               let new_mana = wand.current_mana -. modified.total_mana_cost
               let updated_wand = Wand(..wand, current_mana: new_mana)

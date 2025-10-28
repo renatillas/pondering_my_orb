@@ -1,12 +1,12 @@
-import gleam/int
 import gleam/list
 import gleam/option
+import gleam_community/maths
 import iv
 import pondering_my_orb/enemy.{type Enemy}
+import pondering_my_orb/id
 import tiramisu/effect
-import tiramisu/geometry
-import tiramisu/material
 import tiramisu/scene
+import tiramisu/spritesheet
 import tiramisu/transform
 import vec/vec3.{type Vec3, Vec3}
 import vec/vec3f
@@ -14,6 +14,16 @@ import vec/vec3f
 pub type Spell {
   DamageSpell(DamageSpell)
   ModifierSpell(ModifierSpell)
+}
+
+/// Visual configuration for spell effects
+pub type SpellVisuals {
+  SpellVisuals(
+    projectile_spritesheet: spritesheet.Spritesheet,
+    projectile_animation: spritesheet.Animation,
+    hit_spritesheet: spritesheet.Spritesheet,
+    hit_animation: spritesheet.Animation,
+  )
 }
 
 pub type DamageSpell {
@@ -24,6 +34,7 @@ pub type DamageSpell {
     projectile_speed: Float,
     projectile_lifetime: Float,
     projectile_size: Float,
+    visuals: SpellVisuals,
   )
 }
 
@@ -50,6 +61,8 @@ pub type Projectile {
     position: Vec3(Float),
     direction: Vec3(Float),
     time_alive: Float,
+    animation_state: spritesheet.AnimationState,
+    visuals: SpellVisuals,
   )
 }
 
@@ -73,6 +86,7 @@ pub fn damaging_spell(
   projectile_lifetime projectile_lifetime: Float,
   mana_cost mana_cost: Float,
   projectile_size projectile_size: Float,
+  visuals visuals: SpellVisuals,
 ) -> Spell {
   DamageSpell(Damage(
     name:,
@@ -81,6 +95,7 @@ pub fn damaging_spell(
     projectile_lifetime:,
     mana_cost:,
     projectile_size:,
+    visuals:,
   ))
 }
 
@@ -165,31 +180,33 @@ pub fn apply_modifiers(
 // Pre-defined spells for convenience
 
 /// Basic projectile spell
-pub fn spark() -> Spell {
+pub fn spark(visuals: SpellVisuals) -> Spell {
   damaging_spell(
     name: "Spark",
     damage: 10.0,
-    projectile_speed: 15.0,
+    projectile_speed: 10.0,
     projectile_lifetime: 2.0,
     mana_cost: 5.0,
-    projectile_size: 0.3,
+    projectile_size: 1.0,
+    visuals:,
   )
 }
 
 /// Powerful projectile spell
-pub fn fireball() -> Spell {
+pub fn fireball(visuals: SpellVisuals) -> Spell {
   damaging_spell(
     name: "Fireball",
-    damage: 50.0,
-    projectile_speed: 10.0,
+    damage: 20.0,
+    projectile_speed: 15.0,
     projectile_lifetime: 3.0,
-    mana_cost: 20.0,
-    projectile_size: 0.8,
+    mana_cost: 10.0,
+    projectile_size: 5.0,
+    visuals:,
   )
 }
 
 /// Heavy damage spell
-pub fn lightning() -> Spell {
+pub fn lightning(visuals: SpellVisuals) -> Spell {
   damaging_spell(
     name: "Lightning Bolt",
     damage: 100.0,
@@ -197,20 +214,30 @@ pub fn lightning() -> Spell {
     projectile_lifetime: 1.0,
     mana_cost: 35.0,
     projectile_size: 0.2,
+    visuals:,
   )
 }
 
 pub type ProjectileHit(id) {
-  ProjectileHit(enemy_id: id, damage: Float, projectile_direction: Vec3(Float))
+  ProjectileHit(
+    id: Int,
+    enemy_id: id,
+    damage: Float,
+    direction: Vec3(Float),
+    position: Vec3(Float),
+    time_alive: Float,
+    animation_state: spritesheet.AnimationState,
+    spritesheet: spritesheet.Spritesheet,
+    animation: spritesheet.Animation,
+  )
 }
 
-/// Update projectiles and return hit information for knockback
-pub fn update_with_hits(
+pub fn update(
   projectiles: List(Projectile),
   enemies: List(Enemy(id)),
   delta_time: Float,
   damage_enemy_msg: fn(id, Float, Vec3(Float)) -> msg,
-) -> #(List(Projectile), effect.Effect(msg), List(ProjectileHit(id))) {
+) -> #(List(Projectile), List(ProjectileHit(id)), effect.Effect(msg)) {
   let updated_projectiles =
     list.map(projectiles, update_position(_, delta_time /. 1000.0))
 
@@ -230,12 +257,18 @@ pub fn update_with_hits(
 
         case hit_enemy {
           Ok(enemy) -> {
-            // Projectile hit this enemy
+            // Projectile hit this enemy - create explosion using projectile's visuals
             let hit =
               ProjectileHit(
-                enemy.id,
-                projectile.spell.final_damage,
-                projectile.direction,
+                id: projectile.id,
+                direction: projectile.direction,
+                enemy_id: enemy.id,
+                damage: projectile.spell.final_damage,
+                position: projectile.position,
+                time_alive: 0.0,
+                animation_state: spritesheet.initial_state("hit"),
+                spritesheet: projectile.visuals.hit_spritesheet,
+                animation: projectile.visuals.hit_animation,
               )
             #([hit, ..hits], remaining)
           }
@@ -250,34 +283,24 @@ pub fn update_with_hits(
   // Filter out projectiles that have exceeded their lifetime
   let final_projectiles =
     remaining_projectiles
-    |> list.filter(fn(projectile) {
-      projectile.time_alive <. projectile.spell.final_lifetime
+    |> list.fold(from: [], with: fn(acc, projectile) {
+      case projectile.time_alive <. projectile.spell.final_lifetime {
+        True -> [projectile, ..acc]
+        False -> {
+          acc
+        }
+      }
     })
 
   // Create effects for each hit enemy
   let effects =
     list.map(hits, fn(hit) {
       effect.from(fn(dispatch) {
-        dispatch(damage_enemy_msg(
-          hit.enemy_id,
-          hit.damage,
-          hit.projectile_direction,
-        ))
+        dispatch(damage_enemy_msg(hit.enemy_id, hit.damage, hit.direction))
       })
     })
 
-  #(final_projectiles, effect.batch(effects), hits)
-}
-
-pub fn update(
-  projectiles: List(Projectile),
-  enemies: List(Enemy(id)),
-  delta_time: Float,
-  damage_enemy_msg: fn(id, Float, Vec3(Float)) -> msg,
-) -> #(List(Projectile), effect.Effect(msg)) {
-  let #(projectiles, effect, _hits) =
-    update_with_hits(projectiles, enemies, delta_time, damage_enemy_msg)
-  #(projectiles, effect)
+  #(final_projectiles, hits, effect.batch(effects))
 }
 
 fn update_position(projectile: Projectile, delta_time: Float) -> Projectile {
@@ -291,36 +314,150 @@ fn update_position(projectile: Projectile, delta_time: Float) -> Projectile {
 
   let new_time_alive = projectile.time_alive +. delta_time
 
+  // Update animation state using projectile's own animation
+  let new_animation_state =
+    spritesheet.update(
+      projectile.animation_state,
+      projectile.visuals.projectile_animation,
+      delta_time *. 1000.0,
+    )
+
   Projectile(
     ..projectile,
     position: Vec3(new_x, new_y, new_z),
     time_alive: new_time_alive,
+    animation_state: new_animation_state,
   )
+}
+
+/// Update explosions and remove those that have finished
+pub fn update_projectile_hits(
+  projectile_hits: List(ProjectileHit(id)),
+  delta_time: Float,
+) -> List(ProjectileHit(id)) {
+  projectile_hits
+  |> list.map(fn(hit) {
+    let new_time_alive = hit.time_alive +. delta_time /. 1000.0
+    let new_animation_state =
+      spritesheet.update(hit.animation_state, hit.animation, delta_time)
+
+    ProjectileHit(
+      ..hit,
+      time_alive: new_time_alive,
+      animation_state: new_animation_state,
+    )
+  })
+  |> list.filter(fn(explosion) { explosion.time_alive <. 1.5 })
 }
 
 pub fn view(
   id: fn(Int) -> id,
   projectiles: List(Projectile),
+  camera_position: Vec3(Float),
 ) -> List(scene.Node(id)) {
   list.map(projectiles, fn(projectile) {
-    let assert Ok(sphere) =
-      geometry.sphere(
-        radius: projectile.spell.final_size,
-        width_segments: 8,
-        height_segments: 6,
+    // Constrained billboard: sprite faces camera while aligning with travel direction
+    // The fireball sprite animates left-to-right, so we want:
+    // - Sprite's horizontal axis aligned with travel direction (trail points backward)
+    // - Sprite faces the camera as much as possible
+
+    // Build rotation from direction and camera position
+    let rotation =
+      constrained_billboard_rotation(
+        projectile.position,
+        projectile.direction,
+        camera_position,
       )
 
-    let assert Ok(material) =
-      material.new()
-      |> material.with_color(0xff4444)
-      |> material.build()
-
-    scene.mesh(
-      id: id(int.random(1_000_000)),
-      geometry: sphere,
-      material:,
-      transform: transform.at(projectile.position),
-      physics: option.None,
+    scene.animated_sprite(
+      id: id(projectile.id),
+      spritesheet: projectile.visuals.projectile_spritesheet,
+      animation: projectile.visuals.projectile_animation,
+      state: projectile.animation_state,
+      width: projectile.spell.final_size,
+      height: projectile.spell.final_size,
+      transform: transform.at(position: projectile.position)
+        |> transform.with_quaternion_rotation(rotation),
+      pixel_art: True,
     )
   })
+}
+
+/// Create a constrained billboard rotation where:
+/// - The sprite's X-axis aligns with the travel direction (fireball moves along X)
+/// - The sprite's Z-axis (face normal) points toward the camera as much as possible
+fn constrained_billboard_rotation(
+  position: Vec3(Float),
+  direction: Vec3(Float),
+  camera_position: Vec3(Float),
+) -> transform.Quaternion {
+  // X-axis: travel direction (normalized)
+  let x_axis = vec3f.normalize(direction)
+
+  // Vector from projectile to camera
+  let to_camera = vec3f.subtract(camera_position, position)
+  let to_camera_norm = vec3f.normalize(to_camera)
+
+  // Project to_camera onto the plane perpendicular to X-axis (travel direction)
+  // This gives us the direction the sprite should face while staying perpendicular to motion
+  let dot_product = vec3f.dot(to_camera_norm, x_axis)
+  let parallel_component = vec3f.scale(x_axis, dot_product)
+  let perpendicular_component =
+    vec3f.subtract(to_camera_norm, parallel_component)
+
+  // Z-axis: perpendicular component (sprite faces this direction)
+  // If perpendicular component is too small, camera is aligned with travel - use world up
+  let z_axis = case vec3f.length(perpendicular_component) <. 0.01 {
+    True -> {
+      // Camera aligned with travel direction, use world up for fallback
+      let world_up = Vec3(0.0, 1.0, 0.0)
+      let dot_up = vec3f.dot(world_up, x_axis)
+      let par_up = vec3f.scale(x_axis, dot_up)
+      vec3f.subtract(world_up, par_up) |> vec3f.normalize()
+    }
+    False -> vec3f.normalize(perpendicular_component)
+  }
+
+  // Y-axis: complete the right-handed orthonormal basis
+  // Y = Z × X (cross product gives perpendicular vector)
+  let y_axis = vec3f.cross(z_axis, x_axis) |> vec3f.normalize()
+
+  // Build quaternion from the three orthonormal axes
+  transform.quaternion_from_basis(x_axis, y_axis, z_axis)
+}
+
+pub fn view_hits(
+  hit: ProjectileHit(id),
+  camera_position: Vec3(Float),
+) -> scene.Node(id.Id) {
+  // Full 3D billboard using proper quaternion-based look-at
+  // The explosion sprite should face the camera
+  let from_transform = transform.at(position: hit.position)
+  let to_transform = transform.at(position: camera_position)
+  let look_at_transform =
+    transform.look_at(from: from_transform, to: to_transform, up: option.None)
+
+  // Get the rotation quaternion from the look-at transform
+  let look_rotation = transform.rotation_quaternion(look_at_transform)
+
+  // Three.js lookAt orients -Z toward target, but sprites face +Z
+  // Add 180-degree Y rotation to flip the sprite
+  let flip_quat = transform.euler_to_quaternion(Vec3(0.0, maths.pi(), 0.0))
+  let flipped_look = transform.multiply_quaternions(look_rotation, flip_quat)
+
+  // For a simple billboard, just use the flipped lookAt (don't add camera roll)
+  // If you want the sprite to also roll with camera, multiply by camera_rotation
+  let final_rotation = flipped_look
+
+  scene.animated_sprite(
+    id: id.explosion(hit.id),
+    spritesheet: hit.spritesheet,
+    animation: hit.animation,
+    state: hit.animation_state,
+    width: 8.0,
+    height: 8.0,
+    transform: transform.at(position: hit.position)
+      |> transform.with_quaternion_rotation(final_rotation),
+    pixel_art: True,
+  )
 }

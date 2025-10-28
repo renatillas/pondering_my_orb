@@ -9,6 +9,8 @@ pub type Id {
   EnemyHealthBar(layer: Layer, id: Int)
   Player(layer: Layer)
   Projectile(layer: Layer, id: Int)
+  Explosion(layer: Layer, id: Int)
+  XPShard(layer: Layer, id: Int)
 }
 
 pub type Layer {
@@ -56,4 +58,12 @@ pub fn player() {
 
 pub fn projectile(id: Int) -> Id {
   Projectile(layer: PlayerLayer, id: id)
+}
+
+pub fn explosion(id: Int) -> Id {
+  Explosion(layer: PlayerLayer, id: id)
+}
+
+pub fn xp_shard(id: Int) -> Id {
+  XPShard(layer: MiscelaniaLayer, id: id)
 }
