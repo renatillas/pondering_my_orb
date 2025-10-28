@@ -41,7 +41,7 @@ pub fn update(
 /// Check if XP shard should be collected by player
 pub fn should_collect(shard: XPShard, player_position: Vec3(Float)) -> Bool {
   let distance = vec3f.distance(shard.position, player_position)
-  distance <. 1.0
+  distance <. 1.25
 }
 
 /// Render XP shard with animated spritesheet
