@@ -79,7 +79,13 @@ pub fn update(
     transform.look_at(from: from_transform, to: to_transform, up: option.None)
   let rotation = transform.rotation_quaternion(look_at_transform)
 
-  Camera(..camera, shake_time:, position: new_position, rotation:, pitch: new_pitch)
+  Camera(
+    ..camera,
+    shake_time:,
+    position: new_position,
+    rotation:,
+    pitch: new_pitch,
+  )
 }
 
 pub fn view(camera: Camera, player: player.Player) {
