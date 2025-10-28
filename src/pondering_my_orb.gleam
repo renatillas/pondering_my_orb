@@ -5,6 +5,7 @@ import gleam/javascript/promise
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam_community/maths
 import paint/canvas
 import pondering_my_orb/camera
 import pondering_my_orb/enemy.{type Enemy}
@@ -240,212 +241,8 @@ fn update(
         ctx.physics_world,
       )
     }
-    Tick -> {
-      // Only process game logic if game is in playing phase
-      use <- bool.guard(model.game_phase != Playing, return: #(
-        model,
-        effect.none(),
-        // NOTE: do tick?
-        ctx.physics_world,
-      ))
-
-      // Check for I key press to toggle inventory
-      let inventory_toggle_effect = case
-        input.is_key_just_pressed(ctx.input, input.KeyI)
-      {
-        True -> effect.from(fn(dispatch) { dispatch(ToggleInventory) })
-        False -> effect.none()
-      }
-
-      // Apply time scale when inventory is open (stop game completely)
-      let time_scale = case model.inventory_open {
-        True -> 0.0
-        False -> 1.0
-      }
-      let scaled_delta = ctx.delta_time *. time_scale
-
-      // Only handle player input if inventory is closed
-      let #(player, impulse, camera_pitch, input_effects) = case
-        model.inventory_open
-      {
-        False ->
-          player.handle_input(
-            model.player,
-            velocity: physics.get_velocity(physics_world, id.player())
-              |> result.unwrap(Vec3(0.0, 0.0, 0.0)),
-            input_state: ctx.input,
-            bindings: model.player_bindings,
-            pointer_locked: model.camera.pointer_locked,
-            camera_pitch: model.camera.pitch,
-            physics_world:,
-            pointer_locked_msg: PointerLocked,
-            pointer_lock_failed_msg: PointerLockFailed,
-          )
-        True -> #(model.player, vec3f.zero, model.camera.pitch, [])
-      }
-
-      let #(enemies, enemy_effects) =
-        list.map(model.enemies, fn(enemy) {
-          enemy.update(
-            enemy,
-            target: player.position,
-            enemy_velocity: physics.get_velocity(physics_world, enemy.id)
-              |> result.unwrap(Vec3(0.0, 0.0, 0.0)),
-            physics_world:,
-            delta_time: scaled_delta /. 1000.0,
-            enemy_attacks_player_msg: EnemyAttacksPlayer,
-          )
-        })
-        |> list.unzip()
-
-      // Update projectiles and create explosions on collision
-      let #(updated_projectiles, projectile_hits, spell_effect) =
-        spell.update(
-          model.projectiles,
-          model.enemies,
-          scaled_delta,
-          ProjectileDamagedEnemy,
-        )
-
-      // Update existing explosions and add new ones
-      let all_hits = list.append(model.projectile_hits, projectile_hits)
-      let updated_hits = spell.update_projectile_hits(all_hits, scaled_delta)
-
-      // Only update physics if game is not paused (inventory closed)
-      let physics_world = case model.inventory_open {
-        False -> {
-          physics.set_velocity(physics_world, id.player(), player.velocity)
-          |> physics.apply_impulse(id.player(), impulse)
-          // Apply pending player knockback AFTER setting velocity
-          |> fn(pw) {
-            case model.pending_player_knockback {
-              Some(knockback) ->
-                physics.apply_impulse(pw, id.player(), knockback)
-              _ -> pw
-            }
-          }
-          |> list.fold(over: enemies, from: _, with: fn(acc, enemy) {
-            physics.set_velocity(acc, enemy.id, enemy.velocity)
-          })
-          // Apply projectile knockback to enemies
-          |> list.fold(over: projectile_hits, from: _, with: fn(pw, hit) {
-            let knockback_force = 80.0
-            let Vec3(horizontal_x, _, horizontal_z) =
-              Vec3(hit.direction.x, 0.0, hit.direction.z)
-              |> vec3f.normalize()
-              |> vec3f.scale(knockback_force)
-
-            let total_knockback = Vec3(horizontal_x, 1.0, horizontal_z)
-
-            physics.apply_impulse(pw, hit.enemy_id, total_knockback)
-          })
-          |> physics.step()
-        }
-        True -> physics_world
-      }
-
-      let player_position =
-        physics.get_transform(physics_world, id.player())
-        |> result.map(transform.position)
-        |> result.unwrap(or: model.player.position)
-
-      let enemies =
-        list.map(enemies, enemy.after_physics_update(_, physics_world))
-
-      let nearest_enemy = player.nearest_enemy_position(player, enemies)
-
-      // Update XP shards with animation
-      let updated_xp_shards = case model.xp_animation {
-        Some(animation) ->
-          list.map(model.xp_shards, fn(shard) {
-            xp_shard.update(shard, animation, scaled_delta)
-          })
-        None -> model.xp_shards
-      }
-
-      // Check for XP shard collection
-      let #(remaining_shards, collected_xp) =
-        list.fold(updated_xp_shards, #([], 0), fn(acc, shard) {
-          let #(shards, xp) = acc
-          case xp_shard.should_collect(shard, player_position) {
-            True -> #(shards, xp + xp_shard.xp_value)
-            False -> #([shard, ..shards], xp)
-          }
-        })
-
-      let player =
-        player
-        |> player.with_position(player_position)
-        |> player.add_xp(collected_xp)
-
-      let #(player, cast_result, death_effect, next_projectile_id) =
-        player.update(
-          player,
-          nearest_enemy,
-          scaled_delta,
-          PlayerDied,
-          model.next_projectile_id,
-        )
-
-      // Add newly cast projectile
-      let updated_projectiles = case cast_result {
-        Some(projectile) -> [projectile, ..updated_projectiles]
-        None -> updated_projectiles
-      }
-
-      let ui_effect =
-        tiramisu_ui.dispatch_to_lustre(
-          ui.GameStateUpdated(ui.GameState(
-            player_health: player.current_health,
-            player_max_health: player.max_health,
-            player_mana: player.wand.current_mana,
-            player_max_mana: player.wand.max_mana,
-            wand_slots: player.wand.slots,
-            spell_bag: player.spell_bag,
-            inventory_open: model.inventory_open,
-            player_xp: player.current_xp,
-            player_xp_to_next_level: player.xp_to_next_level,
-            player_level: player.level,
-          )),
-        )
-
-      // Update screen shake timer
-      let camera =
-        camera.update(
-          model.camera,
-          player:,
-          new_pitch: camera_pitch,
-          delta_time: scaled_delta,
-        )
-
-      let effects =
-        effect.batch([
-          effect.tick(Tick),
-          effect.batch(enemy_effects),
-          effect.batch(input_effects),
-          spell_effect,
-          ui_effect,
-          inventory_toggle_effect,
-          death_effect,
-        ])
-
-      #(
-        Model(
-          ..model,
-          player:,
-          camera:,
-          projectiles: updated_projectiles,
-          projectile_hits: updated_hits,
-          next_projectile_id:,
-          enemies:,
-          xp_shards: remaining_shards,
-          pending_player_knockback: None,
-        ),
-        effects,
-        Some(physics_world),
-      )
-    }
-    AssetsLoaded(assets:) -> update_model_with_assets(model, assets, ctx)
+    Tick -> handle_tick(model, physics_world, ctx)
+    AssetsLoaded(assets:) -> handle_assets_loaded(model, assets, ctx)
     PointerLocked -> #(
       Model(
         ..model,
@@ -491,24 +288,43 @@ fn update(
     }
     EnemySpawned -> {
       // Don't spawn enemies when inventory is open or game is paused
-      case model.inventory_open {
-        True -> #(model, effect.none(), Some(physics_world))
-        False -> #(
-          Model(
-            ..model,
-            enemies: [
-              enemy.basic(
-                id.enemy(model.next_enemy_id),
-                position: Vec3(0.0, 3.0, 0.0),
-              ),
-              ..model.enemies
-            ],
-            next_enemy_id: model.next_enemy_id + 1,
-          ),
-          effect.none(),
-          Some(physics_world),
+      use <- bool.guard(model.inventory_open, return: #(
+        model,
+        effect.none(),
+        Some(physics_world),
+      ))
+
+      let min_spawn_radius = 10.0
+      let max_spawn_radius = 20.0
+      let spawn_height = 1.0
+
+      let random_angle = float.random() *. 2.0 *. maths.pi()
+      let random_distance =
+        min_spawn_radius
+        +. { float.random() *. { max_spawn_radius -. min_spawn_radius } }
+
+      let offset_x = maths.cos(random_angle) *. random_distance
+      let offset_z = maths.sin(random_angle) *. random_distance
+
+      let spawn_position =
+        Vec3(
+          model.player.position.x +. offset_x,
+          spawn_height,
+          model.player.position.z +. offset_z,
         )
-      }
+
+      #(
+        Model(
+          ..model,
+          enemies: [
+            enemy.basic(id.enemy(model.next_enemy_id), position: spawn_position),
+            ..model.enemies
+          ],
+          next_enemy_id: model.next_enemy_id + 1,
+        ),
+        effect.none(),
+        Some(physics_world),
+      )
     }
     EnemySpawnStarted(id) -> #(
       Model(..model, enemy_spawner_id: Some(id)),
@@ -568,40 +384,218 @@ fn update(
         Some(physics_world),
       )
     }
-    UIMessage(ui_msg) -> {
-      case ui_msg {
-        ui.GameStarted -> #(
-          model,
-          effect.from(fn(dispatch) { dispatch(GameStarted) }),
-          Some(physics_world),
-        )
-        ui.GameRestarted -> #(
-          model,
-          effect.from(fn(dispatch) { dispatch(GameRestarted) }),
-          Some(physics_world),
-        )
-        ui.UpdatePlayerInventory(wand_slots, spell_bag) -> {
-          // Update player's wand and spell bag from UI changes
-          let updated_wand = wand.Wand(..model.player.wand, slots: wand_slots)
-          let updated_player =
-            player.Player(
-              ..model.player,
-              wand: updated_wand,
-              spell_bag: spell_bag,
-            )
-
-          #(
-            Model(..model, player: updated_player),
-            effect.none(),
-            ctx.physics_world,
-          )
-        }
-      }
-    }
+    UIMessage(ui_msg) -> handle_ui_message(model, ui_msg, physics_world, ctx)
   }
 }
 
-fn update_model_with_assets(
+fn handle_tick(
+  model: Model,
+  physics_world: physics.PhysicsWorld(Id),
+  ctx: tiramisu.Context(Id),
+) -> #(Model, Effect(Msg), Option(physics.PhysicsWorld(Id))) {
+  // Only process game logic if game is in playing phase
+  use <- bool.guard(model.game_phase != Playing, return: #(
+    model,
+    effect.none(),
+    ctx.physics_world,
+  ))
+
+  // Check for I key press to toggle inventory
+  let inventory_toggle_effect = case
+    input.is_key_just_pressed(ctx.input, input.KeyI)
+  {
+    True -> effect.from(fn(dispatch) { dispatch(ToggleInventory) })
+    False -> effect.none()
+  }
+
+  // Apply time scale when inventory is open (stop game completely)
+  let time_scale = case model.inventory_open {
+    True -> 0.0
+    False -> 1.0
+  }
+  let scaled_delta = ctx.delta_time *. time_scale
+
+  // Only handle player input if inventory is closed
+  let #(player, impulse, camera_pitch, input_effects) = case
+    model.inventory_open
+  {
+    False ->
+      player.handle_input(
+        model.player,
+        velocity: physics.get_velocity(physics_world, id.player())
+          |> result.unwrap(Vec3(0.0, 0.0, 0.0)),
+        input_state: ctx.input,
+        bindings: model.player_bindings,
+        pointer_locked: model.camera.pointer_locked,
+        camera_pitch: model.camera.pitch,
+        physics_world:,
+        pointer_locked_msg: PointerLocked,
+        pointer_lock_failed_msg: PointerLockFailed,
+      )
+    True -> #(model.player, vec3f.zero, model.camera.pitch, [])
+  }
+
+  let #(enemies, enemy_effects) =
+    list.map(model.enemies, fn(enemy) {
+      enemy.update(
+        enemy,
+        target: player.position,
+        enemy_velocity: physics.get_velocity(physics_world, enemy.id)
+          |> result.unwrap(Vec3(0.0, 0.0, 0.0)),
+        physics_world:,
+        delta_time: scaled_delta /. 1000.0,
+        enemy_attacks_player_msg: EnemyAttacksPlayer,
+      )
+    })
+    |> list.unzip()
+
+  // Update projectiles and create explosions on collision
+  let #(updated_projectiles, projectile_hits, spell_effect) =
+    spell.update(
+      model.projectiles,
+      model.enemies,
+      scaled_delta,
+      ProjectileDamagedEnemy,
+    )
+
+  // Update existing explosions and add new ones
+  let all_hits = list.append(model.projectile_hits, projectile_hits)
+  let updated_hits = spell.update_projectile_hits(all_hits, scaled_delta)
+
+  // Only update physics if game is not paused (inventory closed)
+  let physics_world = case model.inventory_open {
+    False -> {
+      physics.set_velocity(physics_world, id.player(), player.velocity)
+      |> physics.apply_impulse(id.player(), impulse)
+      // Apply pending player knockback AFTER setting velocity
+      |> fn(pw) {
+        case model.pending_player_knockback {
+          Some(knockback) -> physics.apply_impulse(pw, id.player(), knockback)
+          _ -> pw
+        }
+      }
+      |> list.fold(over: enemies, from: _, with: fn(acc, enemy) {
+        physics.set_velocity(acc, enemy.id, enemy.velocity)
+      })
+      // Apply projectile knockback to enemies
+      |> list.fold(over: projectile_hits, from: _, with: fn(pw, hit) {
+        let knockback_force = 80.0
+        let Vec3(horizontal_x, _, horizontal_z) =
+          Vec3(hit.direction.x, 0.0, hit.direction.z)
+          |> vec3f.normalize()
+          |> vec3f.scale(knockback_force)
+
+        let total_knockback = Vec3(horizontal_x, 1.0, horizontal_z)
+
+        physics.apply_impulse(pw, hit.enemy_id, total_knockback)
+      })
+      |> physics.step()
+    }
+    True -> physics_world
+  }
+
+  let player_position =
+    physics.get_transform(physics_world, id.player())
+    |> result.map(transform.position)
+    |> result.unwrap(or: model.player.position)
+
+  let enemies = list.map(enemies, enemy.after_physics_update(_, physics_world))
+
+  let nearest_enemy = player.nearest_enemy_position(player, enemies)
+
+  // Update XP shards with animation
+  let updated_xp_shards = case model.xp_animation {
+    Some(animation) ->
+      list.map(model.xp_shards, fn(shard) {
+        xp_shard.update(shard, animation, scaled_delta)
+      })
+    None -> model.xp_shards
+  }
+
+  // Check for XP shard collection
+  let #(remaining_shards, collected_xp) =
+    list.fold(updated_xp_shards, #([], 0), fn(acc, shard) {
+      let #(shards, xp) = acc
+      case xp_shard.should_collect(shard, player_position) {
+        True -> #(shards, xp + xp_shard.xp_value)
+        False -> #([shard, ..shards], xp)
+      }
+    })
+
+  let player =
+    player
+    |> player.with_position(player_position)
+    |> player.add_xp(collected_xp)
+
+  let #(player, cast_result, death_effect, next_projectile_id) =
+    player.update(
+      player,
+      nearest_enemy,
+      scaled_delta,
+      PlayerDied,
+      model.next_projectile_id,
+    )
+
+  // Add newly cast projectile
+  let updated_projectiles = case cast_result {
+    Some(projectile) -> [projectile, ..updated_projectiles]
+    None -> updated_projectiles
+  }
+
+  let ui_effect =
+    tiramisu_ui.dispatch_to_lustre(
+      ui.GameStateUpdated(ui.GameState(
+        player_health: player.current_health,
+        player_max_health: player.max_health,
+        player_mana: player.wand.current_mana,
+        player_max_mana: player.wand.max_mana,
+        wand_slots: player.wand.slots,
+        spell_bag: player.spell_bag,
+        inventory_open: model.inventory_open,
+        player_xp: player.current_xp,
+        player_xp_to_next_level: player.xp_to_next_level,
+        player_level: player.level,
+      )),
+    )
+
+  // Update screen shake timer
+  let camera =
+    camera.update(
+      model.camera,
+      player:,
+      new_pitch: camera_pitch,
+      delta_time: scaled_delta,
+    )
+
+  let effects =
+    effect.batch([
+      effect.tick(Tick),
+      effect.batch(enemy_effects),
+      effect.batch(input_effects),
+      spell_effect,
+      ui_effect,
+      inventory_toggle_effect,
+      death_effect,
+    ])
+
+  #(
+    Model(
+      ..model,
+      player:,
+      camera:,
+      projectiles: updated_projectiles,
+      projectile_hits: updated_hits,
+      next_projectile_id:,
+      enemies:,
+      xp_shards: remaining_shards,
+      pending_player_knockback: None,
+    ),
+    effects,
+    Some(physics_world),
+  )
+}
+
+fn handle_assets_loaded(
   model: Model,
   assets: asset.BatchLoadResult,
   ctx: tiramisu.Context(Id),
@@ -741,6 +735,38 @@ fn update_model_with_assets(
     effects,
     ctx.physics_world,
   )
+}
+
+fn handle_ui_message(
+  model: Model,
+  ui_msg: ui.UiToGameMsg,
+  physics_world: physics.PhysicsWorld(Id),
+  ctx: tiramisu.Context(Id),
+) -> #(Model, Effect(Msg), Option(physics.PhysicsWorld(Id))) {
+  case ui_msg {
+    ui.GameStarted -> #(
+      model,
+      effect.from(fn(dispatch) { dispatch(GameStarted) }),
+      Some(physics_world),
+    )
+    ui.GameRestarted -> #(
+      model,
+      effect.from(fn(dispatch) { dispatch(GameRestarted) }),
+      Some(physics_world),
+    )
+    ui.UpdatePlayerInventory(wand_slots, spell_bag) -> {
+      // Update player's wand and spell bag from UI changes
+      let updated_wand = wand.Wand(..model.player.wand, slots: wand_slots)
+      let updated_player =
+        player.Player(..model.player, wand: updated_wand, spell_bag: spell_bag)
+
+      #(
+        Model(..model, player: updated_player),
+        effect.none(),
+        ctx.physics_world,
+      )
+    }
+  }
 }
 
 fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
