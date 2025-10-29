@@ -41,6 +41,7 @@ pub type AutoCast {
 
 pub type Player {
   Player(
+    jump_timeout: Float,
     // Health
     max_health: Float,
     current_health: Float,
@@ -52,6 +53,7 @@ pub type Player {
     velocity: Vec3(Float),
     // Taking damage
     time_since_taking_damage: Float,
+    time_since_taking_damage_reset: Float,
     // Healing
     passive_heal_delay: Float,
     passive_heal_rate: Float,
@@ -75,6 +77,7 @@ pub fn new(
   position position: Vec3(Float),
   rotation rotation: Vec3(Float),
   time_since_taking_damage time_since_taking_damage: Float,
+  time_since_taking_damage_reset time_since_taking_damage_reset: Float,
   passive_heal_delay passive_heal_delay: Float,
   passive_heal_rate passive_heal_rate: Float,
   passive_heal_interval passive_heal_interval: Float,
@@ -87,6 +90,7 @@ pub fn new(
   let quaternion_rotation = transform.euler_to_quaternion(rotation)
 
   Player(
+    jump_timeout: 0.0,
     max_health: health,
     current_health: health,
     speed:,
@@ -94,6 +98,7 @@ pub fn new(
     rotation:,
     quaternion_rotation:,
     time_since_taking_damage:,
+    time_since_taking_damage_reset:,
     passive_heal_delay:,
     passive_heal_rate:,
     passive_heal_interval:,
@@ -162,6 +167,7 @@ pub fn init() -> Player {
     position: Vec3(0.0, 2.0, 0.0),
     rotation: Vec3(0.0, 0.0, 0.0),
     time_since_taking_damage: 0.0,
+    time_since_taking_damage_reset: 0.0,
     passive_heal_delay:,
     passive_heal_rate:,
     passive_heal_interval:,
@@ -298,7 +304,8 @@ pub fn handle_input(
       direction,
     )
 
-  let impulse = calculate_jump(player, physics_world, input_state, bindings)
+  let #(player, impulse) =
+    calculate_jump(player, physics_world, input_state, bindings)
 
   let new_rotation = Vec3(0.0, player_yaw, player_roll)
   let quaternion_rotation = transform.euler_to_quaternion(new_rotation)
@@ -314,7 +321,7 @@ fn calculate_jump(
   physics_world: physics.PhysicsWorld(id),
   input_state: input.InputState,
   bindings: input.InputBindings(PlayerAction),
-) -> Vec3(Float) {
+) -> #(Player, Vec3(Float)) {
   let raycast_origin =
     Vec3(player.position.x, player.position.y -. 1.6, player.position.z)
 
@@ -326,12 +333,15 @@ fn calculate_jump(
       physics_world,
       origin: raycast_origin,
       direction: raycast_direction,
-      max_distance: 1.0,
+      max_distance: 0.0,
     ),
-    input.is_action_just_pressed(input_state, bindings, Jump)
+    input.is_action_pressed(input_state, bindings, Jump),
+    player.jump_timeout
   {
-    Ok(_), True -> Vec3(0.0, jumping_speed, 0.0)
-    _, _ -> vec3f.zero
+    Ok(_), True, 0.0 -> {
+      #(Player(..player, jump_timeout: 0.1), Vec3(0.0, jumping_speed, 0.0))
+    }
+    _, _, _ -> #(player, vec3f.zero)
   }
 }
 
@@ -342,7 +352,12 @@ pub fn take_damage(player: Player, damage: Float) -> Player {
     False -> new_health
   }
 
-  Player(..player, current_health: capped_health, time_since_taking_damage: 0.0)
+  Player(
+    ..player,
+    current_health: capped_health,
+    time_since_taking_damage: 0.0,
+    time_since_taking_damage_reset: 0.0,
+  )
 }
 
 pub fn update(
@@ -411,7 +426,21 @@ pub fn update(
   let time_since_taking_damage =
     player.time_since_taking_damage +. delta_time /. 1000.0
 
-  let player = Player(..player, time_since_taking_damage:)
+  let time_since_taking_damage_reset =
+    player.time_since_taking_damage_reset +. delta_time /. 1000.0
+
+  let jump_timeout = case player.jump_timeout >. 0.0 {
+    True -> player.jump_timeout -. delta_time /. 1000.0
+    False -> 0.0
+  }
+
+  let player =
+    Player(
+      ..player,
+      time_since_taking_damage:,
+      time_since_taking_damage_reset:,
+      jump_timeout:,
+    )
 
   let player = case time_since_taking_damage >=. player.passive_heal_delay {
     True -> {

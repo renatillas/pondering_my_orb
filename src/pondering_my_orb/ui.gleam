@@ -29,6 +29,11 @@ pub type Model(tiramisu_msg) {
     player_xp: Int,
     player_xp_to_next_level: Int,
     player_level: Int,
+    total_score: Float,
+    total_survival_points: Float,
+    total_kill_points: Float,
+    total_kills: Int,
+    current_multiplier: Float,
   )
 }
 
@@ -72,6 +77,11 @@ pub type GameState {
     player_xp: Int,
     player_xp_to_next_level: Int,
     player_level: Int,
+    total_score: Float,
+    total_survival_points: Float,
+    total_kill_points: Float,
+    total_kills: Int,
+    current_multiplier: Float,
   )
 }
 
@@ -91,6 +101,11 @@ pub fn init(wrapper) -> #(Model(tiramisu_msg), effect.Effect(Msg)) {
       player_xp: 0,
       player_xp_to_next_level: 100,
       player_level: 1,
+      total_score: 0.0,
+      total_survival_points: 0.0,
+      total_kill_points: 0.0,
+      total_kills: 0,
+      current_multiplier: 1.0,
     ),
     tiramisu_ui.register_lustre(),
   )
@@ -148,6 +163,11 @@ pub fn update(
           player_xp: state.player_xp,
           player_xp_to_next_level: state.player_xp_to_next_level,
           player_level: state.player_level,
+          total_score: state.total_score,
+          total_survival_points: state.total_survival_points,
+          total_kill_points: state.total_kill_points,
+          total_kills: state.total_kills,
+          current_multiplier: state.current_multiplier,
         ),
         sync_effect,
       )
@@ -534,6 +554,37 @@ fn view_playing(model: Model(tiramisu_msg)) -> element.Element(Msg) {
             ]),
             render_wand_slots(model.wand_slots, model.drag_state),
           ]),
+          html.div([attribute.class("mb-4")], [
+            html.div([attribute.class("flex items-center gap-2 mb-2")], [
+              html.span([attribute.class("text-yellow-400 text-lg")], [
+                html.text("⭐"),
+              ]),
+              html.span([attribute.class("text-white font-bold")], [
+                html.text("SCORE"),
+              ]),
+            ]),
+            html.div([attribute.class("text-gray-300 text-sm mb-1")], [
+              html.text(float_to_string_rounded(model.total_score)),
+            ]),
+            // Streak display
+            case model.current_multiplier >. 1.0 {
+              True ->
+                html.div([attribute.class("text-orange-400 text-xs")], [
+                  html.text(
+                    "STREAK: "
+                    <> float.to_string(float.to_precision(
+                      model.current_multiplier,
+                      2,
+                    ))
+                    <> "x",
+                  ),
+                ])
+              False ->
+                html.div([attribute.class("text-gray-500 text-xs")], [
+                  html.text("No streak"),
+                ])
+            },
+          ]),
         ],
       ),
       // Inventory screen (spell bag) - only show when inventory is open
@@ -673,7 +724,25 @@ fn view_game_over_screen(model: Model(tiramisu_msg)) -> element.Element(Msg) {
               html.text("Final Stats"),
             ]),
             html.p([attribute.class("text-xl text-gray-300")], [
-              html.text("Health: " <> float.to_string(model.player_health)),
+              html.text(
+                "Total score: "
+                <> float.to_string(float.to_precision(model.total_score, 2)),
+              ),
+            ]),
+            html.p([attribute.class("text-xl text-gray-300")], [
+              html.text(
+                "Total survival points: "
+                <> int.to_string(float.round(model.total_survival_points)),
+              ),
+            ]),
+            html.p([attribute.class("text-xl text-gray-300")], [
+              html.text(
+                "Total kill points: "
+                <> int.to_string(float.round(model.total_kill_points)),
+              ),
+            ]),
+            html.p([attribute.class("text-xl text-gray-300")], [
+              html.text("Total kills: " <> int.to_string(model.total_kills)),
             ]),
           ],
         ),
