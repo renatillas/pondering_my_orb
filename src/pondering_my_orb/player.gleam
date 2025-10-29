@@ -222,9 +222,9 @@ pub fn init() -> Player {
     wand.new(
       name: "Player's Wand",
       slot_count: 5,
-      max_mana: 100.0,
-      mana_recharge_rate: 10.0,
-      cast_delay: 0.01,
+      max_mana: 200.0,
+      mana_recharge_rate: 30.0,
+      cast_delay: 0.2,
       recharge_time: 0.5,
     )
 

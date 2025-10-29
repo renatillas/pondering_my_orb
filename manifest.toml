@@ -70,3 +70,4 @@ paint = { version = ">= 1.0.0 and < 2.0.0" }
 tiramisu = { git = "https://github.com/renatillas/tiramisu.git", ref = "main" }
 tote = { version = ">= 1.0.2 and < 2.0.0" }
 vec = { version = ">= 3.0.1 and < 4.0.0" }
+plinth = { version = ">= 0.7.2 and < 1.0.0" }
