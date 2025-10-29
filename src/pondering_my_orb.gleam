@@ -93,6 +93,8 @@ pub type Msg {
   // Projectiles
   ProjectileDamagedEnemy(Id, Float, Vec3(Float))
   EnemyKilled(Id)
+  // XP & Leveling
+  PlayerLeveledUp(new_level: Int)
   // Camera
   PointerLocked
   PointerLockFailed
@@ -539,7 +541,7 @@ fn handle_tick(
       }
     })
 
-  let player =
+  let #(player, leveled_up) =
     player
     |> player.with_position(player_position)
     |> player.add_xp(collected_xp)
@@ -579,6 +581,12 @@ fn handle_tick(
       )),
     )
 
+  // Dispatch level-up message if player leveled up
+  let level_up_effect = case leveled_up {
+    True -> effect.dispatch(PlayerLeveledUp(player.level))
+    False -> effect.none()
+  }
+
   // Update screen shake timer
   let camera =
     camera.update(
@@ -597,6 +605,7 @@ fn handle_tick(
       ui_effect,
       inventory_toggle_effect,
       death_effect,
+      level_up_effect,
     ])
 
   #(
