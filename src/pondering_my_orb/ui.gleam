@@ -1,3 +1,4 @@
+import ensaimada
 import gleam/float
 import gleam/int
 import gleam/list
@@ -9,9 +10,9 @@ import lustre/effect
 import lustre/element
 import lustre/element/html
 import lustre/event
+import pondering_my_orb/score
 import pondering_my_orb/spell
 import pondering_my_orb/spell_bag
-import sortable
 import tiramisu/ui as tiramisu_ui
 
 pub type Model(tiramisu_msg) {
@@ -23,12 +24,13 @@ pub type Model(tiramisu_msg) {
     player_max_mana: Float,
     wand_slots: iv.Array(option.Option(spell.Spell)),
     spell_bag: spell_bag.SpellBag,
-    drag_state: sortable.DragState,
+    drag_state: ensaimada.DragState,
     inventory_open: Bool,
     wrapper: fn(UiToGameMsg) -> tiramisu_msg,
     player_xp: Int,
     player_xp_to_next_level: Int,
     player_level: Int,
+    score: score.Score,
   )
 }
 
@@ -44,8 +46,8 @@ pub type Msg {
   GamePhaseChanged(GamePhase)
   StartButtonClicked
   RestartButtonClicked
-  WandSortableMsg(sortable.SortableMsg(Msg))
-  BagSortableMsg(sortable.SortableMsg(Msg))
+  WandSortableMsg(ensaimada.Msg(Msg))
+  BagSortableMsg(ensaimada.Msg(Msg))
   ToggleInventory
   SyncInventoryToGame
   NoOp
@@ -72,6 +74,7 @@ pub type GameState {
     player_xp: Int,
     player_xp_to_next_level: Int,
     player_level: Int,
+    score: score.Score,
   )
 }
 
@@ -85,12 +88,13 @@ pub fn init(wrapper) -> #(Model(tiramisu_msg), effect.Effect(Msg)) {
       player_max_mana: 100.0,
       wand_slots: iv.new(),
       spell_bag: spell_bag.new(),
-      drag_state: sortable.NoDrag,
+      drag_state: ensaimada.NoDrag,
       inventory_open: False,
       wrapper:,
       player_xp: 0,
       player_xp_to_next_level: 100,
       player_level: 1,
+      score: score.init(),
     ),
     tiramisu_ui.register_lustre(),
   )
@@ -148,6 +152,7 @@ pub fn update(
           player_xp: state.player_xp,
           player_xp_to_next_level: state.player_xp_to_next_level,
           player_level: state.player_level,
+          score: state.score,
         ),
         sync_effect,
       )
@@ -170,8 +175,10 @@ pub fn update(
     SyncInventoryToGame -> #(model, effect.none())
     WandSortableMsg(sortable_msg) -> {
       let wand_config =
-        sortable.SortableConfig(
-          on_reorder: fn(_from, _to) { WandSortableMsg(sortable.UserMsg(NoOp)) },
+        ensaimada.Config(
+          on_reorder: fn(_from, _to) {
+            WandSortableMsg(ensaimada.UserMsg(NoOp))
+          },
           container_id: "wand-slots",
           container_class: "flex gap-2",
           item_class: "sortable-item",
@@ -182,14 +189,14 @@ pub fn update(
         )
 
       let #(new_drag_state, maybe_action) =
-        sortable.update_sortable(sortable_msg, model.drag_state, wand_config)
+        ensaimada.update(sortable_msg, model.drag_state, wand_config)
 
       case maybe_action {
         option.None -> #(
           Model(..model, drag_state: new_drag_state),
           effect.none(),
         )
-        option.Some(sortable.SameContainer(from_index, to_index)) -> {
+        option.Some(ensaimada.SameContainer(from_index, to_index)) -> {
           // Reorder within wand
           let new_slots = reorder_array(model.wand_slots, from_index, to_index)
           #(
@@ -197,7 +204,7 @@ pub fn update(
             effect.none(),
           )
         }
-        option.Some(sortable.CrossContainer(
+        option.Some(ensaimada.CrossContainer(
           from_container,
           from_index,
           _to_container,
@@ -260,8 +267,8 @@ pub fn update(
     }
     BagSortableMsg(sortable_msg) -> {
       let bag_config =
-        sortable.SortableConfig(
-          on_reorder: fn(_from, _to) { BagSortableMsg(sortable.UserMsg(NoOp)) },
+        ensaimada.Config(
+          on_reorder: fn(_from, _to) { BagSortableMsg(ensaimada.UserMsg(NoOp)) },
           container_id: "spell-bag",
           container_class: "grid grid-cols-4 gap-2",
           item_class: "sortable-item",
@@ -272,14 +279,14 @@ pub fn update(
         )
 
       let #(new_drag_state, maybe_action) =
-        sortable.update_sortable(sortable_msg, model.drag_state, bag_config)
+        ensaimada.update(sortable_msg, model.drag_state, bag_config)
 
       case maybe_action {
         option.None -> #(
           Model(..model, drag_state: new_drag_state),
           effect.none(),
         )
-        option.Some(sortable.CrossContainer(
+        option.Some(ensaimada.CrossContainer(
           from_container,
           from_index,
           _to_container,
@@ -534,6 +541,37 @@ fn view_playing(model: Model(tiramisu_msg)) -> element.Element(Msg) {
             ]),
             render_wand_slots(model.wand_slots, model.drag_state),
           ]),
+          html.div([attribute.class("mb-4")], [
+            html.div([attribute.class("flex items-center gap-2 mb-2")], [
+              html.span([attribute.class("text-yellow-400 text-lg")], [
+                html.text("⭐"),
+              ]),
+              html.span([attribute.class("text-white font-bold")], [
+                html.text("SCORE"),
+              ]),
+            ]),
+            html.div([attribute.class("text-gray-300 text-sm mb-1")], [
+              html.text(float_to_string_rounded(model.score.total_score)),
+            ]),
+            // Streak display
+            case model.score.current_multiplier >. 1.0 {
+              True ->
+                html.div([attribute.class("text-orange-400 text-xs")], [
+                  html.text(
+                    "STREAK: "
+                    <> float.to_string(float.to_precision(
+                      model.score.current_multiplier,
+                      2,
+                    ))
+                    <> "x",
+                  ),
+                ])
+              False ->
+                html.div([attribute.class("text-gray-500 text-xs")], [
+                  html.text("No streak"),
+                ])
+            },
+          ]),
         ],
       ),
       // Inventory screen (spell bag) - only show when inventory is open
@@ -673,7 +711,30 @@ fn view_game_over_screen(model: Model(tiramisu_msg)) -> element.Element(Msg) {
               html.text("Final Stats"),
             ]),
             html.p([attribute.class("text-xl text-gray-300")], [
-              html.text("Health: " <> float.to_string(model.player_health)),
+              html.text(
+                "Total score: "
+                <> float.to_string(float.to_precision(
+                  model.score.total_score,
+                  2,
+                )),
+              ),
+            ]),
+            html.p([attribute.class("text-xl text-gray-300")], [
+              html.text(
+                "Total survival points: "
+                <> int.to_string(float.round(model.score.total_survival_points)),
+              ),
+            ]),
+            html.p([attribute.class("text-xl text-gray-300")], [
+              html.text(
+                "Total kill points: "
+                <> int.to_string(float.round(model.score.total_kill_points)),
+              ),
+            ]),
+            html.p([attribute.class("text-xl text-gray-300")], [
+              html.text(
+                "Total kills: " <> int.to_string(model.score.total_kills),
+              ),
             ]),
           ],
         ),
@@ -790,18 +851,18 @@ fn render_xp_bar(current current: Float, max max: Float) -> element.Element(Msg)
 
 fn render_wand_slots(
   slots: iv.Array(option.Option(spell.Spell)),
-  drag_state: sortable.DragState,
+  drag_state: ensaimada.DragState,
 ) -> element.Element(Msg) {
   let sortable_items =
     slots
     |> iv.to_list()
     |> list.index_map(fn(slot, index) {
-      sortable.create_sortable_item("wand-" <> int.to_string(index), slot)
+      ensaimada.item("wand-" <> int.to_string(index), slot)
     })
 
   let config =
-    sortable.SortableConfig(
-      on_reorder: fn(_from, _to) { WandSortableMsg(sortable.UserMsg(NoOp)) },
+    ensaimada.Config(
+      on_reorder: fn(_from, _to) { WandSortableMsg(ensaimada.UserMsg(NoOp)) },
       container_id: "wand-slots",
       container_class: "flex gap-2 pointer-events-auto",
       item_class: "sortable-item",
@@ -812,7 +873,7 @@ fn render_wand_slots(
     )
 
   element.map(
-    sortable.sortable_container(
+    ensaimada.container(
       config,
       drag_state,
       sortable_items,
@@ -823,11 +884,11 @@ fn render_wand_slots(
 }
 
 fn render_wand_slot_item(
-  item: sortable.SortableItem(option.Option(spell.Spell)),
+  item: ensaimada.Item(option.Option(spell.Spell)),
   _index: Int,
-  _drag_state: sortable.DragState,
+  _drag_state: ensaimada.DragState,
 ) -> element.Element(Msg) {
-  let slot = sortable.item_data(item)
+  let slot = ensaimada.item_data(item)
   let #(content, bg_class, border_class, text_class) = case slot {
     option.Some(spell.DamageSpell(damage_spell)) -> #(
       spell_icon(damage_spell),
@@ -873,19 +934,19 @@ fn render_wand_slot_item(
 
 fn render_spell_bag(
   bag: spell_bag.SpellBag,
-  drag_state: sortable.DragState,
+  drag_state: ensaimada.DragState,
 ) -> element.Element(Msg) {
   let spell_stacks = spell_bag.list_spell_stacks(bag)
 
   let sortable_items =
     spell_stacks
     |> list.index_map(fn(stack, index) {
-      sortable.create_sortable_item("bag-" <> int.to_string(index), stack)
+      ensaimada.item("bag-" <> int.to_string(index), stack)
     })
 
   let config =
-    sortable.SortableConfig(
-      on_reorder: fn(_from, _to) { BagSortableMsg(sortable.UserMsg(NoOp)) },
+    ensaimada.Config(
+      on_reorder: fn(_from, _to) { BagSortableMsg(ensaimada.UserMsg(NoOp)) },
       container_id: "spell-bag",
       container_class: "grid grid-cols-4 gap-2 pointer-events-auto",
       item_class: "sortable-item",
@@ -896,7 +957,7 @@ fn render_spell_bag(
     )
 
   element.map(
-    sortable.sortable_container(
+    ensaimada.container(
       config,
       drag_state,
       sortable_items,
@@ -907,11 +968,11 @@ fn render_spell_bag(
 }
 
 fn render_bag_spell_item(
-  item: sortable.SortableItem(#(spell.Spell, Int)),
+  item: ensaimada.Item(#(spell.Spell, Int)),
   _index: Int,
-  _drag_state: sortable.DragState,
+  _drag_state: ensaimada.DragState,
 ) -> element.Element(Msg) {
-  let #(spell_item, count) = sortable.item_data(item)
+  let #(spell_item, count) = ensaimada.item_data(item)
   let #(content, bg_class, border_class, text_class) = case spell_item {
     spell.DamageSpell(damage_spell) -> #(
       spell_icon(damage_spell),

@@ -12,6 +12,7 @@ import pondering_my_orb/enemy.{type Enemy}
 import pondering_my_orb/id.{type Id}
 import pondering_my_orb/map
 import pondering_my_orb/player
+import pondering_my_orb/score
 import pondering_my_orb/spell
 import pondering_my_orb/ui
 import pondering_my_orb/wand
@@ -72,6 +73,8 @@ pub type Model {
     explosion_spritesheet: Option(spritesheet.Spritesheet),
     // Inventory
     inventory_open: Bool,
+    // Score
+    score: score.Score,
   )
 }
 
@@ -150,6 +153,7 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), Option(_)) {
       fireball_animation: None,
       explosion_spritesheet: None,
       inventory_open: False,
+      score: score.init(),
     ),
     effects,
     Some(physics_world),
@@ -281,6 +285,7 @@ fn update(
             ..model.camera,
             shake_time: screen_shake_duration,
           ),
+          score: score.take_damage(model.score),
         ),
         effect.none(),
         ctx.physics_world,
@@ -379,6 +384,7 @@ fn update(
           enemies: list.filter(model.enemies, fn(enemy) { enemy_id != enemy.id }),
           xp_shards: [new_shard, ..model.xp_shards],
           next_xp_shard_id: model.next_xp_shard_id + 1,
+          score: score.enemy_killed(model.score),
         ),
         effect.none(),
         Some(physics_world),
@@ -542,6 +548,8 @@ fn handle_tick(
     None -> updated_projectiles
   }
 
+  let new_score = score.update(player, model.score, scaled_delta)
+
   let ui_effect =
     tiramisu_ui.dispatch_to_lustre(
       ui.GameStateUpdated(ui.GameState(
@@ -555,6 +563,8 @@ fn handle_tick(
         player_xp: player.current_xp,
         player_xp_to_next_level: player.xp_to_next_level,
         player_level: player.level,
+        // Score
+        score: new_score,
       )),
     )
 
@@ -589,6 +599,7 @@ fn handle_tick(
       enemies:,
       xp_shards: remaining_shards,
       pending_player_knockback: None,
+      score: new_score,
     ),
     effects,
     Some(physics_world),
