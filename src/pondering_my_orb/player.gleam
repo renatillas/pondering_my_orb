@@ -53,7 +53,6 @@ pub type Player {
     velocity: Vec3(Float),
     // Taking damage
     time_since_taking_damage: Float,
-    time_since_taking_damage_reset: Float,
     // Healing
     passive_heal_delay: Float,
     passive_heal_rate: Float,
@@ -77,7 +76,6 @@ pub fn new(
   position position: Vec3(Float),
   rotation rotation: Vec3(Float),
   time_since_taking_damage time_since_taking_damage: Float,
-  time_since_taking_damage_reset time_since_taking_damage_reset: Float,
   passive_heal_delay passive_heal_delay: Float,
   passive_heal_rate passive_heal_rate: Float,
   passive_heal_interval passive_heal_interval: Float,
@@ -98,7 +96,6 @@ pub fn new(
     rotation:,
     quaternion_rotation:,
     time_since_taking_damage:,
-    time_since_taking_damage_reset:,
     passive_heal_delay:,
     passive_heal_rate:,
     passive_heal_interval:,
@@ -167,7 +164,6 @@ pub fn init() -> Player {
     position: Vec3(0.0, 2.0, 0.0),
     rotation: Vec3(0.0, 0.0, 0.0),
     time_since_taking_damage: 0.0,
-    time_since_taking_damage_reset: 0.0,
     passive_heal_delay:,
     passive_heal_rate:,
     passive_heal_interval:,
@@ -352,12 +348,7 @@ pub fn take_damage(player: Player, damage: Float) -> Player {
     False -> new_health
   }
 
-  Player(
-    ..player,
-    current_health: capped_health,
-    time_since_taking_damage: 0.0,
-    time_since_taking_damage_reset: 0.0,
-  )
+  Player(..player, current_health: capped_health, time_since_taking_damage: 0.0)
 }
 
 pub fn update(
@@ -426,21 +417,12 @@ pub fn update(
   let time_since_taking_damage =
     player.time_since_taking_damage +. delta_time /. 1000.0
 
-  let time_since_taking_damage_reset =
-    player.time_since_taking_damage_reset +. delta_time /. 1000.0
-
   let jump_timeout = case player.jump_timeout >. 0.0 {
     True -> player.jump_timeout -. delta_time /. 1000.0
     False -> 0.0
   }
 
-  let player =
-    Player(
-      ..player,
-      time_since_taking_damage:,
-      time_since_taking_damage_reset:,
-      jump_timeout:,
-    )
+  let player = Player(..player, time_since_taking_damage:, jump_timeout:)
 
   let player = case time_since_taking_damage >=. player.passive_heal_delay {
     True -> {

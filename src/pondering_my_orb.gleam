@@ -12,6 +12,7 @@ import pondering_my_orb/enemy.{type Enemy}
 import pondering_my_orb/id.{type Id}
 import pondering_my_orb/map
 import pondering_my_orb/player
+import pondering_my_orb/score
 import pondering_my_orb/spell
 import pondering_my_orb/ui
 import pondering_my_orb/wand
@@ -32,16 +33,6 @@ import vec/vec3.{type Vec3, Vec3}
 import vec/vec3f
 
 const screen_shake_duration = 0.5
-
-const survival_points_per_second = 10.0
-
-const points_per_enemy_kill = 20.0
-
-const streak_multiplier_step = 0.1
-
-const max_streak_multiplier = 2.0
-
-const streak_reset_time = 10.0
 
 pub type GamePhase {
   StartScreen
@@ -83,11 +74,7 @@ pub type Model {
     // Inventory
     inventory_open: Bool,
     // Score
-    total_score: Float,
-    total_survival_points: Float,
-    total_kill_points: Float,
-    total_kills: Int,
-    current_multiplier: Float,
+    score: score.Score,
   )
 }
 
@@ -166,11 +153,7 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), Option(_)) {
       fireball_animation: None,
       explosion_spritesheet: None,
       inventory_open: False,
-      total_score: 0.0,
-      total_survival_points: 0.0,
-      total_kill_points: 0.0,
-      total_kills: 0,
-      current_multiplier: 1.0,
+      score: score.init(),
     ),
     effects,
     Some(physics_world),
@@ -302,6 +285,7 @@ fn update(
             ..model.camera,
             shake_time: screen_shake_duration,
           ),
+          score: score.take_damage(model.score),
         ),
         effect.none(),
         ctx.physics_world,
@@ -394,20 +378,13 @@ fn update(
 
       let new_shard = xp_shard.new(model.next_xp_shard_id, enemy_position)
 
-      let kill_points = points_per_enemy_kill *. model.current_multiplier
-      let new_total_kill_points = model.total_kill_points +. kill_points
-      let new_total_kills = model.total_kills + 1
-      let new_total_score = model.total_score +. kill_points
-
       #(
         Model(
           ..model,
           enemies: list.filter(model.enemies, fn(enemy) { enemy_id != enemy.id }),
           xp_shards: [new_shard, ..model.xp_shards],
           next_xp_shard_id: model.next_xp_shard_id + 1,
-          total_kill_points: new_total_kill_points,
-          total_kills: new_total_kills,
-          total_score: new_total_score,
+          score: score.enemy_killed(model.score),
         ),
         effect.none(),
         Some(physics_world),
@@ -571,37 +548,7 @@ fn handle_tick(
     None -> updated_projectiles
   }
 
-  let #(new_current_multiplier, player) = case
-    model.player.time_since_taking_damage >=. streak_reset_time
-  {
-    True -> {
-      case model.player.time_since_taking_damage_reset >=. streak_reset_time {
-        True -> {
-          let new_multiplier =
-            float.min(
-              model.current_multiplier +. streak_multiplier_step,
-              max_streak_multiplier,
-            )
-
-          #(
-            new_multiplier,
-            player.Player(..player, time_since_taking_damage_reset: 0.0),
-          )
-        }
-        False -> #(model.current_multiplier, player)
-      }
-    }
-    False -> #(1.0, player)
-  }
-
-  let survival_points_earned =
-    scaled_delta /. 1000.0 *. survival_points_per_second
-  let multiplied_survival_points =
-    survival_points_earned *. new_current_multiplier
-
-  let new_total_score = model.total_score +. multiplied_survival_points
-  let new_survival_points =
-    model.total_survival_points +. multiplied_survival_points
+  let new_score = score.update(player, model.score, scaled_delta)
 
   let ui_effect =
     tiramisu_ui.dispatch_to_lustre(
@@ -617,11 +564,7 @@ fn handle_tick(
         player_xp_to_next_level: player.xp_to_next_level,
         player_level: player.level,
         // Score
-        total_score: new_total_score,
-        total_survival_points: new_survival_points,
-        total_kill_points: model.total_kill_points,
-        total_kills: model.total_kills,
-        current_multiplier: new_current_multiplier,
+        score: new_score,
       )),
     )
 
@@ -656,10 +599,7 @@ fn handle_tick(
       enemies:,
       xp_shards: remaining_shards,
       pending_player_knockback: None,
-      total_score: new_total_score,
-      total_survival_points: new_survival_points,
-      total_kill_points: model.total_kill_points,
-      current_multiplier: new_current_multiplier,
+      score: new_score,
     ),
     effects,
     Some(physics_world),

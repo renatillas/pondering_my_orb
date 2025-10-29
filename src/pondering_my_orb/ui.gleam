@@ -10,6 +10,7 @@ import lustre/effect
 import lustre/element
 import lustre/element/html
 import lustre/event
+import pondering_my_orb/score
 import pondering_my_orb/spell
 import pondering_my_orb/spell_bag
 import tiramisu/ui as tiramisu_ui
@@ -29,11 +30,7 @@ pub type Model(tiramisu_msg) {
     player_xp: Int,
     player_xp_to_next_level: Int,
     player_level: Int,
-    total_score: Float,
-    total_survival_points: Float,
-    total_kill_points: Float,
-    total_kills: Int,
-    current_multiplier: Float,
+    score: score.Score,
   )
 }
 
@@ -77,11 +74,7 @@ pub type GameState {
     player_xp: Int,
     player_xp_to_next_level: Int,
     player_level: Int,
-    total_score: Float,
-    total_survival_points: Float,
-    total_kill_points: Float,
-    total_kills: Int,
-    current_multiplier: Float,
+    score: score.Score,
   )
 }
 
@@ -101,11 +94,7 @@ pub fn init(wrapper) -> #(Model(tiramisu_msg), effect.Effect(Msg)) {
       player_xp: 0,
       player_xp_to_next_level: 100,
       player_level: 1,
-      total_score: 0.0,
-      total_survival_points: 0.0,
-      total_kill_points: 0.0,
-      total_kills: 0,
-      current_multiplier: 1.0,
+      score: score.init(),
     ),
     tiramisu_ui.register_lustre(),
   )
@@ -163,11 +152,7 @@ pub fn update(
           player_xp: state.player_xp,
           player_xp_to_next_level: state.player_xp_to_next_level,
           player_level: state.player_level,
-          total_score: state.total_score,
-          total_survival_points: state.total_survival_points,
-          total_kill_points: state.total_kill_points,
-          total_kills: state.total_kills,
-          current_multiplier: state.current_multiplier,
+          score: state.score,
         ),
         sync_effect,
       )
@@ -566,16 +551,16 @@ fn view_playing(model: Model(tiramisu_msg)) -> element.Element(Msg) {
               ]),
             ]),
             html.div([attribute.class("text-gray-300 text-sm mb-1")], [
-              html.text(float_to_string_rounded(model.total_score)),
+              html.text(float_to_string_rounded(model.score.total_score)),
             ]),
             // Streak display
-            case model.current_multiplier >. 1.0 {
+            case model.score.current_multiplier >. 1.0 {
               True ->
                 html.div([attribute.class("text-orange-400 text-xs")], [
                   html.text(
                     "STREAK: "
                     <> float.to_string(float.to_precision(
-                      model.current_multiplier,
+                      model.score.current_multiplier,
                       2,
                     ))
                     <> "x",
@@ -728,23 +713,28 @@ fn view_game_over_screen(model: Model(tiramisu_msg)) -> element.Element(Msg) {
             html.p([attribute.class("text-xl text-gray-300")], [
               html.text(
                 "Total score: "
-                <> float.to_string(float.to_precision(model.total_score, 2)),
+                <> float.to_string(float.to_precision(
+                  model.score.total_score,
+                  2,
+                )),
               ),
             ]),
             html.p([attribute.class("text-xl text-gray-300")], [
               html.text(
                 "Total survival points: "
-                <> int.to_string(float.round(model.total_survival_points)),
+                <> int.to_string(float.round(model.score.total_survival_points)),
               ),
             ]),
             html.p([attribute.class("text-xl text-gray-300")], [
               html.text(
                 "Total kill points: "
-                <> int.to_string(float.round(model.total_kill_points)),
+                <> int.to_string(float.round(model.score.total_kill_points)),
               ),
             ]),
             html.p([attribute.class("text-xl text-gray-300")], [
-              html.text("Total kills: " <> int.to_string(model.total_kills)),
+              html.text(
+                "Total kills: " <> int.to_string(model.score.total_kills),
+              ),
             ]),
           ],
         ),
