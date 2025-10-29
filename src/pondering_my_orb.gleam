@@ -122,11 +122,6 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), Option(_)) {
   let physics_world =
     physics.new_world(physics.WorldConfig(gravity: Vec3(0.0, -9.81, 0.0)))
 
-  let effects =
-    effect.batch([
-      effect.from(fn(_) { debug.show_collider_wireframes(physics_world, True) }),
-    ])
-
   let player_bindings = player.default_bindings()
 
   #(
@@ -155,7 +150,7 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), Option(_)) {
       inventory_open: False,
       score: score.init(),
     ),
-    effects,
+    effect.from(fn(_) { debug.show_collider_wireframes(physics_world, False) }),
     Some(physics_world),
   )
 }
@@ -180,6 +175,8 @@ fn update(
         asset.TextureAsset("spr_coin_azu.png"),
         asset.TextureAsset("SPRITESHEET_Files/FireBall_2_64x64.png"),
         asset.TextureAsset("SPRITESHEET_Files/Explosion_2_64x64.png"),
+        asset.TextureAsset("mago_idle.png"),
+        asset.TextureAsset("mago_attacking.png"),
       ]
 
       let effects =
@@ -496,10 +493,24 @@ fn handle_tick(
         physics.apply_impulse(pw, hit.enemy_id, total_knockback)
       })
       |> physics.step()
+      // After physics step, manually set the player rotation
+      |> fn(pw) {
+        let player_transform = case physics.get_transform(pw, id.player()) {
+          Ok(current_transform) -> {
+            // Keep physics position, but use player's input rotation
+            current_transform
+            |> transform.with_quaternion_rotation(player.quaternion_rotation)
+          }
+          Error(_) -> transform.at(position: player.position)
+            |> transform.with_quaternion_rotation(player.quaternion_rotation)
+        }
+        physics.update_body_transform(pw, id.player(), player_transform)
+      }
     }
     True -> physics_world
   }
 
+  // Read position from physics, rotation is controlled by input
   let player_position =
     physics.get_transform(physics_world, id.player())
     |> result.map(transform.position)
@@ -671,10 +682,42 @@ fn handle_assets_loaded(
       hit_animation: explosion_animation,
     )
 
-  // Set up player's initial spell now that we have visuals
+  // Load player sprite textures (single frame images)
+  let assert Ok(mago_idle_texture) =
+    asset.get_texture(assets.cache, "mago_idle.png")
+  let assert Ok(mago_idle_spritesheet) =
+    spritesheet.from_grid(mago_idle_texture, columns: 1, rows: 1)
+  let mago_idle_animation =
+    spritesheet.animation(
+      name: "idle",
+      frames: [0],
+      frame_duration: 150.0,
+      loop: spritesheet.Repeat,
+    )
+
+  let assert Ok(mago_attacking_texture) =
+    asset.get_texture(assets.cache, "mago_attacking.png")
+  let assert Ok(mago_attacking_spritesheet) =
+    spritesheet.from_grid(mago_attacking_texture, columns: 1, rows: 1)
+  let mago_attacking_animation =
+    spritesheet.animation(
+      name: "attacking",
+      frames: [0],
+      frame_duration: 80.0,
+      loop: spritesheet.Repeat,
+    )
+
+  // Set up player's initial spell and sprites
   let assert Ok(updated_wand) =
     wand.set_spell(model.player.wand, 0, spell.fireball(fireball_visuals))
-  let updated_player = player.Player(..model.player, wand: updated_wand)
+  let updated_player =
+    player.Player(..model.player, wand: updated_wand)
+    |> player.set_spritesheets(
+      mago_idle_spritesheet,
+      mago_idle_animation,
+      mago_attacking_spritesheet,
+      mago_attacking_animation,
+    )
 
   let boxes =
     list.map(list.range(0, 19), fn(_) {
@@ -780,8 +823,11 @@ fn handle_ui_message(
   }
 }
 
-fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
-  use <- bool.guard(model.game_phase != Playing, return: [])
+fn view(model: Model, _ctx: tiramisu.Context(Id)) -> scene.Node(Id) {
+  use <- bool.guard(
+    model.game_phase != Playing,
+    return: scene.empty(id.scene(), transform.identity, []),
+  )
 
   let camera = camera.view(model.camera, model.player)
 
@@ -814,33 +860,38 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> List(scene.Node(Id)) {
 
   // Pass camera position for billboard rotation
   let enemy = model.enemies |> list.map(enemy.render(_, model.camera.position))
-  list.flatten([
-    enemy,
-    ground,
-    boxes,
-    projectiles,
-    explosions,
-    xp_shards,
-    [
-      player.render(id.player(), model.player),
-      camera,
-      scene.light(
-        id: id.ambient(),
-        light: {
-          let assert Ok(light) = light.ambient(color: 0xffffff, intensity: 0.5)
-          light
-        },
-        transform: transform.identity,
-      ),
-      scene.light(
-        id: id.directional(),
-        light: {
-          let assert Ok(light) =
-            light.directional(color: 0xffffff, intensity: 2.0)
-          light
-        },
-        transform: transform.at(position: Vec3(5.0, 10.0, 7.5)),
-      ),
-    ],
-  ])
+  scene.empty(
+    id: id.scene(),
+    transform: transform.identity,
+    children: list.flatten([
+      enemy,
+      ground,
+      boxes,
+      projectiles,
+      explosions,
+      xp_shards,
+      [
+        player.view(id.player(), model.player),
+        camera,
+        scene.light(
+          id: id.ambient(),
+          light: {
+            let assert Ok(light) =
+              light.ambient(color: 0xffffff, intensity: 0.5)
+            light
+          },
+          transform: transform.identity,
+        ),
+        scene.light(
+          id: id.directional(),
+          light: {
+            let assert Ok(light) =
+              light.directional(color: 0xffffff, intensity: 2.0)
+            light
+          },
+          transform: transform.at(position: Vec3(5.0, 10.0, 7.5)),
+        ),
+      ],
+    ]),
+  )
 }

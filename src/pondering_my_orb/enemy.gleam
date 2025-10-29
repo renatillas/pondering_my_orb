@@ -97,7 +97,7 @@ pub fn render(enemy: Enemy(Id), camera_position: Vec3(Float)) -> scene.Node(Id) 
   // Use atan2 to get Y rotation to face camera
   let y_rotation = maths.atan2(to_camera.x, to_camera.z)
 
-  scene.group(
+  scene.empty(
     id: id.enemy_group(enemy_id_num),
     transform: transform.identity,
     children: [

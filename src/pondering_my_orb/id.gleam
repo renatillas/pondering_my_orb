@@ -1,4 +1,5 @@
 pub type Id {
+  Scene(layer: Layer)
   Camera(layer: Layer)
   Box(layer: Layer)
   Ambient(layer: Layer)
@@ -8,6 +9,7 @@ pub type Id {
   EnemyGroup(layer: Layer, id: Int)
   EnemyHealthBar(layer: Layer, id: Int)
   Player(layer: Layer)
+  PlayerSprite(layer: Layer)
   Projectile(layer: Layer, id: Int)
   Explosion(layer: Layer, id: Int)
   XPShard(layer: Layer, id: Int)
@@ -56,6 +58,10 @@ pub fn player() {
   Player(layer: PlayerLayer)
 }
 
+pub fn player_sprite() {
+  PlayerSprite(layer: PlayerLayer)
+}
+
 pub fn projectile(id: Int) -> Id {
   Projectile(layer: PlayerLayer, id: id)
 }
@@ -66,4 +72,8 @@ pub fn explosion(id: Int) -> Id {
 
 pub fn xp_shard(id: Int) -> Id {
   XPShard(layer: MiscelaniaLayer, id: id)
+}
+
+pub fn scene() -> Id {
+  Scene(layer: MiscelaniaLayer)
 }

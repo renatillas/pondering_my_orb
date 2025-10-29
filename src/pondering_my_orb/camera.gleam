@@ -4,6 +4,7 @@ import gleam_community/maths
 import pondering_my_orb/id
 import pondering_my_orb/player
 import tiramisu/camera
+import tiramisu/postprocessing
 import tiramisu/scene
 import tiramisu/transform
 import vec/vec3.{type Vec3, Vec3}
@@ -126,6 +127,25 @@ pub fn view(camera: Camera, player: player.Player) {
       look_at: Some(look_at_target),
       active: True,
       viewport: None,
+      postprocessing: option.Some(
+        postprocessing.new()
+        |> postprocessing.add_pass(postprocessing.clear_pass(option.None))
+        |> postprocessing.add_pass(postprocessing.render_pass())
+        // Bloom effect for glowing projectiles and explosions
+        |> postprocessing.add_pass(postprocessing.bloom(
+          strength: 0.2,
+          threshold: 0.7,
+          radius: 0.5,
+        ))
+        |> postprocessing.add_pass(postprocessing.color_correction(
+          brightness: 0.05,
+          contrast: 0.15,
+          saturation: 0.2,
+        ))
+        |> postprocessing.add_pass(postprocessing.pixelate(2))
+        |> postprocessing.add_pass(postprocessing.fxaa())
+        |> postprocessing.add_pass(postprocessing.output_pass()),
+      ),
     )
   camera
 }

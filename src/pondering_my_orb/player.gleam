@@ -4,6 +4,7 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam_community/maths
 import pondering_my_orb/enemy.{type Enemy}
+import pondering_my_orb/id
 import pondering_my_orb/spell
 import pondering_my_orb/spell_bag
 import pondering_my_orb/wand
@@ -13,6 +14,7 @@ import tiramisu/input
 import tiramisu/material
 import tiramisu/physics
 import tiramisu/scene
+import tiramisu/spritesheet
 import tiramisu/transform
 import vec/vec3.{type Vec3, Vec3}
 import vec/vec3f
@@ -67,6 +69,15 @@ pub type Player {
     current_xp: Int,
     xp_to_next_level: Int,
     level: Int,
+    // Animation
+    idle_spritesheet: Option(spritesheet.Spritesheet),
+    idle_animation: Option(spritesheet.Animation),
+    attacking_spritesheet: Option(spritesheet.Spritesheet),
+    attacking_animation: Option(spritesheet.Animation),
+    is_attacking: Bool,
+    attack_animation_timer: Float,
+    idle_animation_state: spritesheet.AnimationState,
+    attacking_animation_state: spritesheet.AnimationState,
   )
 }
 
@@ -108,41 +119,102 @@ pub fn new(
     current_xp: 0,
     xp_to_next_level: 100,
     level: 1,
+    idle_spritesheet: None,
+    idle_animation: None,
+    attacking_spritesheet: None,
+    attacking_animation: None,
+    is_attacking: False,
+    attack_animation_timer: 0.0,
+    idle_animation_state: spritesheet.initial_state("idle"),
+    attacking_animation_state: spritesheet.initial_state("attacking"),
   )
 }
 
-pub fn render(id: id, player: Player) {
-  let assert Ok(capsule) =
-    geometry.cylinder(
-      radius_top: 0.5,
-      radius_bottom: 0.5,
-      height: 2.5,
-      radial_segments: 10,
-    )
+pub fn view(player_id: id.Id, player: Player) {
+  // Choose animation based on attacking state (timer based)
+  let is_showing_attack = player.attack_animation_timer >. 0.0
 
-  let assert Ok(material) =
-    material.new() |> material.with_color(0xffff00) |> material.build()
-  scene.mesh(
-    id:,
-    geometry: capsule,
-    material:,
-    transform: transform.at(player.position)
-      |> transform.with_euler_rotation(player.rotation),
-    physics: option.Some(
-      physics.new_rigid_body(physics.Dynamic)
-      |> physics.with_collider(physics.Capsule(
-        offset: transform.identity,
-        half_height: 1.0,
-        radius: 0.5,
-      ))
-      |> physics.with_restitution(0.0)
-      |> physics.with_mass(70.0)
-      |> physics.with_friction(0.0)
-      |> physics.with_lock_rotation_x()
-      |> physics.with_lock_rotation_z()
-      |> physics.build(),
-    ),
-  )
+  let spritesheet = case is_showing_attack {
+    True -> player.attacking_spritesheet
+    False -> player.idle_spritesheet
+  }
+
+  let animation = case is_showing_attack {
+    True -> player.attacking_animation
+    False -> player.idle_animation
+  }
+
+  let animation_state = case is_showing_attack {
+    True -> player.attacking_animation_state
+    False -> player.idle_animation_state
+  }
+
+  // Render sprite if we have the spritesheet loaded
+  case spritesheet, animation {
+    Some(sheet), Some(anim) -> {
+      scene.animated_sprite(
+        id: player_id,
+        spritesheet: sheet,
+        animation: anim,
+        state: animation_state,
+        width: 2.0,
+        height: 2.5,
+        transform: transform.at(position: player.position)
+          |> transform.with_euler_rotation(player.rotation),
+        pixel_art: True,
+        physics: option.Some(
+          physics.new_rigid_body(physics.Dynamic)
+          |> physics.with_collider(physics.Capsule(
+            offset: transform.identity,
+            half_height: 1.0,
+            radius: 0.5,
+          ))
+          |> physics.with_restitution(0.0)
+          |> physics.with_mass(70.0)
+          |> physics.with_friction(0.0)
+          |> physics.with_lock_rotation_x()
+          |> physics.with_lock_rotation_y()
+          |> physics.with_lock_rotation_z()
+          |> physics.build(),
+        ),
+      )
+    }
+    _, _ -> {
+      // Fallback to cylinder if sprites not loaded yet
+      let assert Ok(capsule) =
+        geometry.cylinder(
+          radius_top: 0.5,
+          radius_bottom: 0.5,
+          height: 2.5,
+          radial_segments: 10,
+        )
+
+      let assert Ok(material) =
+        material.new() |> material.with_color(0xffff00) |> material.build()
+      scene.mesh(
+        id: player_id,
+        geometry: capsule,
+        material:,
+        transform: transform.at(player.position)
+          |> transform.with_euler_rotation(player.rotation),
+        physics: option.Some(
+          physics.new_rigid_body(physics.Dynamic)
+          |> physics.with_collider(physics.Capsule(
+            offset: transform.identity,
+            half_height: 1.0,
+            radius: 0.5,
+          ))
+          |> physics.with_restitution(0.0)
+          |> physics.with_mass(70.0)
+          |> physics.with_friction(0.0)
+          |> physics.with_lock_rotation_x()
+          |> physics.with_lock_rotation_y()
+          |> physics.with_lock_rotation_z()
+          |> physics.build(),
+        ),
+      )
+    }
+  }
 }
 
 pub fn init() -> Player {
@@ -177,6 +249,43 @@ pub fn init() -> Player {
 
 pub fn with_position(player: Player, position: Vec3(Float)) -> Player {
   Player(..player, position: position)
+}
+
+pub fn set_spritesheets(
+  player: Player,
+  idle_spritesheet: spritesheet.Spritesheet,
+  idle_animation: spritesheet.Animation,
+  attacking_spritesheet: spritesheet.Spritesheet,
+  attacking_animation: spritesheet.Animation,
+) -> Player {
+  Player(
+    ..player,
+    idle_spritesheet: Some(idle_spritesheet),
+    idle_animation: Some(idle_animation),
+    attacking_spritesheet: Some(attacking_spritesheet),
+    attacking_animation: Some(attacking_animation),
+  )
+}
+
+pub fn update_animation(player: Player, delta_time: Float) -> Player {
+  // Update both animations
+  let idle_state = case player.idle_animation {
+    Some(anim) ->
+      spritesheet.update(player.idle_animation_state, anim, delta_time)
+    None -> player.idle_animation_state
+  }
+
+  let attacking_state = case player.attacking_animation {
+    Some(anim) ->
+      spritesheet.update(player.attacking_animation_state, anim, delta_time)
+    None -> player.attacking_animation_state
+  }
+
+  Player(
+    ..player,
+    idle_animation_state: idle_state,
+    attacking_animation_state: attacking_state,
+  )
 }
 
 pub fn default_bindings() -> input.InputBindings(PlayerAction) {
@@ -367,7 +476,7 @@ pub fn update(
     ))
     |> result.unwrap(#(player, Error(Nil), next_projectile_id))
 
-  let #(player, projectile) = case cast_result {
+  let #(player, projectile, is_attacking) = case cast_result {
     Ok(wand.CastSuccess(projectile, remaining_mana, next_cast_index)) -> {
       let player =
         Player(
@@ -377,13 +486,14 @@ pub fn update(
             time_since_last_cast: player.auto_cast.time_since_last_cast,
             current_spell_index: next_cast_index,
           ),
+          attack_animation_timer: 400.0,
         )
 
-      #(player, Some(projectile))
+      #(player, Some(projectile), True)
     }
     Ok(wand.NotEnoughMana(_required, _available)) -> {
       // Keep current index, don't reset timer - wait for more mana
-      #(player, None)
+      #(player, None, False)
     }
     Ok(wand.NoSpellToCast) -> {
       // No damage spell found, reset to beginning after recharge_time
@@ -395,7 +505,7 @@ pub fn update(
             current_spell_index: 0,
           ),
         )
-      #(player, None)
+      #(player, None, False)
     }
     Ok(wand.WandEmpty) -> {
       // Finished all spells, reset to beginning after recharge_time
@@ -407,10 +517,10 @@ pub fn update(
             current_spell_index: 0,
           ),
         )
-      #(player, None)
+      #(player, None, False)
     }
     Error(_) -> {
-      #(player, None)
+      #(player, None, False)
     }
   }
 
@@ -437,10 +547,30 @@ pub fn update(
     False -> player
   }
 
+  // Update animations
+  let idle_state = case player.idle_animation {
+    Some(anim) ->
+      spritesheet.update(player.idle_animation_state, anim, delta_time)
+    None -> player.idle_animation_state
+  }
+
+  let attacking_state = case player.attacking_animation {
+    Some(anim) ->
+      spritesheet.update(player.attacking_animation_state, anim, delta_time)
+    None -> player.attacking_animation_state
+  }
+
+  // Decay attack animation timer
+  let attack_timer = float.max(0.0, player.attack_animation_timer -. delta_time)
+
   let player =
     Player(
       ..player,
       wand: wand.recharge_mana(player.wand, delta_time /. 1000.0),
+      is_attacking:,
+      attack_animation_timer: attack_timer,
+      idle_animation_state: idle_state,
+      attacking_animation_state: attacking_state,
     )
 
   let death_effect = case player.current_health <=. 0.0 {

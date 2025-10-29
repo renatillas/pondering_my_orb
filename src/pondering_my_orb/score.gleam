@@ -40,8 +40,6 @@ pub fn update(player: player.Player, score: Score, delta_time: Float) -> Score {
   let time_since_taking_damage_reset =
     score.time_since_taking_damage_reset +. delta_time /. 1000.0
 
-  echo time_since_taking_damage_reset
-
   let #(new_score, new_current_multiplier) = case
     player.time_since_taking_damage >=. score.streak_upgrade_time,
     score.time_since_taking_damage_reset >=. score.streak_upgrade_time
