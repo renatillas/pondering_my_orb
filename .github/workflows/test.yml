@@ -21,8 +21,14 @@ jobs:
           otp-version: "28.0"
           gleam-version: "1.12.0"
           rebar3-version: "3"
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
       - name: Install dependencies
         run: gleam deps download
+      - name: Install JavaScript dependencies
+        run: bun install
       - name: Build app
         run: gleam run -m lustre/dev build --outdir=dist
       - name: Deploy with Wrangler
