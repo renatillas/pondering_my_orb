@@ -24,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: gleam deps download
       - name: Build app
-        run: gleam run -m lustre/dev build app --minify --outdir=dist
+        run: gleam run -m lustre/dev build --outdir=dist
       - name: Deploy with Wrangler
         uses: cloudflare/wrangler-action@v3
         with:
