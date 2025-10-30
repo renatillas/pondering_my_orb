@@ -12,7 +12,6 @@ import lustre/element
 import lustre/element/html
 import lustre/event
 import plinth/javascript/global
-import pondering_my_orb/keyboard
 import pondering_my_orb/pointer_lock
 import pondering_my_orb/pointer_lock_request
 import pondering_my_orb/score
@@ -125,7 +124,6 @@ pub fn init(wrapper) -> #(Model(tiramisu_msg), effect.Effect(Msg)) {
       visibility.setup_visibility_listener(fn() { PageHidden }, fn() {
         PageVisible
       }),
-      keyboard.setup_keyboard_listener(KeyPressed),
       pointer_lock.setup_pointer_lock_listener(fn() { PointerLockExited }, fn() {
         PointerLockAcquired
       }),

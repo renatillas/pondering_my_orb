@@ -49,7 +49,7 @@ pub type Model {
     restarted: Bool,
     // Map
     ground: Option(map.Obstacle(map.Ground)),
-    boxes: Option(map.Obstacle(map.Box)),
+    foliage: Option(map.Obstacle(map.Box)),
     // Player
     player: player.Player,
     player_bindings: input.InputBindings(player.PlayerAction),
@@ -136,7 +136,7 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), Option(_)) {
       game_phase: StartScreen,
       restarted: False,
       ground: None,
-      boxes: None,
+      foliage: None,
       player: player.init(),
       player_bindings:,
       pending_player_knockback: None,
@@ -191,13 +191,29 @@ fn update(
   case msg {
     GameStarted -> {
       let assets = [
-        asset.FBXAsset("PSX_Dungeon/Models/Box.fbx", None),
         asset.FBXAsset(
           "PSX_Dungeon/Models/Floor_Tiles.fbx",
           Some("PSX_Dungeon/Textures/"),
         ),
         asset.TextureAsset("PSX_Dungeon/Textures/TEX_Ground_04.png"),
-        asset.TextureAsset("PSX_Dungeon/Textures/TEX_Crate_01.png"),
+        // Load a selection of tree models
+        asset.FBXAsset("tree_pack_1.1/models/tree01.fbx", None),
+        asset.FBXAsset("tree_pack_1.1/models/tree05.fbx", None),
+        asset.FBXAsset("tree_pack_1.1/models/tree10.fbx", None),
+        asset.FBXAsset("tree_pack_1.1/models/tree15.fbx", None),
+        // Load a selection of bush models
+        asset.FBXAsset("tree_pack_1.1/models/bush01.fbx", None),
+        asset.FBXAsset("tree_pack_1.1/models/bush03.fbx", None),
+        asset.FBXAsset("tree_pack_1.1/models/bush05.fbx", None),
+        // Load textures for trees and bushes
+        asset.TextureAsset("tree_pack_1.1/textures/tree01.png"),
+        asset.TextureAsset("tree_pack_1.1/textures/tree05.png"),
+        asset.TextureAsset("tree_pack_1.1/textures/tree10.png"),
+        asset.TextureAsset("tree_pack_1.1/textures/tree15.png"),
+        asset.TextureAsset("tree_pack_1.1/textures/bush01.png"),
+        asset.TextureAsset("tree_pack_1.1/textures/bush03.png"),
+        asset.TextureAsset("tree_pack_1.1/textures/bush05.png"),
+        // Other assets
         asset.TextureAsset("spr_coin_azu.png"),
         asset.TextureAsset("SPRITESHEET_Files/FireBall_2_64x64.png"),
         asset.TextureAsset("SPRITESHEET_Files/Explosion_2_64x64.png"),
@@ -710,10 +726,38 @@ fn handle_assets_loaded(
     asset.get_fbx(assets.cache, "PSX_Dungeon/Models/Floor_Tiles.fbx")
   let assert Ok(floor_texture) =
     asset.get_texture(assets.cache, "PSX_Dungeon/Textures/TEX_Ground_04.png")
-  let assert Ok(box_fbx) =
-    asset.get_fbx(assets.cache, "PSX_Dungeon/Models/Box.fbx")
-  let assert Ok(box_texture) =
-    asset.get_texture(assets.cache, "PSX_Dungeon/Textures/TEX_Crate_01.png")
+
+  // Load tree models
+  let assert Ok(tree01_fbx) =
+    asset.get_fbx(assets.cache, "tree_pack_1.1/models/tree01.fbx")
+  let assert Ok(tree01_texture) =
+    asset.get_texture(assets.cache, "tree_pack_1.1/textures/tree01.png")
+  let assert Ok(tree05_fbx) =
+    asset.get_fbx(assets.cache, "tree_pack_1.1/models/tree05.fbx")
+  let assert Ok(tree05_texture) =
+    asset.get_texture(assets.cache, "tree_pack_1.1/textures/tree05.png")
+  let assert Ok(tree10_fbx) =
+    asset.get_fbx(assets.cache, "tree_pack_1.1/models/tree10.fbx")
+  let assert Ok(tree10_texture) =
+    asset.get_texture(assets.cache, "tree_pack_1.1/textures/tree10.png")
+  let assert Ok(tree15_fbx) =
+    asset.get_fbx(assets.cache, "tree_pack_1.1/models/tree15.fbx")
+  let assert Ok(tree15_texture) =
+    asset.get_texture(assets.cache, "tree_pack_1.1/textures/tree15.png")
+
+  let foliage_models = [
+    tree01_fbx.scene,
+    tree05_fbx.scene,
+    tree10_fbx.scene,
+    tree15_fbx.scene,
+  ]
+
+  let foliage_textures = [
+    tree01_texture,
+    tree05_texture,
+    tree10_texture,
+    tree15_texture,
+  ]
 
   // Load XP coin texture and create spritesheet
   let assert Ok(xp_texture) =
@@ -803,17 +847,54 @@ fn handle_assets_loaded(
       mago_attacking_animation,
     )
 
-  let boxes =
-    list.map(list.range(0, 19), fn(_) {
+  // Create random tree and bush instances by repeating the models list
+  let foliage_instances =
+    list.range(0, 39)
+    |> list.map(fn(_) {
+      let x = { float.random() *. 90.0 } -. 45.0
+      let z = { float.random() *. 90.0 } -. 45.0
+
+      // Random rotation around Y axis for variety
+      let rotation_y = float.random() *. 6.28318
+
       transform.identity
-      |> transform.with_position(vec3.Vec3(
-        { float.random() *. 100.0 } -. 50.0,
-        3.788888888,
-        { float.random() *. 100.0 } -. 50.0,
-      ))
+      |> transform.with_position(vec3.Vec3(x, 15.0, z))
+      |> transform.with_euler_rotation(vec3.Vec3(0.0, rotation_y, 0.0))
+      |> transform.with_scale(vec3.Vec3(0.03, 0.03, 0.03))
     })
-    |> map.box(box_fbx.scene, _)
-    |> Some
+
+  // Interleave models and textures with transforms by repeating them enough times
+  let repeated_models =
+    list.flatten([
+      foliage_models,
+      foliage_models,
+      foliage_models,
+      foliage_models,
+      foliage_models,
+      foliage_models,
+    ])
+
+  let repeated_textures =
+    list.flatten([
+      foliage_textures,
+      foliage_textures,
+      foliage_textures,
+      foliage_textures,
+      foliage_textures,
+      foliage_textures,
+    ])
+
+  // Create triplets of (model, texture, transform)
+  let foliage_triplets =
+    list.zip(repeated_models, repeated_textures)
+    |> list.zip(foliage_instances)
+    |> list.map(fn(pair) {
+      let #(#(model, texture), transform) = pair
+      #(model, texture, transform)
+    })
+    |> list.take(40)
+
+  let foliage = Some(map.box(foliage_triplets))
 
   let ground =
     list.flatten(
@@ -847,13 +928,6 @@ fn handle_assets_loaded(
         on_success: PointerLocked,
         on_error: PointerLockFailed,
       ),
-      effect.from(fn(_) {
-        asset.apply_texture_to_object(
-          box_fbx.scene,
-          box_texture,
-          asset.NearestFilter,
-        )
-      }),
       effect.interval(
         ms: model.enemy_spawn_interval_ms,
         msg: EnemySpawned,
@@ -866,7 +940,7 @@ fn handle_assets_loaded(
       ..model,
       player: updated_player,
       ground:,
-      boxes:,
+      foliage:,
       game_phase: Playing,
       xp_spritesheet: Some(xp_spritesheet),
       xp_animation: Some(xp_animation),
@@ -975,8 +1049,8 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> scene.Node(Id) {
     None -> []
   }
 
-  let boxes = case model.boxes {
-    Some(boxes) -> [map.view_box(boxes, id.box())]
+  let foliage = case model.foliage {
+    Some(foliage) -> [map.view_foliage(foliage, id.box())]
     None -> []
   }
 
@@ -1005,7 +1079,7 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> scene.Node(Id) {
     children: list.flatten([
       enemy,
       ground,
-      boxes,
+      foliage,
       projectiles,
       explosions,
       xp_shards,
