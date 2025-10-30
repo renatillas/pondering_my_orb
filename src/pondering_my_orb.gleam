@@ -501,7 +501,8 @@ fn handle_tick(
             current_transform
             |> transform.with_quaternion_rotation(player.quaternion_rotation)
           }
-          Error(_) -> transform.at(position: player.position)
+          Error(_) ->
+            transform.at(position: player.position)
             |> transform.with_quaternion_rotation(player.quaternion_rotation)
         }
         physics.update_body_transform(pw, id.player(), player_transform)
