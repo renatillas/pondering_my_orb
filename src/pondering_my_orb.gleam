@@ -1079,7 +1079,6 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> scene.Node(Id) {
       enemy,
       ground,
       foliage,
-      boxes,
       projectiles,
       explosions,
       xp_shards,
