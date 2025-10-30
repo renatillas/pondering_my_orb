@@ -1,6 +1,7 @@
 import gleam/bool
 import gleam/float
 import gleam/int
+import gleam/io
 import gleam/javascript/promise
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -14,6 +15,7 @@ import pondering_my_orb/map
 import pondering_my_orb/player
 import pondering_my_orb/score
 import pondering_my_orb/spell
+import pondering_my_orb/spell_bag
 import pondering_my_orb/ui
 import pondering_my_orb/wand
 import pondering_my_orb/xp_shard
@@ -47,7 +49,7 @@ pub type Model {
     restarted: Bool,
     // Map
     ground: Option(map.Obstacle(map.Ground)),
-    boxes: Option(map.Obstacle(map.Box)),
+    foliage: Option(map.Obstacle(map.Box)),
     // Player
     player: player.Player,
     player_bindings: input.InputBindings(player.PlayerAction),
@@ -62,6 +64,8 @@ pub type Model {
     enemies: List(Enemy(Id)),
     enemy_spawner_id: Option(Int),
     next_enemy_id: Int,
+    enemy_spawn_interval_ms: Int,
+    game_time_elapsed_ms: Float,
     // XP System
     xp_shards: List(xp_shard.XPShard),
     next_xp_shard_id: Int,
@@ -71,8 +75,10 @@ pub type Model {
     fireball_spritesheet: Option(spritesheet.Spritesheet),
     fireball_animation: Option(spritesheet.Animation),
     explosion_spritesheet: Option(spritesheet.Spritesheet),
-    // Inventory
-    inventory_open: Bool,
+    // Level-up rewards
+    showing_spell_rewards: Bool,
+    // Pause state
+    is_paused: Bool,
     // Score
     score: score.Score,
   )
@@ -89,15 +95,16 @@ pub type Msg {
   // Enemies
   EnemySpawnStarted(Int)
   EnemySpawned
+  EnemySpawnIntervalDecreased
   EnemyAttacksPlayer(damage: Float, enemy_position: Vec3(Float))
   // Projectiles
   ProjectileDamagedEnemy(Id, Float, Vec3(Float))
   EnemyKilled(Id)
+  // XP & Leveling
+  PlayerLeveledUp(new_level: Int)
   // Camera
   PointerLocked
   PointerLockFailed
-  // Inventory
-  ToggleInventory
   // UI
   UIMessage(ui.UiToGameMsg)
 }
@@ -129,7 +136,7 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), Option(_)) {
       game_phase: StartScreen,
       restarted: False,
       ground: None,
-      boxes: None,
+      foliage: None,
       player: player.init(),
       player_bindings:,
       pending_player_knockback: None,
@@ -140,6 +147,8 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), Option(_)) {
       enemies: [],
       enemy_spawner_id: None,
       next_enemy_id: 0,
+      enemy_spawn_interval_ms: 2000,
+      game_time_elapsed_ms: 0.0,
       xp_shards: [],
       next_xp_shard_id: 0,
       xp_spritesheet: None,
@@ -147,12 +156,29 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), Option(_)) {
       fireball_spritesheet: None,
       fireball_animation: None,
       explosion_spritesheet: None,
-      inventory_open: False,
+      showing_spell_rewards: False,
+      is_paused: False,
       score: score.init(),
     ),
     effect.from(fn(_) { debug.show_collider_wireframes(physics_world, False) }),
     Some(physics_world),
   )
+}
+
+/// Generate a pool of 3 random spell rewards for leveling up
+fn generate_spell_rewards(visuals: spell.SpellVisuals) -> List(spell.Spell) {
+  // Define a pool of possible spells to choose from
+  let possible_spells = [
+    // Damage spells
+    spell.spark(visuals),
+    spell.fireball(visuals),
+    spell.lightning(visuals),
+    // Modifier spells
+  ]
+
+  // Shuffle and take 3 random spells
+  list.shuffle(possible_spells)
+  |> list.take(3)
 }
 
 fn update(
@@ -165,13 +191,29 @@ fn update(
   case msg {
     GameStarted -> {
       let assets = [
-        asset.FBXAsset("PSX_Dungeon/Models/Box.fbx", None),
         asset.FBXAsset(
           "PSX_Dungeon/Models/Floor_Tiles.fbx",
           Some("PSX_Dungeon/Textures/"),
         ),
         asset.TextureAsset("PSX_Dungeon/Textures/TEX_Ground_04.png"),
-        asset.TextureAsset("PSX_Dungeon/Textures/TEX_Crate_01.png"),
+        // Load a selection of tree models
+        asset.FBXAsset("tree_pack_1.1/models/tree01.fbx", None),
+        asset.FBXAsset("tree_pack_1.1/models/tree05.fbx", None),
+        asset.FBXAsset("tree_pack_1.1/models/tree10.fbx", None),
+        asset.FBXAsset("tree_pack_1.1/models/tree15.fbx", None),
+        // Load a selection of bush models
+        asset.FBXAsset("tree_pack_1.1/models/bush01.fbx", None),
+        asset.FBXAsset("tree_pack_1.1/models/bush03.fbx", None),
+        asset.FBXAsset("tree_pack_1.1/models/bush05.fbx", None),
+        // Load textures for trees and bushes
+        asset.TextureAsset("tree_pack_1.1/textures/tree01.png"),
+        asset.TextureAsset("tree_pack_1.1/textures/tree05.png"),
+        asset.TextureAsset("tree_pack_1.1/textures/tree10.png"),
+        asset.TextureAsset("tree_pack_1.1/textures/tree15.png"),
+        asset.TextureAsset("tree_pack_1.1/textures/bush01.png"),
+        asset.TextureAsset("tree_pack_1.1/textures/bush03.png"),
+        asset.TextureAsset("tree_pack_1.1/textures/bush05.png"),
+        // Other assets
         asset.TextureAsset("spr_coin_azu.png"),
         asset.TextureAsset("SPRITESHEET_Files/FireBall_2_64x64.png"),
         asset.TextureAsset("SPRITESHEET_Files/Explosion_2_64x64.png"),
@@ -215,31 +257,6 @@ fn update(
           tiramisu_ui.dispatch_to_lustre(ui.GamePhaseChanged(ui.StartScreen)),
         ]),
         new_physics_world,
-      )
-    }
-    ToggleInventory -> {
-      let new_inventory_state = !model.inventory_open
-
-      // Exit pointer lock when opening inventory, request it when closing
-      let pointer_lock_effect = case new_inventory_state {
-        True -> effect.exit_pointer_lock()
-        False ->
-          effect.request_pointer_lock(
-            on_success: PointerLocked,
-            on_error: PointerLockFailed,
-          )
-      }
-
-      // Update camera pointer_locked state when closing inventory
-      let new_camera = case new_inventory_state {
-        False -> camera.Camera(..model.camera, pointer_locked: False)
-        True -> model.camera
-      }
-
-      #(
-        Model(..model, inventory_open: new_inventory_state, camera: new_camera),
-        pointer_lock_effect,
-        ctx.physics_world,
       )
     }
     Tick -> handle_tick(model, physics_world, ctx)
@@ -289,12 +306,11 @@ fn update(
       )
     }
     EnemySpawned -> {
-      // Don't spawn enemies when inventory is open or game is paused
-      use <- bool.guard(model.inventory_open, return: #(
-        model,
-        effect.none(),
-        Some(physics_world),
-      ))
+      // Don't spawn enemies when showing spell rewards or paused
+      use <- bool.guard(
+        model.showing_spell_rewards || model.is_paused,
+        return: #(model, effect.none(), Some(physics_world)),
+      )
 
       let min_spawn_radius = 10.0
       let max_spawn_radius = 20.0
@@ -333,6 +349,29 @@ fn update(
       effect.none(),
       Some(physics_world),
     )
+    EnemySpawnIntervalDecreased -> {
+      // Calculate new spawn interval (decrease by 10%, minimum 500ms)
+      let new_interval = int.max(500, model.enemy_spawn_interval_ms * 90 / 100)
+
+      // Cancel old spawner and create new one with faster interval
+      let cancel_effect = case model.enemy_spawner_id {
+        Some(id) -> effect.cancel_interval(id)
+        None -> effect.none()
+      }
+
+      #(
+        Model(..model, enemy_spawn_interval_ms: new_interval),
+        effect.batch([
+          cancel_effect,
+          effect.interval(
+            ms: new_interval,
+            msg: EnemySpawned,
+            on_created: EnemySpawnStarted,
+          ),
+        ]),
+        Some(physics_world),
+      )
+    }
     ProjectileDamagedEnemy(enemy_id, damage, _knockback_direction) -> {
       // Knockback is now applied during Tick, so just handle damage here
       let enemy =
@@ -387,6 +426,47 @@ fn update(
         Some(physics_world),
       )
     }
+    PlayerLeveledUp(_new_level) -> {
+      // Generate spell rewards and send to UI
+      case
+        model.fireball_spritesheet,
+        model.fireball_animation,
+        model.explosion_spritesheet
+      {
+        Some(fireball_spritesheet),
+          Some(fireball_animation),
+          Some(explosion_spritesheet)
+        -> {
+          let explosion_animation =
+            spritesheet.animation(
+              name: "explosion",
+              frames: list.range(1, 44),
+              frame_duration: 40.0,
+              loop: spritesheet.Once,
+            )
+
+          let visuals =
+            spell.SpellVisuals(
+              projectile_spritesheet: fireball_spritesheet,
+              projectile_animation: fireball_animation,
+              hit_spritesheet: explosion_spritesheet,
+              hit_animation: explosion_animation,
+            )
+
+          let spell_rewards = generate_spell_rewards(visuals)
+
+          #(
+            Model(..model, showing_spell_rewards: True),
+            effect.batch([
+              tiramisu_ui.dispatch_to_lustre(ui.ShowSpellRewards(spell_rewards)),
+              effect.exit_pointer_lock(),
+            ]),
+            Some(physics_world),
+          )
+        }
+        _, _, _ -> #(model, effect.none(), Some(physics_world))
+      }
+    }
     UIMessage(ui_msg) -> handle_ui_message(model, ui_msg, physics_world, ctx)
   }
 }
@@ -403,26 +483,31 @@ fn handle_tick(
     ctx.physics_world,
   ))
 
-  // Check for I key press to toggle inventory
-  let inventory_toggle_effect = case
-    input.is_key_just_pressed(ctx.input, input.KeyI)
-  {
-    True -> effect.from(fn(dispatch) { dispatch(ToggleInventory) })
-    False -> effect.none()
-  }
-
-  // Apply time scale when inventory is open (stop game completely)
-  let time_scale = case model.inventory_open {
-    True -> 0.0
-    False -> 1.0
+  // Freeze game when showing spell rewards or paused
+  let time_scale = case model.showing_spell_rewards, model.is_paused {
+    True, _ -> 0.0
+    _, True -> 0.0
+    False, False -> 1.0
   }
   let scaled_delta = ctx.delta_time *. time_scale
 
-  // Only handle player input if inventory is closed
+  // Track game time and check if we should decrease spawn interval
+  let new_game_time = model.game_time_elapsed_ms +. scaled_delta
+  let interval_decrease_threshold = 15_000.0
+  // Every 15 seconds
+  let should_decrease_interval =
+    {
+      float.floor(new_game_time /. interval_decrease_threshold)
+      >. float.floor(model.game_time_elapsed_ms /. interval_decrease_threshold)
+    }
+    && model.enemy_spawn_interval_ms > 500
+
+  // Only handle player input if spell rewards are not showing and game is not paused
   let #(player, impulse, camera_pitch, input_effects) = case
-    model.inventory_open
+    model.showing_spell_rewards,
+    model.is_paused
   {
-    False ->
+    False, False ->
       player.handle_input(
         model.player,
         velocity: physics.get_velocity(physics_world, id.player())
@@ -435,7 +520,7 @@ fn handle_tick(
         pointer_locked_msg: PointerLocked,
         pointer_lock_failed_msg: PointerLockFailed,
       )
-    True -> #(model.player, vec3f.zero, model.camera.pitch, [])
+    _, _ -> #(model.player, vec3f.zero, model.camera.pitch, [])
   }
 
   let #(enemies, enemy_effects) =
@@ -465,9 +550,9 @@ fn handle_tick(
   let all_hits = list.append(model.projectile_hits, projectile_hits)
   let updated_hits = spell.update_projectile_hits(all_hits, scaled_delta)
 
-  // Only update physics if game is not paused (inventory closed)
-  let physics_world = case model.inventory_open {
-    False -> {
+  // Only update physics if game is not paused (not showing spell rewards or manually paused)
+  let physics_world = case model.showing_spell_rewards, model.is_paused {
+    False, False -> {
       physics.set_velocity(physics_world, id.player(), player.velocity)
       |> physics.apply_impulse(id.player(), impulse)
       // Apply pending player knockback AFTER setting velocity
@@ -508,7 +593,7 @@ fn handle_tick(
         physics.update_body_transform(pw, id.player(), player_transform)
       }
     }
-    True -> physics_world
+    _, _ -> physics_world
   }
 
   // Read position from physics, rotation is controlled by input
@@ -540,7 +625,7 @@ fn handle_tick(
       }
     })
 
-  let player =
+  let #(player, leveled_up) =
     player
     |> player.with_position(player_position)
     |> player.add_xp(collected_xp)
@@ -571,7 +656,6 @@ fn handle_tick(
         player_max_mana: player.wand.max_mana,
         wand_slots: player.wand.slots,
         spell_bag: player.spell_bag,
-        inventory_open: model.inventory_open,
         player_xp: player.current_xp,
         player_xp_to_next_level: player.xp_to_next_level,
         player_level: player.level,
@@ -579,6 +663,13 @@ fn handle_tick(
         score: new_score,
       )),
     )
+
+  // Dispatch level-up message if player leveled up
+  let level_up_effect = case leveled_up {
+    True ->
+      effect.from(fn(dispatch) { dispatch(PlayerLeveledUp(player.level)) })
+    False -> effect.none()
+  }
 
   // Update screen shake timer
   let camera =
@@ -589,6 +680,12 @@ fn handle_tick(
       delta_time: scaled_delta,
     )
 
+  // Create interval decrease effect if needed
+  let interval_decrease_effect = case should_decrease_interval {
+    True -> effect.from(fn(dispatch) { dispatch(EnemySpawnIntervalDecreased) })
+    False -> effect.none()
+  }
+
   let effects =
     effect.batch([
       effect.tick(Tick),
@@ -596,8 +693,9 @@ fn handle_tick(
       effect.batch(input_effects),
       spell_effect,
       ui_effect,
-      inventory_toggle_effect,
       death_effect,
+      level_up_effect,
+      interval_decrease_effect,
     ])
 
   #(
@@ -612,6 +710,7 @@ fn handle_tick(
       xp_shards: remaining_shards,
       pending_player_knockback: None,
       score: new_score,
+      game_time_elapsed_ms: new_game_time,
     ),
     effects,
     Some(physics_world),
@@ -627,10 +726,38 @@ fn handle_assets_loaded(
     asset.get_fbx(assets.cache, "PSX_Dungeon/Models/Floor_Tiles.fbx")
   let assert Ok(floor_texture) =
     asset.get_texture(assets.cache, "PSX_Dungeon/Textures/TEX_Ground_04.png")
-  let assert Ok(box_fbx) =
-    asset.get_fbx(assets.cache, "PSX_Dungeon/Models/Box.fbx")
-  let assert Ok(box_texture) =
-    asset.get_texture(assets.cache, "PSX_Dungeon/Textures/TEX_Crate_01.png")
+
+  // Load tree models
+  let assert Ok(tree01_fbx) =
+    asset.get_fbx(assets.cache, "tree_pack_1.1/models/tree01.fbx")
+  let assert Ok(tree01_texture) =
+    asset.get_texture(assets.cache, "tree_pack_1.1/textures/tree01.png")
+  let assert Ok(tree05_fbx) =
+    asset.get_fbx(assets.cache, "tree_pack_1.1/models/tree05.fbx")
+  let assert Ok(tree05_texture) =
+    asset.get_texture(assets.cache, "tree_pack_1.1/textures/tree05.png")
+  let assert Ok(tree10_fbx) =
+    asset.get_fbx(assets.cache, "tree_pack_1.1/models/tree10.fbx")
+  let assert Ok(tree10_texture) =
+    asset.get_texture(assets.cache, "tree_pack_1.1/textures/tree10.png")
+  let assert Ok(tree15_fbx) =
+    asset.get_fbx(assets.cache, "tree_pack_1.1/models/tree15.fbx")
+  let assert Ok(tree15_texture) =
+    asset.get_texture(assets.cache, "tree_pack_1.1/textures/tree15.png")
+
+  let foliage_models = [
+    tree01_fbx.scene,
+    tree05_fbx.scene,
+    tree10_fbx.scene,
+    tree15_fbx.scene,
+  ]
+
+  let foliage_textures = [
+    tree01_texture,
+    tree05_texture,
+    tree10_texture,
+    tree15_texture,
+  ]
 
   // Load XP coin texture and create spritesheet
   let assert Ok(xp_texture) =
@@ -719,18 +846,54 @@ fn handle_assets_loaded(
       mago_attacking_spritesheet,
       mago_attacking_animation,
     )
+  // Create random tree and bush instances by repeating the models list
+  let foliage_instances =
+    list.range(0, 39)
+    |> list.map(fn(_) {
+      let x = { float.random() *. 90.0 } -. 45.0
+      let z = { float.random() *. 90.0 } -. 45.0
 
-  let boxes =
-    list.map(list.range(0, 19), fn(_) {
+      // Random rotation around Y axis for variety
+      let rotation_y = float.random() *. 6.28318
+
       transform.identity
-      |> transform.with_position(vec3.Vec3(
-        { float.random() *. 100.0 } -. 50.0,
-        3.788888888,
-        { float.random() *. 100.0 } -. 50.0,
-      ))
+      |> transform.with_position(vec3.Vec3(x, 15.0, z))
+      |> transform.with_euler_rotation(vec3.Vec3(0.0, rotation_y, 0.0))
+      |> transform.with_scale(vec3.Vec3(0.03, 0.03, 0.03))
     })
-    |> map.box(box_fbx.scene, _)
-    |> Some
+
+  // Interleave models and textures with transforms by repeating them enough times
+  let repeated_models =
+    list.flatten([
+      foliage_models,
+      foliage_models,
+      foliage_models,
+      foliage_models,
+      foliage_models,
+      foliage_models,
+    ])
+
+  let repeated_textures =
+    list.flatten([
+      foliage_textures,
+      foliage_textures,
+      foliage_textures,
+      foliage_textures,
+      foliage_textures,
+      foliage_textures,
+    ])
+
+  // Create triplets of (model, texture, transform)
+  let foliage_triplets =
+    list.zip(repeated_models, repeated_textures)
+    |> list.zip(foliage_instances)
+    |> list.map(fn(pair) {
+      let #(#(model, texture), transform) = pair
+      #(model, texture, transform)
+    })
+    |> list.take(40)
+
+  let foliage = Some(map.box(foliage_triplets))
 
   let ground =
     list.flatten(
@@ -760,15 +923,12 @@ fn handle_assets_loaded(
       }),
       effect.tick(Tick),
       tiramisu_ui.dispatch_to_lustre(ui.GamePhaseChanged(ui.Playing)),
-      effect.from(fn(_) {
-        asset.apply_texture_to_object(
-          box_fbx.scene,
-          box_texture,
-          asset.NearestFilter,
-        )
-      }),
+      effect.request_pointer_lock(
+        on_success: PointerLocked,
+        on_error: PointerLockFailed,
+      ),
       effect.interval(
-        ms: 2000,
+        ms: model.enemy_spawn_interval_ms,
         msg: EnemySpawned,
         on_created: EnemySpawnStarted,
       ),
@@ -779,7 +939,7 @@ fn handle_assets_loaded(
       ..model,
       player: updated_player,
       ground:,
-      boxes:,
+      foliage:,
       game_phase: Playing,
       xp_spritesheet: Some(xp_spritesheet),
       xp_animation: Some(xp_animation),
@@ -821,6 +981,57 @@ fn handle_ui_message(
         ctx.physics_world,
       )
     }
+    ui.SpellRewardSelected(selected_spell) -> {
+      // Add the selected spell to the player's spell bag
+      io.println("=== SPELL REWARD SELECTED ===")
+      let spell_name = case selected_spell {
+        spell.DamageSpell(dmg) -> dmg.name
+        spell.ModifierSpell(mod) -> mod.name
+      }
+      io.println("Selected spell: " <> spell_name)
+
+      let updated_spell_bag =
+        spell_bag.add_spell(model.player.spell_bag, selected_spell)
+
+      let spell_count = spell_bag.list_spells(updated_spell_bag) |> list.length
+      io.println("Total spells in bag: " <> int.to_string(spell_count))
+
+      let updated_player =
+        player.Player(..model.player, spell_bag: updated_spell_bag)
+
+      // Keep the game paused, modal stays open for inventory management
+      #(
+        Model(..model, player: updated_player),
+        effect.none(),
+        ctx.physics_world,
+      )
+    }
+    ui.LevelUpComplete -> {
+      // User is done managing inventory, resume the game
+      io.println("=== LEVEL UP COMPLETE ===")
+
+      #(
+        Model(..model, showing_spell_rewards: False),
+        effect.request_pointer_lock(
+          on_success: PointerLocked,
+          on_error: PointerLockFailed,
+        ),
+        ctx.physics_world,
+      )
+    }
+    ui.GamePaused -> {
+      io.println("=== GAME PAUSED ===")
+      #(
+        Model(..model, is_paused: True),
+        effect.exit_pointer_lock(),
+        ctx.physics_world,
+      )
+    }
+    ui.GameResumed -> {
+      io.println("=== GAME RESUMED ===")
+      // Pointer lock is requested by the UI, not here
+      #(Model(..model, is_paused: False), effect.none(), ctx.physics_world)
+    }
   }
 }
 
@@ -837,8 +1048,8 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> scene.Node(Id) {
     None -> []
   }
 
-  let boxes = case model.boxes {
-    Some(boxes) -> [map.view_box(boxes, id.box())]
+  let foliage = case model.foliage {
+    Some(foliage) -> [map.view_foliage(foliage, id.box())]
     None -> []
   }
 
@@ -867,7 +1078,7 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> scene.Node(Id) {
     children: list.flatten([
       enemy,
       ground,
-      boxes,
+      foliage,
       projectiles,
       explosions,
       xp_shards,

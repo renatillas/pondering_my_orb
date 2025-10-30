@@ -222,9 +222,9 @@ pub fn init() -> Player {
     wand.new(
       name: "Player's Wand",
       slot_count: 5,
-      max_mana: 100.0,
-      mana_recharge_rate: 10.0,
-      cast_delay: 0.01,
+      max_mana: 200.0,
+      mana_recharge_rate: 30.0,
+      cast_delay: 0.2,
       recharge_time: 0.5,
     )
 
@@ -714,7 +714,8 @@ fn handle_pointer_locked(
 }
 
 /// Add XP to the player and handle leveling up
-pub fn add_xp(player: Player, xp: Int) -> Player {
+/// Returns a tuple of (updated_player, leveled_up)
+pub fn add_xp(player: Player, xp: Int) -> #(Player, Bool) {
   let new_xp = player.current_xp + xp
 
   case new_xp >= player.xp_to_next_level {
@@ -724,13 +725,16 @@ pub fn add_xp(player: Player, xp: Int) -> Player {
       let new_level = player.level + 1
       let new_xp_to_next_level = player.xp_to_next_level + 50
 
-      Player(
-        ..player,
-        current_xp: remaining_xp,
-        xp_to_next_level: new_xp_to_next_level,
-        level: new_level,
+      #(
+        Player(
+          ..player,
+          current_xp: remaining_xp,
+          xp_to_next_level: new_xp_to_next_level,
+          level: new_level,
+        ),
+        True,
       )
     }
-    False -> Player(..player, current_xp: new_xp)
+    False -> #(Player(..player, current_xp: new_xp), False)
   }
 }

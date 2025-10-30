@@ -1,6 +1,7 @@
 import ensaimada
 import gleam/float
 import gleam/int
+import gleam/io
 import gleam/list
 import gleam/option
 import iv
@@ -10,9 +11,13 @@ import lustre/effect
 import lustre/element
 import lustre/element/html
 import lustre/event
+import plinth/javascript/global
+import pondering_my_orb/pointer_lock
+import pondering_my_orb/pointer_lock_request
 import pondering_my_orb/score
 import pondering_my_orb/spell
 import pondering_my_orb/spell_bag
+import pondering_my_orb/visibility
 import tiramisu/ui as tiramisu_ui
 
 pub type Model(tiramisu_msg) {
@@ -25,12 +30,15 @@ pub type Model(tiramisu_msg) {
     wand_slots: iv.Array(option.Option(spell.Spell)),
     spell_bag: spell_bag.SpellBag,
     drag_state: ensaimada.DragState,
-    inventory_open: Bool,
     wrapper: fn(UiToGameMsg) -> tiramisu_msg,
     player_xp: Int,
     player_xp_to_next_level: Int,
     player_level: Int,
     score: score.Score,
+    spell_rewards: option.Option(List(spell.Spell)),
+    is_paused: Bool,
+    resuming: Bool,
+    resume_retry_count: Int,
   )
 }
 
@@ -48,8 +56,17 @@ pub type Msg {
   RestartButtonClicked
   WandSortableMsg(ensaimada.Msg(Msg))
   BagSortableMsg(ensaimada.Msg(Msg))
-  ToggleInventory
-  SyncInventoryToGame
+  ShowSpellRewards(List(spell.Spell))
+  SpellRewardClicked(spell.Spell)
+  DoneWithLevelUp
+  PauseGame
+  ResumeGame
+  KeyPressed(String)
+  PointerLockExited
+  PointerLockAcquired
+  RetryResume
+  PageHidden
+  PageVisible
   NoOp
 }
 
@@ -60,6 +77,10 @@ pub type UiToGameMsg {
     wand_slots: iv.Array(option.Option(spell.Spell)),
     spell_bag: spell_bag.SpellBag,
   )
+  SpellRewardSelected(spell.Spell)
+  LevelUpComplete
+  GamePaused
+  GameResumed
 }
 
 pub type GameState {
@@ -70,7 +91,6 @@ pub type GameState {
     player_max_mana: Float,
     wand_slots: iv.Array(option.Option(spell.Spell)),
     spell_bag: spell_bag.SpellBag,
-    inventory_open: Bool,
     player_xp: Int,
     player_xp_to_next_level: Int,
     player_level: Int,
@@ -89,14 +109,25 @@ pub fn init(wrapper) -> #(Model(tiramisu_msg), effect.Effect(Msg)) {
       wand_slots: iv.new(),
       spell_bag: spell_bag.new(),
       drag_state: ensaimada.NoDrag,
-      inventory_open: False,
       wrapper:,
       player_xp: 0,
       player_xp_to_next_level: 100,
       player_level: 1,
       score: score.init(),
+      spell_rewards: option.None,
+      is_paused: False,
+      resuming: False,
+      resume_retry_count: 0,
     ),
-    tiramisu_ui.register_lustre(),
+    effect.batch([
+      tiramisu_ui.register_lustre(),
+      visibility.setup_visibility_listener(fn() { PageHidden }, fn() {
+        PageVisible
+      }),
+      pointer_lock.setup_pointer_lock_listener(fn() { PointerLockExited }, fn() {
+        PointerLockAcquired
+      }),
+    ]),
   )
 }
 
@@ -118,23 +149,10 @@ pub fn update(
       tiramisu_ui.dispatch_to_tiramisu(model.wrapper(GameRestarted)),
     )
     GameStateUpdated(state) -> {
-      // Detect inventory closing (transition from True to False) and sync changes
-      let sync_effect = case model.inventory_open, state.inventory_open {
-        True, False ->
-          tiramisu_ui.dispatch_to_tiramisu(
-            model.wrapper(UpdatePlayerInventory(
-              model.wand_slots,
-              model.spell_bag,
-            )),
-          )
-        _, _ -> effect.none()
-      }
-
-      // Don't overwrite wand_slots and spell_bag when inventory is open
-      // to preserve user's drag-and-drop changes
-      let #(wand_slots, spell_bag) = case model.inventory_open {
-        True -> #(model.wand_slots, model.spell_bag)
-        False -> #(state.wand_slots, state.spell_bag)
+      // During level-up modal, don't overwrite inventory (user is managing it)
+      let #(wand_slots, spell_bag) = case model.spell_rewards {
+        option.Some(_) -> #(model.wand_slots, model.spell_bag)
+        option.None -> #(state.wand_slots, state.spell_bag)
       }
 
       #(
@@ -148,31 +166,14 @@ pub fn update(
           wand_slots: wand_slots,
           spell_bag: spell_bag,
           drag_state: model.drag_state,
-          inventory_open: state.inventory_open,
           player_xp: state.player_xp,
           player_xp_to_next_level: state.player_xp_to_next_level,
           player_level: state.player_level,
           score: state.score,
         ),
-        sync_effect,
+        effect.none(),
       )
     }
-    ToggleInventory -> {
-      // When closing inventory, sync changes back to game
-      let sync_effect = case model.inventory_open {
-        True ->
-          tiramisu_ui.dispatch_to_tiramisu(
-            model.wrapper(UpdatePlayerInventory(
-              model.wand_slots,
-              model.spell_bag,
-            )),
-          )
-        False -> effect.none()
-      }
-
-      #(Model(..model, inventory_open: !model.inventory_open), sync_effect)
-    }
-    SyncInventoryToGame -> #(model, effect.none())
     WandSortableMsg(sortable_msg) -> {
       let wand_config =
         ensaimada.Config(
@@ -330,6 +331,210 @@ pub fn update(
         _ -> #(Model(..model, drag_state: new_drag_state), effect.none())
       }
     }
+    ShowSpellRewards(rewards) -> #(
+      Model(..model, spell_rewards: option.Some(rewards)),
+      effect.none(),
+    )
+    SpellRewardClicked(selected_spell) -> {
+      io.println("=== UI: Spell Reward Clicked ===")
+      let spell_name = case selected_spell {
+        spell.DamageSpell(dmg) -> dmg.name
+        spell.ModifierSpell(mod) -> mod.name
+      }
+      io.println("UI: Clicked spell: " <> spell_name)
+
+      // Add spell to bag and keep modal open
+      let updated_bag = spell_bag.add_spell(model.spell_bag, selected_spell)
+
+      // Clear ALL rewards after selection (user can only pick one spell)
+      let updated_rewards = option.Some([])
+
+      #(
+        Model(..model, spell_bag: updated_bag, spell_rewards: updated_rewards),
+        tiramisu_ui.dispatch_to_tiramisu(
+          model.wrapper(SpellRewardSelected(selected_spell)),
+        ),
+      )
+    }
+    DoneWithLevelUp -> {
+      io.println("=== UI: Done with Level Up ===")
+      // Send the updated inventory state to the game before closing
+      #(
+        Model(..model, spell_rewards: option.None),
+        effect.batch([
+          tiramisu_ui.dispatch_to_tiramisu(
+            model.wrapper(UpdatePlayerInventory(
+              wand_slots: model.wand_slots,
+              spell_bag: model.spell_bag,
+            )),
+          ),
+          tiramisu_ui.dispatch_to_tiramisu(model.wrapper(LevelUpComplete)),
+        ]),
+      )
+    }
+    PauseGame -> {
+      // Don't pause if we're in level-up modal
+      case model.spell_rewards {
+        option.Some(_) -> #(model, effect.none())
+        option.None -> {
+          io.println("=== UI: Game Paused ===")
+          #(
+            Model(..model, is_paused: True),
+            tiramisu_ui.dispatch_to_tiramisu(model.wrapper(GamePaused)),
+          )
+        }
+      }
+    }
+    ResumeGame -> {
+      io.println("=== UI: Resume Requested - Requesting Pointer Lock ===")
+      // Set resuming flag but keep paused until pointer lock is acquired
+      // Set up automatic retry every 500ms
+      #(
+        Model(..model, resuming: True, resume_retry_count: 0),
+        effect.batch([
+          effect.from(fn(_) { pointer_lock_request.request_pointer_lock_sync() }),
+          effect.from(fn(dispatch) {
+            global.set_timeout(500, fn() { dispatch(RetryResume) })
+            Nil
+          }),
+        ]),
+      )
+    }
+    PageHidden -> {
+      // Auto-pause when user tabs out, but only during gameplay
+      case model.game_phase, model.spell_rewards, model.is_paused {
+        Playing, option.None, False -> {
+          io.println("=== UI: Page Hidden - Auto Pausing ===")
+          #(
+            Model(..model, is_paused: True),
+            tiramisu_ui.dispatch_to_tiramisu(model.wrapper(GamePaused)),
+          )
+        }
+        _, _, _ -> #(model, effect.none())
+      }
+    }
+    KeyPressed(key) -> {
+      case key, model.game_phase, model.spell_rewards, model.is_paused {
+        // ESC during gameplay - pause
+        "Escape", Playing, option.None, False -> {
+          io.println("=== UI: ESC Pressed - Pausing ===")
+          #(
+            Model(..model, is_paused: True),
+            tiramisu_ui.dispatch_to_tiramisu(model.wrapper(GamePaused)),
+          )
+        }
+        // SPACE during pause - resume (ESC can't be used because it exits pointer lock)
+        " ", Playing, option.None, True -> {
+          io.println("=== UI: SPACE Pressed - Requesting Pointer Lock ===")
+          // Set resuming flag but keep paused until pointer lock is acquired
+          // Set up automatic retry every 500ms
+          #(
+            Model(..model, resuming: True, resume_retry_count: 0),
+            effect.batch([
+              effect.from(fn(_) {
+                pointer_lock_request.request_pointer_lock_sync()
+              }),
+              effect.from(fn(dispatch) {
+                global.set_timeout(500, fn() { dispatch(RetryResume) })
+                Nil
+              }),
+            ]),
+          )
+        }
+        _, _, _, _ -> #(model, effect.none())
+      }
+    }
+    PointerLockExited -> {
+      io.println("=== UI: Pointer Lock Exited ===")
+      case model.resuming {
+        // If we were trying to resume but pointer lock failed/exited, cancel the resume
+        True -> {
+          io.println(
+            "=== UI: Pointer Lock Failed During Resume - Staying Paused ===",
+          )
+          #(Model(..model, resuming: False), effect.none())
+        }
+        // Only auto-pause if we're actually playing and not in level-up and not already paused
+        False ->
+          case model.game_phase, model.spell_rewards, model.is_paused {
+            Playing, option.None, False -> {
+              io.println("=== UI: Pointer Lock Exited - Auto Pausing ===")
+              #(
+                Model(..model, is_paused: True),
+                tiramisu_ui.dispatch_to_tiramisu(model.wrapper(GamePaused)),
+              )
+            }
+            _, _, _ -> #(model, effect.none())
+          }
+      }
+    }
+    PointerLockAcquired -> {
+      io.println("=== UI: Pointer Lock Acquired ===")
+      // If we were trying to resume, now actually resume the game
+      case model.resuming {
+        True -> {
+          io.println("=== UI: Resuming Game Now ===")
+          #(
+            Model(
+              ..model,
+              is_paused: False,
+              resuming: False,
+              resume_retry_count: 0,
+            ),
+            tiramisu_ui.dispatch_to_tiramisu(model.wrapper(GameResumed)),
+          )
+        }
+        False -> #(model, effect.none())
+      }
+    }
+    RetryResume -> {
+      // Automatically retry pointer lock request if we're still resuming
+      case model.resuming {
+        True -> {
+          let retry_count = model.resume_retry_count + 1
+          case retry_count < 10 {
+            // Keep retrying (up to 10 times = 5 seconds)
+            True -> {
+              io.println(
+                "=== UI: Retrying Pointer Lock (attempt "
+                <> int.to_string(retry_count)
+                <> ") ===",
+              )
+              #(
+                Model(..model, resume_retry_count: retry_count),
+                effect.batch([
+                  effect.from(fn(_) {
+                    pointer_lock_request.request_pointer_lock_sync()
+                  }),
+                  effect.from(fn(dispatch) {
+                    global.set_timeout(500, fn() { dispatch(RetryResume) })
+                    Nil
+                  }),
+                ]),
+              )
+            }
+            // Give up after 10 retries
+            False -> {
+              io.println(
+                "=== UI: Pointer Lock Failed After "
+                <> int.to_string(retry_count)
+                <> " Retries, Giving Up ===",
+              )
+              #(
+                Model(..model, resuming: False, resume_retry_count: 0),
+                effect.none(),
+              )
+            }
+          }
+        }
+        False -> #(model, effect.none())
+      }
+    }
+    PageVisible -> {
+      // Don't auto-resume, let the user manually resume
+      io.println("=== UI: Page Visible ===")
+      #(model, effect.none())
+    }
     NoOp -> #(model, effect.none())
   }
 }
@@ -406,7 +611,7 @@ fn view_start_screen() -> element.Element(Msg) {
           html.p([attribute.class("mb-2")], [html.text("Controls:")]),
           html.p([attribute.class("text-sm")], [
             html.text(
-              "WASD - Move | Mouse - Look | I - Inventory | ESC - Exit Pointer Lock",
+              "WASD - Move | Mouse - Look | ESC - Pause | SPACE - Resume",
             ),
           ]),
         ],
@@ -574,57 +779,6 @@ fn view_playing(model: Model(tiramisu_msg)) -> element.Element(Msg) {
           ]),
         ],
       ),
-      // Inventory screen (spell bag) - only show when inventory is open
-      case model.inventory_open {
-        True ->
-          html.div(
-            [
-              attribute.class(
-                "absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm pointer-events-auto",
-              ),
-              attribute.style("z-index", "100"),
-            ],
-            [
-              html.div(
-                [
-                  attribute.class(
-                    "p-8 bg-gradient-to-br from-purple-900/95 to-indigo-900/95 border-4 border-amber-400 rounded-lg shadow-2xl pointer-events-auto",
-                  ),
-                  attribute.style("image-rendering", "pixelated"),
-                  attribute.style("max-width", "800px"),
-                ],
-                [
-                  html.div(
-                    [attribute.class("flex items-center justify-between mb-4")],
-                    [
-                      html.div([attribute.class("flex items-center gap-2")], [
-                        html.span(
-                          [attribute.class("text-purple-400 text-2xl")],
-                          [
-                            html.text("📦"),
-                          ],
-                        ),
-                        html.span(
-                          [
-                            attribute.class(
-                              "text-white font-bold text-2xl tracking-wider",
-                            ),
-                          ],
-                          [html.text("SPELL BAG")],
-                        ),
-                      ]),
-                      html.div([attribute.class("text-gray-300 text-sm")], [
-                        html.text("Press I to close"),
-                      ]),
-                    ],
-                  ),
-                  render_spell_bag(model.spell_bag, model.drag_state),
-                ],
-              ),
-            ],
-          )
-        False -> html.div([], [])
-      },
       // XP bar at bottom of screen
       html.div(
         [
@@ -671,6 +825,288 @@ fn view_playing(model: Model(tiramisu_msg)) -> element.Element(Msg) {
             ],
           ),
         ],
+      ),
+      // Spell rewards modal - only show when rewards are available
+      case model.spell_rewards {
+        option.Some(rewards) -> view_spell_rewards_modal(model, rewards)
+        option.None -> html.div([], [])
+      },
+      // Pause menu - show when paused or resuming (but not during level-up)
+      case model.is_paused, model.resuming, model.spell_rewards {
+        True, _, option.None | _, True, option.None ->
+          view_pause_menu(model.resuming)
+        _, _, _ -> html.div([], [])
+      },
+    ],
+  )
+}
+
+fn view_spell_rewards_modal(
+  model: Model(tiramisu_msg),
+  rewards: List(spell.Spell),
+) -> element.Element(Msg) {
+  html.div(
+    [
+      attribute.class(
+        "fixed inset-0 flex items-center justify-center bg-black/70 backdrop-blur-sm pointer-events-auto overflow-y-auto",
+      ),
+      attribute.style("z-index", "300"),
+    ],
+    [
+      html.div(
+        [
+          attribute.class(
+            "p-8 bg-gradient-to-br from-amber-900/95 to-orange-900/95 border-4 border-yellow-400 rounded-lg shadow-2xl max-w-4xl my-8",
+          ),
+          attribute.style("image-rendering", "pixelated"),
+        ],
+        [
+          // Title
+          html.div([attribute.class("text-center mb-6")], [
+            html.h2(
+              [
+                attribute.class("text-4xl font-bold text-yellow-300 mb-2"),
+                attribute.style(
+                  "text-shadow",
+                  "0 0 20px rgba(251, 191, 36, 0.8)",
+                ),
+              ],
+              [html.text("LEVEL UP!")],
+            ),
+            html.p([attribute.class("text-xl text-yellow-100")], [
+              html.text("Choose a spell and organize your inventory"),
+            ]),
+          ]),
+          // Spell options
+          html.div(
+            [attribute.class("flex gap-6 justify-center mb-8")],
+            list.map(rewards, fn(reward_spell) {
+              view_spell_reward_card(reward_spell)
+            }),
+          ),
+          // Inventory management section
+          html.div(
+            [
+              attribute.class(
+                "border-t-4 border-yellow-600/50 pt-6 mb-6 space-y-6",
+              ),
+            ],
+            [
+              // Wand section
+              html.div([], [
+                html.div([attribute.class("flex items-center gap-2 mb-3")], [
+                  html.span([attribute.class("text-amber-400 text-2xl")], [
+                    html.text("⚡"),
+                  ]),
+                  html.span([attribute.class("text-white font-bold text-xl")], [
+                    html.text("WAND SLOTS"),
+                  ]),
+                ]),
+                render_wand_slots(model.wand_slots, model.drag_state),
+              ]),
+              // Spell bag section
+              html.div([], [
+                html.div([attribute.class("flex items-center gap-2 mb-3")], [
+                  html.span([attribute.class("text-purple-400 text-2xl")], [
+                    html.text("🎒"),
+                  ]),
+                  html.span([attribute.class("text-white font-bold text-xl")], [
+                    html.text("SPELL BAG"),
+                  ]),
+                ]),
+                render_spell_bag(model.spell_bag, model.drag_state),
+              ]),
+            ],
+          ),
+          // Done button
+          html.div([attribute.class("flex justify-center")], [
+            html.button(
+              [
+                attribute.class(
+                  "px-8 py-4 text-2xl font-bold bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg shadow-xl hover:scale-105 transform transition-all duration-200 border-4 border-green-400 cursor-pointer",
+                ),
+                attribute.style("text-shadow", "2px 2px 4px rgba(0,0,0,0.5)"),
+                event.on_click(DoneWithLevelUp),
+              ],
+              [html.text("DONE")],
+            ),
+          ]),
+        ],
+      ),
+    ],
+  )
+}
+
+fn view_pause_menu(resuming: Bool) -> element.Element(Msg) {
+  html.div(
+    [
+      attribute.class(
+        "fixed inset-0 flex items-center justify-center bg-black/70 backdrop-blur-sm pointer-events-auto",
+      ),
+      attribute.style("z-index", "300"),
+    ],
+    [
+      html.div(
+        [
+          attribute.class(
+            "p-12 bg-gradient-to-br from-purple-900/95 to-indigo-900/95 border-4 border-blue-400 rounded-lg shadow-2xl",
+          ),
+          attribute.style("image-rendering", "pixelated"),
+        ],
+        [
+          // Title
+          html.div([attribute.class("text-center mb-8")], [
+            html.h2(
+              [
+                attribute.class("text-5xl font-bold text-blue-300 mb-4"),
+                attribute.style(
+                  "text-shadow",
+                  "0 0 20px rgba(147, 197, 253, 0.8)",
+                ),
+              ],
+              [
+                html.text(case resuming {
+                  True -> "RESUMING..."
+                  False -> "PAUSED"
+                }),
+              ],
+            ),
+            html.p([attribute.class("text-xl text-blue-100")], [
+              html.text(case resuming {
+                True -> "Resuming game..."
+                False -> "Game is paused"
+              }),
+            ]),
+          ]),
+          // Resume button (disabled when resuming)
+          html.div([attribute.class("flex flex-col gap-4 items-center")], [
+            html.button(
+              [
+                attribute.class(case resuming {
+                  True ->
+                    "px-12 py-4 text-2xl font-bold bg-gradient-to-r from-gray-600 to-gray-700 text-gray-300 rounded-lg shadow-xl border-4 border-gray-500 cursor-not-allowed min-w-[300px] opacity-50"
+                  False ->
+                    "px-12 py-4 text-2xl font-bold bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg shadow-xl hover:scale-105 transform transition-all duration-200 border-4 border-green-400 cursor-pointer min-w-[300px]"
+                }),
+                attribute.style("text-shadow", "2px 2px 4px rgba(0,0,0,0.5)"),
+                attribute.disabled(resuming),
+                event.on_click(ResumeGame),
+              ],
+              [html.text("RESUME")],
+            ),
+            html.div([attribute.class("text-sm text-blue-200 mt-4")], [
+              html.text(case resuming {
+                True -> "Please wait..."
+                False -> "Press SPACE to resume"
+              }),
+            ]),
+          ]),
+        ],
+      ),
+    ],
+  )
+}
+
+fn view_spell_reward_card(reward_spell: spell.Spell) -> element.Element(Msg) {
+  let #(name, icon, description, type_label, type_color) = case reward_spell {
+    spell.DamageSpell(dmg_spell) -> #(
+      dmg_spell.name,
+      spell_icon(dmg_spell),
+      "Damage: "
+        <> float.to_string(float.to_precision(dmg_spell.damage, 1))
+        <> " | Speed: "
+        <> float.to_string(float.to_precision(dmg_spell.projectile_speed, 1)),
+      "DAMAGE",
+      "bg-red-600 border-red-400",
+    )
+    spell.ModifierSpell(mod_spell) -> {
+      let effects =
+        [
+          case mod_spell.damage_multiplier {
+            m if m != 1.0 ->
+              option.Some("DMG x" <> float.to_string(float.to_precision(m, 2)))
+            _ -> option.None
+          },
+          case mod_spell.damage_addition {
+            a if a != 0.0 ->
+              option.Some("DMG +" <> float.to_string(float.to_precision(a, 1)))
+            _ -> option.None
+          },
+          case mod_spell.projectile_speed_multiplier {
+            m if m != 1.0 ->
+              option.Some("SPD x" <> float.to_string(float.to_precision(m, 2)))
+            _ -> option.None
+          },
+          case mod_spell.projectile_size_multiplier {
+            m if m != 1.0 ->
+              option.Some("SIZE x" <> float.to_string(float.to_precision(m, 2)))
+            _ -> option.None
+          },
+          case mod_spell.projectile_lifetime_multiplier {
+            m if m != 1.0 ->
+              option.Some("LIFE x" <> float.to_string(float.to_precision(m, 2)))
+            _ -> option.None
+          },
+        ]
+        |> list.filter_map(fn(opt) {
+          case opt {
+            option.Some(s) -> Ok(s)
+            option.None -> Error(Nil)
+          }
+        })
+
+      let description = case effects {
+        [] -> "No effects"
+        _ ->
+          list.fold(effects, "", fn(acc, effect) {
+            case acc {
+              "" -> effect
+              _ -> acc <> " | " <> effect
+            }
+          })
+      }
+
+      #(
+        mod_spell.name,
+        "✨",
+        description,
+        "MODIFIER",
+        "bg-green-600 border-green-400",
+      )
+    }
+  }
+
+  html.button(
+    [
+      attribute.class(
+        "flex flex-col items-center p-6 bg-gray-900/80 border-4 rounded-lg hover:scale-105 hover:bg-gray-800/80 transform transition-all duration-200 cursor-pointer min-w-[200px]",
+      ),
+      attribute.class(type_color),
+      event.on_click(SpellRewardClicked(reward_spell)),
+    ],
+    [
+      // Type label
+      html.div(
+        [
+          attribute.class(
+            "text-xs font-bold text-white px-2 py-1 rounded mb-2 " <> type_color,
+          ),
+        ],
+        [html.text(type_label)],
+      ),
+      // Icon
+      html.div([attribute.class("text-6xl mb-3")], [html.text(icon)]),
+      // Name
+      html.div(
+        [attribute.class("text-xl font-bold text-white mb-2 text-center")],
+        [
+          html.text(name),
+        ],
+      ),
+      // Description
+      html.div(
+        [attribute.class("text-sm text-gray-300 text-center leading-tight")],
+        [html.text(description)],
       ),
     ],
   )
@@ -933,10 +1369,10 @@ fn render_wand_slot_item(
 }
 
 fn render_spell_bag(
-  bag: spell_bag.SpellBag,
+  spell_bag: spell_bag.SpellBag,
   drag_state: ensaimada.DragState,
 ) -> element.Element(Msg) {
-  let spell_stacks = spell_bag.list_spell_stacks(bag)
+  let spell_stacks = spell_bag.list_spell_stacks(spell_bag)
 
   let sortable_items =
     spell_stacks
@@ -961,69 +1397,53 @@ fn render_spell_bag(
       config,
       drag_state,
       sortable_items,
-      render_bag_spell_item,
+      render_spell_bag_item,
     ),
     BagSortableMsg,
   )
 }
 
-fn render_bag_spell_item(
+fn render_spell_bag_item(
   item: ensaimada.Item(#(spell.Spell, Int)),
   _index: Int,
   _drag_state: ensaimada.DragState,
 ) -> element.Element(Msg) {
   let #(spell_item, count) = ensaimada.item_data(item)
-  let #(content, bg_class, border_class, text_class) = case spell_item {
+  let #(icon, bg_class, border_class) = case spell_item {
     spell.DamageSpell(damage_spell) -> #(
       spell_icon(damage_spell),
       "bg-red-600",
       "border-red-400",
-      "text-white",
     )
-    spell.ModifierSpell(_) -> #(
-      "✨",
-      "bg-green-600",
-      "border-green-400",
-      "text-white",
-    )
+    spell.ModifierSpell(_) -> #("✨", "bg-green-600", "border-green-400")
   }
 
   html.div(
     [
       attribute.class(
-        "w-12 h-12 "
+        "relative w-12 h-12 "
         <> bg_class
         <> " border-2 "
         <> border_class
-        <> " flex items-center justify-center text-xl font-bold "
-        <> text_class
-        <> " shadow-lg relative transition-all hover:scale-110 cursor-move pointer-events-auto",
+        <> " flex items-center justify-center text-xl font-bold text-white shadow-lg transition-all hover:scale-110 cursor-move pointer-events-auto",
       ),
       attribute.style("image-rendering", "pixelated"),
     ],
     [
-      html.text(content),
+      html.text(icon),
       // Count badge
       case count > 1 {
         True ->
           html.div(
             [
               attribute.class(
-                "absolute -top-1 -right-1 bg-amber-500 border border-amber-700 rounded-full w-5 h-5 flex items-center justify-center text-xs font-bold text-black",
+                "absolute -bottom-1 -right-1 w-5 h-5 bg-yellow-500 border border-yellow-300 rounded-full flex items-center justify-center text-xs font-bold text-black",
               ),
             ],
             [html.text(int.to_string(count))],
           )
         False -> html.div([], [])
       },
-      // Inner shadow effect
-      html.div(
-        [
-          attribute.class("absolute inset-0 opacity-20 pointer-events-none"),
-          attribute.style("box-shadow", "inset 0 2px 4px rgba(0,0,0,0.5)"),
-        ],
-        [],
-      ),
     ],
   )
 }

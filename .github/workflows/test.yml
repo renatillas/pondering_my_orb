@@ -1,23 +1,33 @@
-name: test
+name: Deploy to Cloudflare Pages
 
 on:
   push:
     branches:
-      - master
       - main
-  pull_request:
 
 jobs:
-  test:
+  deploy:
+    name: Deploy to Cloudflare Pages
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: erlef/setup-beam@v1
+      - name: Checkout repo
+        uses: actions/checkout@v4
+      - name: Set up Gleam
+        uses: erlef/setup-beam@v1
         with:
-          otp-version: "28"
-          gleam-version: "1.13.0"
+          otp-version: "28.0"
+          gleam-version: "1.12.0"
           rebar3-version: "3"
-          # elixir-version: "1"
-      - run: gleam deps download
-      - run: gleam test
-      - run: gleam format --check src test
+      - name: Install dependencies
+        run: gleam deps download
+      - name: Build app
+        run: gleam run -m lustre/dev build --outdir=dist
+      - name: Deploy with Wrangler
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name ponderingmyorb

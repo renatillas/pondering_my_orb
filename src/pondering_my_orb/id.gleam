@@ -2,6 +2,7 @@ pub type Id {
   Scene(layer: Layer)
   Camera(layer: Layer)
   Box(layer: Layer)
+  Foliage(layer: Layer, id: Int)
   Ambient(layer: Layer)
   Directional(layer: Layer)
   Ground(layer: Layer)
@@ -28,6 +29,10 @@ pub fn camera() {
 
 pub fn box() {
   Box(layer: MapLayer)
+}
+
+pub fn foliage(id: Int) -> Id {
+  Foliage(layer: MapLayer, id: id)
 }
 
 pub fn ambient() {
