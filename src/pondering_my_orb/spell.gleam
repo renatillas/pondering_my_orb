@@ -379,6 +379,7 @@ pub fn view(
       transform: transform.at(position: projectile.position)
         |> transform.with_quaternion_rotation(rotation),
       pixel_art: True,
+      physics: option.None,
     )
   })
 }
@@ -459,5 +460,6 @@ pub fn view_hits(
     transform: transform.at(position: hit.position)
       |> transform.with_quaternion_rotation(final_rotation),
     pixel_art: True,
+    physics: option.None,
   )
 }

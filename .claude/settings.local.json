@@ -5,7 +5,8 @@
       "Bash(gleam run:*)",
       "Read(//Users/renata-amutio/Projects/renatillas/sortable/**)",
       "Bash(gleam test:*)",
-      "Read(//Users/renata-amutio/Projects/renatillas/tiramisu/src/tiramisu/**)"
+      "Read(//Users/renata-amutio/Projects/renatillas/tiramisu/src/tiramisu/**)",
+      "Read(//Users/renata-amutio/Projects/renatillas/tiramisu/src/**)"
     ],
     "deny": [],
     "ask": []

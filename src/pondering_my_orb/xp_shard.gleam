@@ -1,3 +1,4 @@
+import gleam/option
 import gleam_community/maths
 import pondering_my_orb/id.{type Id}
 import tiramisu/scene
@@ -65,5 +66,6 @@ pub fn render(
     transform: transform.at(position: shard.position)
       |> transform.with_euler_rotation(Vec3(0.0, y_rotation, 0.0)),
     pixel_art: True,
+    physics: option.None,
   )
 }
