@@ -846,7 +846,6 @@ fn handle_assets_loaded(
       mago_attacking_spritesheet,
       mago_attacking_animation,
     )
-
   // Create random tree and bush instances by repeating the models list
   let foliage_instances =
     list.range(0, 39)
@@ -1080,6 +1079,7 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> scene.Node(Id) {
       enemy,
       ground,
       foliage,
+      boxes,
       projectiles,
       explosions,
       xp_shards,
