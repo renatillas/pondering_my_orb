@@ -724,9 +724,6 @@ fn handle_assets_loaded(
 ) -> #(Model, Effect(Msg), Option(physics.PhysicsWorld(Id))) {
   let assert Ok(floor_fbx) =
     asset.get_fbx(assets.cache, "PSX_Dungeon/Models/Floor_Tiles.fbx")
-  let assert Ok(floor_texture) =
-    asset.get_texture(assets.cache, "PSX_Dungeon/Textures/TEX_Ground_04.png")
-
   // Load tree models
   let assert Ok(tree01_fbx) =
     asset.get_fbx(assets.cache, "tree_pack_1.1/models/tree01.fbx")
@@ -857,7 +854,7 @@ fn handle_assets_loaded(
       let rotation_y = float.random() *. 6.28318
 
       transform.identity
-      |> transform.with_position(vec3.Vec3(x, 15.0, z))
+      |> transform.with_position(vec3.Vec3(x, 0.0, z))
       |> transform.with_euler_rotation(vec3.Vec3(0.0, rotation_y, 0.0))
       |> transform.with_scale(vec3.Vec3(0.03, 0.03, 0.03))
     })
@@ -914,13 +911,6 @@ fn handle_assets_loaded(
 
   let effects =
     effect.batch([
-      effect.from(fn(_) {
-        asset.apply_texture_to_object(
-          floor_fbx.scene,
-          floor_texture,
-          asset.NearestFilter,
-        )
-      }),
       effect.tick(Tick),
       tiramisu_ui.dispatch_to_lustre(ui.GamePhaseChanged(ui.Playing)),
       effect.request_pointer_lock(
