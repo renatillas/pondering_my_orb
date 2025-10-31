@@ -11,13 +11,11 @@ import lustre/effect
 import lustre/element
 import lustre/element/html
 import lustre/event
-import plinth/javascript/global
 import pondering_my_orb/pointer_lock
 import pondering_my_orb/pointer_lock_request
 import pondering_my_orb/score
 import pondering_my_orb/spell
 import pondering_my_orb/spell_bag
-import pondering_my_orb/visibility
 import tiramisu/ui as tiramisu_ui
 
 pub type Model(tiramisu_msg) {
@@ -59,14 +57,9 @@ pub type Msg {
   ShowSpellRewards(List(spell.Spell))
   SpellRewardClicked(spell.Spell)
   DoneWithLevelUp
-  PauseGame
   ResumeGame
-  KeyPressed(String)
   PointerLockExited
   PointerLockAcquired
-  RetryResume
-  PageHidden
-  PageVisible
   NoOp
 }
 
@@ -121,9 +114,6 @@ pub fn init(wrapper) -> #(Model(tiramisu_msg), effect.Effect(Msg)) {
     ),
     effect.batch([
       tiramisu_ui.register_lustre(),
-      visibility.setup_visibility_listener(fn() { PageHidden }, fn() {
-        PageVisible
-      }),
       pointer_lock.setup_pointer_lock_listener(fn() { PointerLockExited }, fn() {
         PointerLockAcquired
       }),
@@ -372,19 +362,6 @@ pub fn update(
         ]),
       )
     }
-    PauseGame -> {
-      // Don't pause if we're in level-up modal
-      case model.spell_rewards {
-        option.Some(_) -> #(model, effect.none())
-        option.None -> {
-          io.println("=== UI: Game Paused ===")
-          #(
-            Model(..model, is_paused: True),
-            tiramisu_ui.dispatch_to_tiramisu(model.wrapper(GamePaused)),
-          )
-        }
-      }
-    }
     ResumeGame -> {
       io.println("=== UI: Resume Requested - Requesting Pointer Lock ===")
       // Set resuming flag but keep paused until pointer lock is acquired
@@ -393,56 +370,8 @@ pub fn update(
         Model(..model, resuming: True, resume_retry_count: 0),
         effect.batch([
           effect.from(fn(_) { pointer_lock_request.request_pointer_lock_sync() }),
-          effect.from(fn(dispatch) {
-            global.set_timeout(500, fn() { dispatch(RetryResume) })
-            Nil
-          }),
         ]),
       )
-    }
-    PageHidden -> {
-      // Auto-pause when user tabs out, but only during gameplay
-      case model.game_phase, model.spell_rewards, model.is_paused {
-        Playing, option.None, False -> {
-          io.println("=== UI: Page Hidden - Auto Pausing ===")
-          #(
-            Model(..model, is_paused: True),
-            tiramisu_ui.dispatch_to_tiramisu(model.wrapper(GamePaused)),
-          )
-        }
-        _, _, _ -> #(model, effect.none())
-      }
-    }
-    KeyPressed(key) -> {
-      case key, model.game_phase, model.spell_rewards, model.is_paused {
-        // ESC during gameplay - pause
-        "Escape", Playing, option.None, False -> {
-          io.println("=== UI: ESC Pressed - Pausing ===")
-          #(
-            Model(..model, is_paused: True),
-            tiramisu_ui.dispatch_to_tiramisu(model.wrapper(GamePaused)),
-          )
-        }
-        // SPACE during pause - resume (ESC can't be used because it exits pointer lock)
-        " ", Playing, option.None, True -> {
-          io.println("=== UI: SPACE Pressed - Requesting Pointer Lock ===")
-          // Set resuming flag but keep paused until pointer lock is acquired
-          // Set up automatic retry every 500ms
-          #(
-            Model(..model, resuming: True, resume_retry_count: 0),
-            effect.batch([
-              effect.from(fn(_) {
-                pointer_lock_request.request_pointer_lock_sync()
-              }),
-              effect.from(fn(dispatch) {
-                global.set_timeout(500, fn() { dispatch(RetryResume) })
-                Nil
-              }),
-            ]),
-          )
-        }
-        _, _, _, _ -> #(model, effect.none())
-      }
     }
     PointerLockExited -> {
       io.println("=== UI: Pointer Lock Exited ===")
@@ -486,54 +415,6 @@ pub fn update(
         }
         False -> #(model, effect.none())
       }
-    }
-    RetryResume -> {
-      // Automatically retry pointer lock request if we're still resuming
-      case model.resuming {
-        True -> {
-          let retry_count = model.resume_retry_count + 1
-          case retry_count < 10 {
-            // Keep retrying (up to 10 times = 5 seconds)
-            True -> {
-              io.println(
-                "=== UI: Retrying Pointer Lock (attempt "
-                <> int.to_string(retry_count)
-                <> ") ===",
-              )
-              #(
-                Model(..model, resume_retry_count: retry_count),
-                effect.batch([
-                  effect.from(fn(_) {
-                    pointer_lock_request.request_pointer_lock_sync()
-                  }),
-                  effect.from(fn(dispatch) {
-                    global.set_timeout(500, fn() { dispatch(RetryResume) })
-                    Nil
-                  }),
-                ]),
-              )
-            }
-            // Give up after 10 retries
-            False -> {
-              io.println(
-                "=== UI: Pointer Lock Failed After "
-                <> int.to_string(retry_count)
-                <> " Retries, Giving Up ===",
-              )
-              #(
-                Model(..model, resuming: False, resume_retry_count: 0),
-                effect.none(),
-              )
-            }
-          }
-        }
-        False -> #(model, effect.none())
-      }
-    }
-    PageVisible -> {
-      // Don't auto-resume, let the user manually resume
-      io.println("=== UI: Page Visible ===")
-      #(model, effect.none())
     }
     NoOp -> #(model, effect.none())
   }
