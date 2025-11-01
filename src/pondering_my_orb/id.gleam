@@ -7,6 +7,7 @@ pub type Id {
   Directional(layer: Layer)
   Ground(layer: Layer)
   Enemy(layer: Layer, id: Int)
+  EnemySprite(layer: Layer, id: Int)
   EnemyGroup(layer: Layer, id: Int)
   EnemyHealthBar(layer: Layer, id: Int)
   Player(layer: Layer)
@@ -49,6 +50,10 @@ pub fn ground() {
 
 pub fn enemy(id: Int) -> Id {
   Enemy(layer: EnemyLayer, id: id)
+}
+
+pub fn enemy_sprite(id: Int) -> Id {
+  EnemySprite(layer: EnemyLayer, id: id)
 }
 
 pub fn enemy_group(id: Int) -> Id {

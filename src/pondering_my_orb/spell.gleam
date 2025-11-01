@@ -219,7 +219,7 @@ pub fn spark(visuals: SpellVisuals) -> Spell {
 pub fn fireball(visuals: SpellVisuals) -> Spell {
   damaging_spell(
     name: "Fireball",
-    damage: 20.0,
+    damage: 1.0,
     projectile_speed: 15.0,
     projectile_lifetime: 3.0,
     mana_cost: 10.0,

@@ -66,6 +66,10 @@ pub type Model {
     next_enemy_id: Int,
     enemy_spawn_interval_ms: Int,
     game_time_elapsed_ms: Float,
+    enemy1_spritesheet: Option(spritesheet.Spritesheet),
+    enemy1_animation: Option(spritesheet.Animation),
+    enemy2_spritesheet: Option(spritesheet.Spritesheet),
+    enemy2_animation: Option(spritesheet.Animation),
     // XP System
     xp_shards: List(xp_shard.XPShard),
     next_xp_shard_id: Int,
@@ -149,6 +153,10 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), Option(_)) {
       next_enemy_id: 0,
       enemy_spawn_interval_ms: 2000,
       game_time_elapsed_ms: 0.0,
+      enemy1_spritesheet: None,
+      enemy1_animation: None,
+      enemy2_spritesheet: None,
+      enemy2_animation: None,
       xp_shards: [],
       next_xp_shard_id: 0,
       xp_spritesheet: None,
@@ -218,6 +226,9 @@ fn update(
         asset.TextureAsset("SPRITESHEET_Files/Explosion_2_64x64.png"),
         asset.TextureAsset("mago_idle.png"),
         asset.TextureAsset("mago_attacking.png"),
+        // Enemy sprites
+        asset.TextureAsset("enemy_1.png"),
+        asset.TextureAsset("enemy_2.png"),
       ]
 
       let effects =
@@ -330,13 +341,38 @@ fn update(
           model.player.position.z +. offset_z,
         )
 
+      // Randomly choose enemy type
+      let enemy_type = case float.random() >. 0.5 {
+        True -> enemy.EnemyType1
+        False -> enemy.EnemyType2
+      }
+
+      // Create enemy and set spritesheet based on type
+      let new_enemy =
+        enemy.basic(
+          id.enemy(model.next_enemy_id),
+          position: spawn_position,
+          enemy_type: enemy_type,
+        )
+
+      let new_enemy = case
+        enemy_type,
+        model.enemy1_spritesheet,
+        model.enemy1_animation,
+        model.enemy2_spritesheet,
+        model.enemy2_animation
+      {
+        enemy.EnemyType1, Some(sheet), Some(anim), _, _ ->
+          enemy.set_spritesheet(new_enemy, sheet, anim)
+        enemy.EnemyType2, _, _, Some(sheet), Some(anim) ->
+          enemy.set_spritesheet(new_enemy, sheet, anim)
+        _, _, _, _, _ -> new_enemy
+      }
+
       #(
         Model(
           ..model,
-          enemies: [
-            enemy.basic(id.enemy(model.next_enemy_id), position: spawn_position),
-            ..model.enemies
-          ],
+          enemies: [new_enemy, ..model.enemies],
           next_enemy_id: model.next_enemy_id + 1,
         ),
         effect.none(),
@@ -524,15 +560,20 @@ fn handle_tick(
 
   let #(enemies, enemy_effects) =
     list.map(model.enemies, fn(enemy) {
-      enemy.update(
-        enemy,
-        target: player.position,
-        enemy_velocity: physics.get_velocity(physics_world, enemy.id)
-          |> result.unwrap(Vec3(0.0, 0.0, 0.0)),
-        physics_world:,
-        delta_time: scaled_delta /. 1000.0,
-        enemy_attacks_player_msg: EnemyAttacksPlayer,
-      )
+      let #(updated_enemy, effects) =
+        enemy.update(
+          enemy,
+          target: player.position,
+          camera_position: model.camera.position,
+          enemy_velocity: physics.get_velocity(physics_world, enemy.id)
+            |> result.unwrap(Vec3(0.0, 0.0, 0.0)),
+          physics_world:,
+          delta_time: scaled_delta /. 1000.0,
+          enemy_attacks_player_msg: EnemyAttacksPlayer,
+        )
+      // Update enemy animations
+      let updated_enemy = enemy.update_animation(updated_enemy, scaled_delta)
+      #(updated_enemy, effects)
     })
     |> list.unzip()
 
@@ -841,6 +882,29 @@ fn handle_assets_loaded(
       loop: spritesheet.Repeat,
     )
 
+  // Load enemy sprite textures
+  let assert Ok(enemy1_texture) = asset.get_texture(assets.cache, "enemy_1.png")
+  let assert Ok(enemy1_spritesheet) =
+    spritesheet.from_grid(enemy1_texture, columns: 1, rows: 1)
+  let enemy1_animation =
+    spritesheet.animation(
+      name: "idle",
+      frames: [0],
+      frame_duration: 150.0,
+      loop: spritesheet.Repeat,
+    )
+
+  let assert Ok(enemy2_texture) = asset.get_texture(assets.cache, "enemy_2.png")
+  let assert Ok(enemy2_spritesheet) =
+    spritesheet.from_grid(enemy2_texture, columns: 1, rows: 1)
+  let enemy2_animation =
+    spritesheet.animation(
+      name: "idle",
+      frames: [0],
+      frame_duration: 150.0,
+      loop: spritesheet.Repeat,
+    )
+
   // Set up player's initial spell and sprites
   let assert Ok(updated_wand) =
     wand.set_spell(model.player.wand, 0, spell.fireball(fireball_visuals))
@@ -945,6 +1009,10 @@ fn handle_assets_loaded(
       fireball_spritesheet: Some(fireball_spritesheet),
       fireball_animation: Some(fireball_animation),
       explosion_spritesheet: Some(explosion_spritesheet),
+      enemy1_spritesheet: Some(enemy1_spritesheet),
+      enemy1_animation: Some(enemy1_animation),
+      enemy2_spritesheet: Some(enemy2_spritesheet),
+      enemy2_animation: Some(enemy2_animation),
     ),
     effects,
     ctx.physics_world,
