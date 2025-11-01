@@ -34,26 +34,37 @@ pub fn ground(
 pub fn view_foliage(obstacles: Obstacle(Box), base_id: Id) -> scene.Node(Id) {
   let assert Box(instances:) = obstacles
 
-  let children =
-    instances
-    |> list.index_map(fn(instance, i) {
-      let #(model, texture, instance_transform) = instance
+  // Group instances by model and texture
+  // For now, assuming all instances share the same model and texture
+  // If you need different textures per instance, you'll need to group them
+  case instances {
+    [] -> scene.empty(id: base_id, transform: transform.identity, children: [])
+    [first, ..] -> {
+      let #(model, texture, _) = first
 
-      // Create material override with texture for this specific instance
-      let foliage_material_override =
-        material.MaterialOverride(
+      // Extract just the transforms
+      let transforms =
+        list.map(instances, fn(inst) {
+          let #(_, _, t) = inst
+          t
+        })
+
+      // Create Lambert material with texture for fully matte foliage
+      let assert Ok(foliage_material) =
+        material.lambert(
+          color: 0xffffff,
           map: option.Some(texture),
-          transparent: option.Some(True),
-          alpha_test: option.Some(0.5),
-          side: option.Some(material.DoubleSide),
-          roughness: option.Some(1.0),
-          metalness: option.Some(0.0),
+          normal_map: option.None,
+          ambient_oclusion_map: option.None,
+          transparent: True,
+          opacity: 1.0,
+          alpha_test: 0.5,
         )
 
-      scene.model_3d(
-        id: id.foliage(i),
+      scene.instanced_model(
+        id: base_id,
         object: model,
-        animation: option.None,
+        instances: transforms,
         physics: option.Some(
           physics.new_rigid_body(physics.Fixed)
           |> physics.with_collider(physics.Cylinder(
@@ -64,12 +75,10 @@ pub fn view_foliage(obstacles: Obstacle(Box), base_id: Id) -> scene.Node(Id) {
           |> physics.with_friction(0.0)
           |> physics.build(),
         ),
-        material_override: option.Some(foliage_material_override),
-        transform: instance_transform,
+        material: option.Some(foliage_material),
       )
-    })
-
-  scene.empty(id: base_id, transform: transform.identity, children:)
+    }
+  }
 }
 
 pub fn view_ground(_ground: Obstacle(Ground), id: id) -> scene.Node(id) {
