@@ -38,7 +38,11 @@ pub type PlayerAction {
 }
 
 pub type AutoCast {
-  AutoCast(time_since_last_cast: Float, current_spell_index: Int)
+  AutoCast(
+    time_since_last_cast: Float,
+    current_spell_index: Int,
+    is_recharging: Bool,
+  )
 }
 
 pub type Player {
@@ -225,7 +229,8 @@ pub fn init() -> Player {
       max_mana: 200.0,
       mana_recharge_rate: 30.0,
       cast_delay: 0.2,
-      recharge_time: 0.5,
+      recharge_time: 1.0,
+      spells_per_cast: 1,
     )
 
   let spell_bag = spell_bag.new()
@@ -243,7 +248,11 @@ pub fn init() -> Player {
     healed_amount: 0.0,
     wand:,
     spell_bag:,
-    auto_cast: AutoCast(time_since_last_cast: 0.0, current_spell_index: 0),
+    auto_cast: AutoCast(
+      time_since_last_cast: 0.0,
+      current_spell_index: 0,
+      is_recharging: False,
+    ),
   )
 }
 
@@ -466,61 +475,101 @@ pub fn update(
   delta_time: Float,
   player_died_msg: msg,
   next_projectile_id: Int,
-) -> #(Player, Option(spell.Projectile), Effect(msg), Int) {
+) -> #(Player, List(spell.Projectile), List(Int), Effect(msg), Int) {
+  // Update timer every frame
+  let updated_time_since_last_cast =
+    player.auto_cast.time_since_last_cast +. delta_time /. 1000.0
+
+  // Clear recharging flag when reload completes
+  let is_reload_complete =
+    player.auto_cast.is_recharging
+    && updated_time_since_last_cast >=. player.wand.cast_delay
+
+  let updated_recharging = case is_reload_complete {
+    True -> False
+    False -> player.auto_cast.is_recharging
+  }
+
+  let player_with_updated_timer =
+    Player(
+      ..player,
+      auto_cast: AutoCast(
+        ..player.auto_cast,
+        time_since_last_cast: updated_time_since_last_cast,
+        is_recharging: updated_recharging,
+      ),
+    )
+
   let #(player, cast_result, next_projectile_id) =
     result.map(nearest_enemy, cast_spell(
-      player,
+      player_with_updated_timer,
       _,
       delta_time /. 1000.0,
       next_projectile_id,
     ))
-    |> result.unwrap(#(player, Error(Nil), next_projectile_id))
+    |> result.unwrap(#(
+      player_with_updated_timer,
+      Error(Nil),
+      next_projectile_id,
+    ))
 
-  let #(player, projectile, is_attacking) = case cast_result {
-    Ok(wand.CastSuccess(projectile, remaining_mana, next_cast_index)) -> {
-      let player =
+  let #(player, projectiles, casting_indices, is_attacking) = case cast_result {
+    Ok(wand.CastSuccess(
+      projectiles:,
+      remaining_mana:,
+      next_cast_index:,
+      casting_indices:,
+      did_wrap:,
+    )) -> {
+      // Determine timing based on whether wand wrapped
+      let #(timer, index, recharging) = case did_wrap {
+        True -> {
+          // Wand wrapped: enter reload, reset to slot 0
+          let max_delay =
+            float.max(player.wand.cast_delay, player.wand.recharge_time)
+          #(player.wand.cast_delay -. max_delay, 0, True)
+        }
+        False -> {
+          // Normal cast: apply cast delay, continue to next spell
+          #(0.0, next_cast_index, False)
+        }
+      }
+
+      let updated_player =
         Player(
           ..player,
           wand: wand.Wand(..player.wand, current_mana: remaining_mana),
           auto_cast: AutoCast(
-            time_since_last_cast: player.auto_cast.time_since_last_cast,
-            current_spell_index: next_cast_index,
+            time_since_last_cast: timer,
+            current_spell_index: index,
+            is_recharging: recharging,
           ),
           attack_animation_timer: 400.0,
         )
 
-      #(player, Some(projectile), True)
+      #(updated_player, projectiles, casting_indices, True)
     }
     Ok(wand.NotEnoughMana(_required, _available)) -> {
-      // Keep current index, don't reset timer - wait for more mana
-      #(player, None, False)
+      // Wait for mana to recharge
+      #(player, [], [], False)
     }
-    Ok(wand.NoSpellToCast) -> {
-      // No damage spell found, reset to beginning after recharge_time
+    Ok(wand.NoSpellToCast) | Ok(wand.WandEmpty) -> {
+      // No spells available: enter reload
+      let max_delay =
+        float.max(player.wand.cast_delay, player.wand.recharge_time)
       let player =
         Player(
           ..player,
           auto_cast: AutoCast(
-            time_since_last_cast: -1.0 *. player.wand.recharge_time,
+            time_since_last_cast: player.wand.cast_delay -. max_delay,
             current_spell_index: 0,
+            is_recharging: True,
           ),
         )
-      #(player, None, False)
-    }
-    Ok(wand.WandEmpty) -> {
-      // Finished all spells, reset to beginning after recharge_time
-      let player =
-        Player(
-          ..player,
-          auto_cast: AutoCast(
-            time_since_last_cast: -1.0 *. player.wand.recharge_time,
-            current_spell_index: 0,
-          ),
-        )
-      #(player, None, False)
+      #(player, [], [], False)
     }
     Error(_) -> {
-      #(player, None, False)
+      #(player, [], [], False)
     }
   }
 
@@ -578,16 +627,17 @@ pub fn update(
     False -> effect.none()
   }
 
-  #(player, projectile, death_effect, next_projectile_id)
+  #(player, projectiles, casting_indices, death_effect, next_projectile_id)
 }
 
 fn cast_spell(
   player: Player,
   nearest_enemy: Enemy(id),
-  delta_time: Float,
+  _delta_time: Float,
   next_projectile_id: Int,
 ) -> #(Player, Result(wand.CastResult, Nil), Int) {
-  let time_since_last_cast = player.auto_cast.time_since_last_cast +. delta_time
+  // Timer is already updated in update() function, just check it here
+  let time_since_last_cast = player.auto_cast.time_since_last_cast
   case time_since_last_cast >=. player.wand.cast_delay {
     True -> {
       let normalized_direction =
@@ -616,11 +666,12 @@ fn cast_spell(
           next_projectile_id,
         )
 
-      // Increment projectile ID if cast was successful
-      let new_projectile_id = case cast_result {
-        wand.CastSuccess(..) -> next_projectile_id + 1
-        _ -> next_projectile_id
+      // Increment projectile ID based on number of projectiles created
+      let projectile_count = case cast_result {
+        wand.CastSuccess(projectiles:, ..) -> list.length(projectiles)
+        _ -> 0
       }
+      let new_projectile_id = next_projectile_id + projectile_count
 
       #(
         Player(
@@ -628,6 +679,7 @@ fn cast_spell(
           auto_cast: AutoCast(
             time_since_last_cast: 0.0,
             current_spell_index: player.auto_cast.current_spell_index,
+            is_recharging: player.auto_cast.is_recharging,
           ),
           wand:,
         ),
@@ -635,17 +687,7 @@ fn cast_spell(
         new_projectile_id,
       )
     }
-    False -> #(
-      Player(
-        ..player,
-        auto_cast: AutoCast(
-          time_since_last_cast,
-          current_spell_index: player.auto_cast.current_spell_index,
-        ),
-      ),
-      Error(Nil),
-      next_projectile_id,
-    )
+    False -> #(player, Error(Nil), next_projectile_id)
   }
 }
 

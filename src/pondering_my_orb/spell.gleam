@@ -14,6 +14,22 @@ import vec/vec3f
 pub type Spell {
   DamageSpell(DamageSpell)
   ModifierSpell(ModifierSpell)
+  MulticastSpell(MulticastSpell)
+}
+
+pub type MulticastCount {
+  Fixed(Int)
+  AllRemaining
+}
+
+pub type MulticastSpell {
+  Multicast(
+    name: String,
+    mana_cost: Float,
+    spell_count: MulticastCount,
+    draw_add: Int,
+    ui_sprite: String,
+  )
 }
 
 /// Visual configuration for spell effects
@@ -35,6 +51,7 @@ pub type DamageSpell {
     projectile_lifetime: Float,
     projectile_size: Float,
     visuals: SpellVisuals,
+    ui_sprite: String,
   )
 }
 
@@ -50,6 +67,7 @@ pub type ModifierSpell {
     projectile_size_addition: Float,
     projectile_lifetime_multiplier: Float,
     projectile_lifetime_addition: Float,
+    ui_sprite: String,
   )
 }
 
@@ -87,6 +105,7 @@ pub fn damaging_spell(
   mana_cost mana_cost: Float,
   projectile_size projectile_size: Float,
   visuals visuals: SpellVisuals,
+  ui_sprite ui_sprite: String,
 ) -> Spell {
   DamageSpell(Damage(
     name:,
@@ -96,6 +115,7 @@ pub fn damaging_spell(
     mana_cost:,
     projectile_size:,
     visuals:,
+    ui_sprite:,
   ))
 }
 
@@ -111,6 +131,7 @@ pub fn modifier_spell(
   projectile_lifetime_multiplier projectile_lifetime_multiplier: Float,
   projectile_lifetime_addition projectile_lifetime_addition: Float,
   mana_cost mana_cost: Float,
+  ui_sprite ui_sprite: String,
 ) -> Spell {
   ModifierSpell(Modifier(
     name:,
@@ -123,6 +144,7 @@ pub fn modifier_spell(
     projectile_size_addition:,
     projectile_lifetime_multiplier:,
     projectile_lifetime_addition:,
+    ui_sprite:,
   ))
 }
 
@@ -189,6 +211,7 @@ pub fn spark(visuals: SpellVisuals) -> Spell {
     mana_cost: 5.0,
     projectile_size: 1.0,
     visuals:,
+    ui_sprite: "spells/spark.png",
   )
 }
 
@@ -202,6 +225,7 @@ pub fn fireball(visuals: SpellVisuals) -> Spell {
     mana_cost: 10.0,
     projectile_size: 5.0,
     visuals:,
+    ui_sprite: "spells/fireball.png",
   )
 }
 
@@ -215,7 +239,63 @@ pub fn lightning(visuals: SpellVisuals) -> Spell {
     mana_cost: 35.0,
     projectile_size: 0.2,
     visuals:,
+    ui_sprite: "spells/lightning.png",
   )
+}
+
+/// Double Spell - casts 2 spells at once (no mana cost)
+pub fn double_spell() -> Spell {
+  MulticastSpell(Multicast(
+    name: "Double Spell",
+    mana_cost: 0.0,
+    spell_count: Fixed(2),
+    draw_add: 2,
+    ui_sprite: "spells/double_spell.png",
+  ))
+}
+
+/// Triple Spell - casts 3 spells at once
+pub fn triple_spell() -> Spell {
+  MulticastSpell(Multicast(
+    name: "Triple Spell",
+    mana_cost: 2.0,
+    spell_count: Fixed(3),
+    draw_add: 3,
+    ui_sprite: "spells/triple.png",
+  ))
+}
+
+/// Quadruple Spell - casts 4 spells at once
+pub fn quadruple_spell() -> Spell {
+  MulticastSpell(Multicast(
+    name: "Quadruple Spell",
+    mana_cost: 5.0,
+    spell_count: Fixed(4),
+    draw_add: 4,
+    ui_sprite: "spells/quadruple.png",
+  ))
+}
+
+/// Octuple Spell - casts 8 spells at once
+pub fn octuple_spell() -> Spell {
+  MulticastSpell(Multicast(
+    name: "Octuple Spell",
+    mana_cost: 30.0,
+    spell_count: Fixed(8),
+    draw_add: 8,
+    ui_sprite: "spells/octuple.png",
+  ))
+}
+
+/// Myriad Spell - casts all remaining spells
+pub fn myriad_spell() -> Spell {
+  MulticastSpell(Multicast(
+    name: "Myriad Spell",
+    mana_cost: 50.0,
+    spell_count: AllRemaining,
+    draw_add: 99,
+    ui_sprite: "spells/myriad.png",
+  ))
 }
 
 pub type ProjectileHit(id) {
@@ -463,3 +543,10 @@ pub fn view_hits(
     physics: option.None,
   )
 }
+
+// Mock functions for testing
+@external(javascript, "./spell_ffi.mjs", "mockSpritesheet")
+pub fn mock_spritesheet() -> spritesheet.Spritesheet
+
+@external(javascript, "./spell_ffi.mjs", "mockAnimation")
+pub fn mock_animation() -> spritesheet.Animation

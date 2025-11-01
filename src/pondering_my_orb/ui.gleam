@@ -37,6 +37,14 @@ pub type Model(tiramisu_msg) {
     is_paused: Bool,
     resuming: Bool,
     resume_retry_count: Int,
+    casting_spell_indices: List(Int),
+    casting_highlight_timer: Float,
+    spells_per_cast: Int,
+    cast_delay: Float,
+    recharge_time: Float,
+    time_since_last_cast: Float,
+    current_spell_index: Int,
+    is_recharging: Bool,
   )
 }
 
@@ -88,6 +96,13 @@ pub type GameState {
     player_xp_to_next_level: Int,
     player_level: Int,
     score: score.Score,
+    casting_spell_indices: List(Int),
+    spells_per_cast: Int,
+    cast_delay: Float,
+    recharge_time: Float,
+    time_since_last_cast: Float,
+    current_spell_index: Int,
+    is_recharging: Bool,
   )
 }
 
@@ -111,6 +126,14 @@ pub fn init(wrapper) -> #(Model(tiramisu_msg), effect.Effect(Msg)) {
       is_paused: False,
       resuming: False,
       resume_retry_count: 0,
+      casting_spell_indices: [],
+      casting_highlight_timer: 0.0,
+      spells_per_cast: 1,
+      cast_delay: 0.2,
+      recharge_time: 0.5,
+      time_since_last_cast: 0.0,
+      current_spell_index: 0,
+      is_recharging: False,
     ),
     effect.batch([
       tiramisu_ui.register_lustre(),
@@ -145,6 +168,12 @@ pub fn update(
         option.None -> #(state.wand_slots, state.spell_bag)
       }
 
+      // Update casting highlight: set timer to 300ms if new indices, otherwise keep current
+      let #(casting_indices, timer) = case state.casting_spell_indices {
+        [] -> #(model.casting_spell_indices, model.casting_highlight_timer)
+        _ -> #(state.casting_spell_indices, 300.0)
+      }
+
       #(
         Model(
           ..model,
@@ -160,6 +189,14 @@ pub fn update(
           player_xp_to_next_level: state.player_xp_to_next_level,
           player_level: state.player_level,
           score: state.score,
+          casting_spell_indices: casting_indices,
+          casting_highlight_timer: timer,
+          spells_per_cast: state.spells_per_cast,
+          cast_delay: state.cast_delay,
+          recharge_time: state.recharge_time,
+          time_since_last_cast: state.time_since_last_cast,
+          current_spell_index: state.current_spell_index,
+          is_recharging: state.is_recharging,
         ),
         effect.none(),
       )
@@ -330,6 +367,7 @@ pub fn update(
       let spell_name = case selected_spell {
         spell.DamageSpell(dmg) -> dmg.name
         spell.ModifierSpell(mod) -> mod.name
+        spell.MulticastSpell(multicast) -> multicast.name
       }
       io.println("UI: Clicked spell: " <> spell_name)
 
@@ -624,8 +662,24 @@ fn view_playing(model: Model(tiramisu_msg)) -> element.Element(Msg) {
               html.span([attribute.class("text-white font-bold")], [
                 html.text("WAND"),
               ]),
+              html.span([attribute.class("text-purple-400 text-sm ml-2")], [
+                html.text("Draw: " <> int.to_string(model.spells_per_cast)),
+              ]),
             ]),
-            render_wand_slots(model.wand_slots, model.drag_state),
+            // Cast delay bar
+            render_cast_delay_bar(
+              model.time_since_last_cast,
+              model.cast_delay,
+              model.recharge_time,
+              model.current_spell_index,
+              iv.length(model.wand_slots),
+              model.is_recharging,
+            ),
+            render_wand_slots(
+              model.wand_slots,
+              model.drag_state,
+              model.casting_spell_indices,
+            ),
           ]),
           html.div([attribute.class("mb-4")], [
             html.div([attribute.class("flex items-center gap-2 mb-2")], [
@@ -783,7 +837,11 @@ fn view_spell_rewards_modal(
                     html.text("WAND SLOTS"),
                   ]),
                 ]),
-                render_wand_slots(model.wand_slots, model.drag_state),
+                render_wand_slots(
+                  model.wand_slots,
+                  model.drag_state,
+                  model.casting_spell_indices,
+                ),
               ]),
               // Spell bag section
               html.div([], [
@@ -889,10 +947,12 @@ fn view_pause_menu(resuming: Bool) -> element.Element(Msg) {
 }
 
 fn view_spell_reward_card(reward_spell: spell.Spell) -> element.Element(Msg) {
-  let #(name, icon, description, type_label, type_color) = case reward_spell {
+  let #(name, sprite_path, description, type_label, type_color) = case
+    reward_spell
+  {
     spell.DamageSpell(dmg_spell) -> #(
       dmg_spell.name,
-      spell_icon(dmg_spell),
+      dmg_spell.ui_sprite,
       "Damage: "
         <> float.to_string(float.to_precision(dmg_spell.damage, 1))
         <> " | Speed: "
@@ -949,10 +1009,23 @@ fn view_spell_reward_card(reward_spell: spell.Spell) -> element.Element(Msg) {
 
       #(
         mod_spell.name,
-        "✨",
+        mod_spell.ui_sprite,
         description,
         "MODIFIER",
         "bg-green-600 border-green-400",
+      )
+    }
+    spell.MulticastSpell(multicast_spell) -> {
+      let description = case multicast_spell.spell_count {
+        spell.Fixed(n) -> "Casts " <> int.to_string(n) <> " spells at once"
+        spell.AllRemaining -> "Casts all remaining spells"
+      }
+      #(
+        multicast_spell.name,
+        multicast_spell.ui_sprite,
+        description,
+        "MULTICAST",
+        "bg-purple-600 border-purple-400",
       )
     }
   }
@@ -975,8 +1048,17 @@ fn view_spell_reward_card(reward_spell: spell.Spell) -> element.Element(Msg) {
         ],
         [html.text(type_label)],
       ),
-      // Icon
-      html.div([attribute.class("text-6xl mb-3")], [html.text(icon)]),
+      // Sprite image
+      html.div(
+        [attribute.class("w-16 h-16 mb-3 flex items-center justify-center")],
+        [
+          html.img([
+            attribute.src(sprite_path),
+            attribute.class("w-full h-full object-contain"),
+            attribute.style("image-rendering", "pixelated"),
+          ]),
+        ],
+      ),
       // Name
       html.div(
         [attribute.class("text-xl font-bold text-white mb-2 text-center")],
@@ -1169,12 +1251,13 @@ fn render_xp_bar(current current: Float, max max: Float) -> element.Element(Msg)
 fn render_wand_slots(
   slots: iv.Array(option.Option(spell.Spell)),
   drag_state: ensaimada.DragState,
+  casting_indices: List(Int),
 ) -> element.Element(Msg) {
   let sortable_items =
     slots
     |> iv.to_list()
     |> list.index_map(fn(slot, index) {
-      ensaimada.item("wand-" <> int.to_string(index), slot)
+      ensaimada.item("wand-" <> int.to_string(index), #(slot, index))
     })
 
   let config =
@@ -1194,49 +1277,54 @@ fn render_wand_slots(
       config,
       drag_state,
       sortable_items,
-      render_wand_slot_item,
+      fn(item, idx, drag_state) {
+        render_wand_slot_item(item, idx, drag_state, casting_indices)
+      },
     ),
     WandSortableMsg,
   )
 }
 
 fn render_wand_slot_item(
-  item: ensaimada.Item(option.Option(spell.Spell)),
+  item: ensaimada.Item(#(option.Option(spell.Spell), Int)),
   _index: Int,
   _drag_state: ensaimada.DragState,
+  casting_indices: List(Int),
 ) -> element.Element(Msg) {
-  let slot = ensaimada.item_data(item)
-  let #(content, bg_class, border_class, text_class) = case slot {
-    option.Some(spell.DamageSpell(damage_spell)) -> #(
-      spell_icon(damage_spell),
-      "bg-red-600",
-      "border-red-400",
-      "text-white",
-    )
-    option.Some(spell.ModifierSpell(_)) -> #(
-      "✨",
-      "bg-green-600",
-      "border-green-400",
-      "text-white",
-    )
-    option.None -> #("", "bg-gray-800", "border-gray-600", "text-gray-500")
+  let #(slot, slot_index) = ensaimada.item_data(item)
+  let is_casting = list.contains(casting_indices, slot_index)
+
+  let #(content_element) = case slot {
+    option.Some(spell_item) -> {
+      let sprite_path = spell_ui_sprite(spell_item)
+      #(
+        html.img([
+          attribute.src(sprite_path),
+          attribute.class("w-full h-full object-contain"),
+          attribute.style("image-rendering", "pixelated"),
+        ]),
+      )
+    }
+    option.None -> #(html.div([], []))
+  }
+
+  let border_class = case is_casting {
+    True ->
+      "border-4 border-yellow-400 animate-pulse shadow-[0_0_10px_rgba(250,204,21,0.8)]"
+    False -> "border-2"
   }
 
   html.div(
     [
       attribute.class(
         "w-12 h-12 "
-        <> bg_class
-        <> " border-2 "
         <> border_class
-        <> " flex items-center justify-center text-xl font-bold "
-        <> text_class
-        <> " shadow-lg relative transition-all hover:scale-110 cursor-move pointer-events-auto",
+        <> " flex items-center justify-center shadow-lg relative transition-all hover:scale-110 cursor-move pointer-events-auto",
       ),
       attribute.style("image-rendering", "pixelated"),
     ],
     [
-      html.text(content),
+      content_element,
       // Inner shadow effect
       html.div(
         [
@@ -1290,13 +1378,11 @@ fn render_spell_bag_item(
   _drag_state: ensaimada.DragState,
 ) -> element.Element(Msg) {
   let #(spell_item, count) = ensaimada.item_data(item)
-  let #(icon, bg_class, border_class) = case spell_item {
-    spell.DamageSpell(damage_spell) -> #(
-      spell_icon(damage_spell),
-      "bg-red-600",
-      "border-red-400",
-    )
-    spell.ModifierSpell(_) -> #("✨", "bg-green-600", "border-green-400")
+  let sprite_path = spell_ui_sprite(spell_item)
+  let #(bg_class, border_class) = case spell_item {
+    spell.DamageSpell(_) -> #("bg-red-600", "border-red-400")
+    spell.ModifierSpell(_) -> #("bg-green-600", "border-green-400")
+    spell.MulticastSpell(_) -> #("bg-purple-600", "border-purple-400")
   }
 
   html.div(
@@ -1306,12 +1392,16 @@ fn render_spell_bag_item(
         <> bg_class
         <> " border-2 "
         <> border_class
-        <> " flex items-center justify-center text-xl font-bold text-white shadow-lg transition-all hover:scale-110 cursor-move pointer-events-auto",
+        <> " flex items-center justify-center shadow-lg transition-all hover:scale-110 cursor-move pointer-events-auto",
       ),
       attribute.style("image-rendering", "pixelated"),
     ],
     [
-      html.text(icon),
+      html.img([
+        attribute.src(sprite_path),
+        attribute.class("w-full h-full object-contain p-1"),
+        attribute.style("image-rendering", "pixelated"),
+      ]),
       // Count badge
       case count > 1 {
         True ->
@@ -1329,11 +1419,11 @@ fn render_spell_bag_item(
   )
 }
 
-fn spell_icon(spell: spell.DamageSpell) -> String {
-  case spell.damage {
-    d if d >=. 100.0 -> "🔥"
-    d if d >=. 50.0 -> "⚡"
-    _ -> "✦"
+fn spell_ui_sprite(spell_item: spell.Spell) -> String {
+  case spell_item {
+    spell.DamageSpell(damage_spell) -> damage_spell.ui_sprite
+    spell.ModifierSpell(modifier_spell) -> modifier_spell.ui_sprite
+    spell.MulticastSpell(multicast_spell) -> multicast_spell.ui_sprite
   }
 }
 
@@ -1341,6 +1431,104 @@ fn float_to_string_rounded(value: Float) -> String {
   value
   |> float.round()
   |> int.to_string()
+}
+
+fn render_cast_delay_bar(
+  time_since_last_cast: Float,
+  cast_delay: Float,
+  recharge_time: Float,
+  current_spell_index: Int,
+  wand_slot_count: Int,
+  is_recharging: Bool,
+) -> element.Element(Msg) {
+  // Determine if we're ready to cast or still waiting
+  let is_ready = time_since_last_cast >=. cast_delay
+
+  // Calculate wait time based on phase
+  let max_delay = float.max(cast_delay, recharge_time)
+
+  // Calculate progress based on which phase we're in
+  let #(_progress, percentage) = case is_recharging, is_ready {
+    True, _ -> {
+      // During recharge (wand reload): show single bar from start to ready
+      // Timer goes from (cast_delay - max_delay) to cast_delay
+      // Progress goes from 0% to 100% over max_delay duration
+      let start_time = cast_delay -. max_delay
+      let prog = case max_delay >. 0.0 {
+        True -> {
+          let elapsed = time_since_last_cast -. start_time
+          float.max(0.0, float.min(1.0, elapsed /. max_delay))
+        }
+        False -> 1.0
+      }
+      #(prog, prog *. 100.0)
+    }
+    False, True -> {
+      // Ready to cast
+      #(1.0, 100.0)
+    }
+    False, False -> {
+      // During normal cast delay: progress from 0 to cast_delay
+      let prog = float.min(1.0, time_since_last_cast /. cast_delay)
+      #(prog, prog *. 100.0)
+    }
+  }
+
+  let bar_color = case is_recharging, is_ready {
+    True, _ -> "bg-red-500"
+    False, True -> "bg-green-500"
+    False, False -> "bg-yellow-500"
+  }
+
+  // Check if next cast will wrap
+  let will_wrap = current_spell_index >= wand_slot_count && wand_slot_count > 0
+  let wrapped_index = case wand_slot_count {
+    0 -> 0
+    _ -> current_spell_index % wand_slot_count
+  }
+
+  html.div([attribute.class("mb-2")], [
+    // Cast delay label and current spell index
+    html.div(
+      [attribute.class("flex justify-between text-xs text-gray-300 mb-1")],
+      [
+        html.span([], [
+          html.text(case is_recharging, is_ready {
+            True, _ -> "Recharging..."
+            False, True -> "Ready to cast!"
+            False, False -> "Cast delay..."
+          }),
+        ]),
+        html.span([attribute.class("flex items-center gap-1")], [
+          html.text("Next: " <> int.to_string(wrapped_index)),
+          case will_wrap {
+            True ->
+              html.span([attribute.class("text-purple-400 font-bold")], [
+                html.text("↻"),
+              ])
+            False -> html.span([], [])
+          },
+        ]),
+      ],
+    ),
+    // Progress bar
+    html.div(
+      [
+        attribute.class(
+          "w-full h-2 bg-gray-700 rounded-full overflow-hidden border border-gray-600",
+        ),
+      ],
+      [
+        html.div(
+          [
+            attribute.class(bar_color <> " h-full"),
+            attribute.style("width", float.to_string(percentage) <> "%"),
+          ],
+          [],
+        ),
+      ],
+    ),
+  ])
 }
 
 pub fn start(wrapper: fn(UiToGameMsg) -> a) -> Nil {
