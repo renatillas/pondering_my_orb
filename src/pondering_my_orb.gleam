@@ -170,9 +170,8 @@ fn generate_spell_rewards(visuals: spell.SpellVisuals) -> List(spell.Spell) {
   // Define a pool of possible spells to choose from
   let possible_spells = [
     // Damage spells
-    spell.spark(visuals),
     spell.fireball(visuals),
-    spell.lightning(visuals),
+    spell.double_spell(),
     // Modifier spells
   ]
 
@@ -630,7 +629,13 @@ fn handle_tick(
     |> player.with_position(player_position)
     |> player.add_xp(collected_xp)
 
-  let #(player, cast_result, death_effect, next_projectile_id) =
+  let #(
+    player,
+    new_projectiles,
+    casting_spell_indices,
+    death_effect,
+    next_projectile_id,
+  ) =
     player.update(
       player,
       nearest_enemy,
@@ -639,11 +644,8 @@ fn handle_tick(
       model.next_projectile_id,
     )
 
-  // Add newly cast projectile
-  let updated_projectiles = case cast_result {
-    Some(projectile) -> [projectile, ..updated_projectiles]
-    None -> updated_projectiles
-  }
+  // Add newly cast projectiles
+  let updated_projectiles = list.append(new_projectiles, updated_projectiles)
 
   let new_score = score.update(player, model.score, scaled_delta)
 
@@ -661,6 +663,13 @@ fn handle_tick(
         player_level: player.level,
         // Score
         score: new_score,
+        casting_spell_indices:,
+        spells_per_cast: player.wand.spells_per_cast,
+        cast_delay: player.wand.cast_delay,
+        recharge_time: player.wand.recharge_time,
+        time_since_last_cast: player.auto_cast.time_since_last_cast,
+        current_spell_index: player.auto_cast.current_spell_index,
+        is_recharging: player.auto_cast.is_recharging,
       )),
     )
 
@@ -977,6 +986,7 @@ fn handle_ui_message(
       let spell_name = case selected_spell {
         spell.DamageSpell(dmg) -> dmg.name
         spell.ModifierSpell(mod) -> mod.name
+        spell.MulticastSpell(multicast) -> multicast.name
       }
       io.println("Selected spell: " <> spell_name)
 
