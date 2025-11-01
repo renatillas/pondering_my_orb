@@ -577,7 +577,7 @@ fn handle_tick(
 
         physics.apply_impulse(pw, hit.enemy_id, total_knockback)
       })
-      |> physics.step()
+      |> physics.step(scaled_delta)
       // After physics step, manually set the player rotation
       |> fn(pw) {
         let player_transform = case physics.get_transform(pw, id.player()) {
