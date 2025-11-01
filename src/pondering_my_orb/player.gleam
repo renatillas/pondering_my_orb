@@ -232,7 +232,7 @@ pub fn init() -> Player {
 
   new(
     health: 100.0,
-    speed: 5.0,
+    speed: 10.0,
     position: Vec3(0.0, 2.0, 0.0),
     rotation: Vec3(0.0, 0.0, 0.0),
     time_since_taking_damage: 0.0,
