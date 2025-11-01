@@ -1031,7 +1031,7 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> scene.Node(Id) {
     return: scene.empty(id.scene(), transform.identity, []),
   )
 
-  let camera = camera.view(model.camera, model.player)
+  let camera = camera.view(model.camera)
 
   let ground = case model.ground {
     Some(ground) -> [map.view_ground(ground, id.ground())]

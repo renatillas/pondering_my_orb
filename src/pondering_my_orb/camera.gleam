@@ -1,5 +1,5 @@
 import gleam/float
-import gleam/option.{None, Some}
+import gleam/option.{None}
 import gleam_community/maths
 import pondering_my_orb/id
 import pondering_my_orb/player
@@ -47,34 +47,18 @@ pub fn update(
   let behind_x = -1.0 *. maths.sin(player.rotation.y) *. horizontal_distance
   let behind_z = -1.0 *. maths.cos(player.rotation.y) *. horizontal_distance
 
-  let target_camera_position =
+  // Position camera directly behind player (no smoothing for responsive feel)
+  let camera_position =
     Vec3(
       player.position.x +. behind_x,
       player.position.y +. camera.height +. vertical_offset,
       player.position.z +. behind_z,
     )
 
-  // Lerp camera position towards target (smooth follow)
-  let lerp_speed = 25.0
-  let lerp_factor = float.min(1.0, lerp_speed *. delta_time /. 1000.0)
-
-  let new_position =
-    Vec3(
-      camera.position.x
-        +. { target_camera_position.x -. camera.position.x }
-        *. lerp_factor,
-      camera.position.y
-        +. { target_camera_position.y -. camera.position.y }
-        *. lerp_factor,
-      camera.position.z
-        +. { target_camera_position.z -. camera.position.z }
-        *. lerp_factor,
-    )
-
-  // Calculate camera rotation quaternion by looking at the player
+  // Calculate camera rotation by looking at the player (no smoothing)
   let look_at_target =
     Vec3(player.position.x, player.position.y +. 1.0, player.position.z)
-  let from_transform = transform.at(position: new_position)
+  let from_transform = transform.at(position: camera_position)
   let to_transform = transform.at(position: look_at_target)
   let look_at_transform =
     transform.look_at(from: from_transform, to: to_transform, up: option.None)
@@ -83,17 +67,15 @@ pub fn update(
   Camera(
     ..camera,
     shake_time:,
-    position: new_position,
+    position: camera_position,
     rotation:,
     pitch: new_pitch,
   )
 }
 
-pub fn view(camera: Camera, player: player.Player) {
+pub fn view(camera: Camera) {
   let assert Ok(cam) =
     camera.perspective(field_of_view: 75.0, near: 0.1, far: 1000.0)
-
-  let Vec3(player_x, player_y, player_z) = player.position
 
   // Use the smoothed camera position from model
   let base_camera_position = camera.position
@@ -118,13 +100,17 @@ pub fn view(camera: Camera, player: player.Player) {
     False -> base_camera_position
   }
 
-  let look_at_target = Vec3(player_x, player_y +. 1.0, player_z)
-  let camera =
+  // Use the smoothed rotation from camera model instead of recalculating look-at
+  let camera_transform =
+    transform.at(position: camera_position)
+    |> transform.with_quaternion_rotation(camera.rotation)
+
+  let camera_node =
     scene.camera(
       id: id.camera(),
       camera: cam,
-      transform: transform.at(position: camera_position),
-      look_at: Some(look_at_target),
+      transform: camera_transform,
+      look_at: option.None,
       active: True,
       viewport: None,
       postprocessing: option.Some(
@@ -147,5 +133,5 @@ pub fn view(camera: Camera, player: player.Player) {
         |> postprocessing.add_pass(postprocessing.output_pass()),
       ),
     )
-  camera
+  camera_node
 }
