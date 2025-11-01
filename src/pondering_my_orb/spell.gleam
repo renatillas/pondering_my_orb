@@ -1,5 +1,6 @@
 import gleam/list
 import gleam/option
+import gleam/result
 import gleam_community/maths
 import iv
 import pondering_my_orb/enemy.{type Enemy}
@@ -42,6 +43,14 @@ pub type SpellVisuals {
   )
 }
 
+/// Composable effects that spells can apply on hit
+pub type SpellEffect {
+  /// Damages all enemies within radius of impact
+  AreaOfEffect(radius: Float)
+  /// Applies burning status effect to hit enemies
+  ApplyBurning(duration: Float, damage_per_second: Float)
+}
+
 pub type DamageSpell {
   Damage(
     name: String,
@@ -52,6 +61,7 @@ pub type DamageSpell {
     projectile_size: Float,
     visuals: SpellVisuals,
     ui_sprite: String,
+    on_hit_effects: List(SpellEffect),
   )
 }
 
@@ -106,6 +116,7 @@ pub fn damaging_spell(
   projectile_size projectile_size: Float,
   visuals visuals: SpellVisuals,
   ui_sprite ui_sprite: String,
+  on_hit_effects on_hit_effects: List(SpellEffect),
 ) -> Spell {
   DamageSpell(Damage(
     name:,
@@ -116,6 +127,7 @@ pub fn damaging_spell(
     projectile_size:,
     visuals:,
     ui_sprite:,
+    on_hit_effects:,
   ))
 }
 
@@ -212,20 +224,7 @@ pub fn spark(visuals: SpellVisuals) -> Spell {
     projectile_size: 1.0,
     visuals:,
     ui_sprite: "spells/spark.png",
-  )
-}
-
-/// Powerful projectile spell
-pub fn fireball(visuals: SpellVisuals) -> Spell {
-  damaging_spell(
-    name: "Fireball",
-    damage: 1.0,
-    projectile_speed: 15.0,
-    projectile_lifetime: 3.0,
-    mana_cost: 10.0,
-    projectile_size: 5.0,
-    visuals:,
-    ui_sprite: "spells/fireball.png",
+    on_hit_effects: [],
   )
 }
 
@@ -234,12 +233,31 @@ pub fn lightning(visuals: SpellVisuals) -> Spell {
   damaging_spell(
     name: "Lightning Bolt",
     damage: 100.0,
-    projectile_speed: 30.0,
+    projectile_speed: 100.0,
     projectile_lifetime: 1.0,
     mana_cost: 35.0,
     projectile_size: 0.2,
     visuals:,
-    ui_sprite: "spells/lightning.png",
+    ui_sprite: "spells/lightning_bolt.png",
+    on_hit_effects: [],
+  )
+}
+
+/// Firebolt - Explodes on impact, damaging enemies in an area and setting them on fire
+pub fn fireball(visuals: SpellVisuals) -> Spell {
+  damaging_spell(
+    name: "Firebolt",
+    damage: 5.0,
+    projectile_speed: 20.0,
+    projectile_lifetime: 2.5,
+    mana_cost: 15.0,
+    projectile_size: 2.0,
+    visuals:,
+    ui_sprite: "spells/fireball.png",
+    on_hit_effects: [
+      AreaOfEffect(radius: 5.0),
+      ApplyBurning(duration: 3.0, damage_per_second: 2.0),
+    ],
   )
 }
 
@@ -309,14 +327,36 @@ pub type ProjectileHit(id) {
     animation_state: spritesheet.AnimationState,
     spritesheet: spritesheet.Spritesheet,
     animation: spritesheet.Animation,
+    // Effects to apply to the hit enemy
+    spell_effects: List(SpellEffect),
   )
+}
+
+/// Helper to get the base damage spell from a modified spell
+fn get_base_damage_spell(modified: ModifiedSpell) -> DamageSpell {
+  case modified.base {
+    DamageSpell(damage_spell) -> damage_spell
+    _ -> panic as "Expected DamageSpell"
+  }
+}
+
+/// Convert spell effects to enemy applied effects (avoids circular dependency)
+pub fn spell_effects_to_applied(
+  effects: List(SpellEffect),
+) -> List(enemy.AppliedSpellEffect) {
+  list.map(effects, fn(effect) {
+    case effect {
+      AreaOfEffect(radius) -> enemy.AppliedAreaOfEffect(radius)
+      ApplyBurning(duration, dps) -> enemy.AppliedBurning(duration, dps)
+    }
+  })
 }
 
 pub fn update(
   projectiles: List(Projectile),
   enemies: List(Enemy(id)),
   delta_time: Float,
-  damage_enemy_msg: fn(id, Float, Vec3(Float)) -> msg,
+  damage_enemy_msg: fn(id, Float, Vec3(Float), List(SpellEffect)) -> msg,
 ) -> #(List(Projectile), List(ProjectileHit(id)), effect.Effect(msg)) {
   let updated_projectiles =
     list.map(projectiles, update_position(_, delta_time /. 1000.0))
@@ -337,7 +377,10 @@ pub fn update(
 
         case hit_enemy {
           Ok(enemy) -> {
-            // Projectile hit this enemy - create explosion using projectile's visuals
+            // Projectile hit this enemy
+            let base_spell = get_base_damage_spell(projectile.spell)
+
+            // Create explosion using projectile's visuals
             let hit =
               ProjectileHit(
                 id: projectile.id,
@@ -349,6 +392,7 @@ pub fn update(
                 animation_state: spritesheet.initial_state("hit"),
                 spritesheet: projectile.visuals.hit_spritesheet,
                 animation: projectile.visuals.hit_animation,
+                spell_effects: base_spell.on_hit_effects,
               )
             #([hit, ..hits], remaining)
           }
@@ -372,12 +416,56 @@ pub fn update(
       }
     })
 
-  // Create effects for each hit enemy
+  // Create effects for each hit
+  // For AOE spells, we need to damage all enemies in radius
   let effects =
-    list.map(hits, fn(hit) {
-      effect.from(fn(dispatch) {
-        dispatch(damage_enemy_msg(hit.enemy_id, hit.damage, hit.direction))
-      })
+    list.flat_map(hits, fn(hit) {
+      // Get AOE radius if any
+      let aoe_radius =
+        list.find_map(hit.spell_effects, fn(effect) {
+          case effect {
+            AreaOfEffect(radius) -> Ok(radius)
+            _ -> Error(Nil)
+          }
+        })
+        |> result.unwrap(0.0)
+
+      // Find all enemies in AOE range
+      case aoe_radius >. 0.0 {
+        True -> {
+          // Damage all enemies within AOE radius
+          list.filter_map(enemies, fn(enemy) {
+            let distance = vec3f.distance(hit.position, enemy.position)
+            case distance <=. aoe_radius {
+              True ->
+                Ok(
+                  effect.from(fn(dispatch) {
+                    dispatch(damage_enemy_msg(
+                      enemy.id,
+                      hit.damage,
+                      hit.direction,
+                      hit.spell_effects,
+                    ))
+                  }),
+                )
+              False -> Error(Nil)
+            }
+          })
+        }
+        False -> {
+          // Single target - only damage the hit enemy
+          [
+            effect.from(fn(dispatch) {
+              dispatch(damage_enemy_msg(
+                hit.enemy_id,
+                hit.damage,
+                hit.direction,
+                hit.spell_effects,
+              ))
+            }),
+          ]
+        }
+      }
     })
 
   #(final_projectiles, hits, effect.batch(effects))

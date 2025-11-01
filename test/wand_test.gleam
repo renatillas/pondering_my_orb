@@ -43,6 +43,7 @@ pub fn single_spell_wand_wraps_test() {
       projectile_size: 1.0,
       visuals: test_visuals(),
       ui_sprite: "test.png",
+      on_hit_effects: [],
     )
   let assert Ok(test_wand) = wand.set_spell(test_wand, 0, test_spell)
 
@@ -99,6 +100,7 @@ pub fn multi_spell_wand_no_wrap_test() {
       projectile_size: 1.0,
       visuals: test_visuals(),
       ui_sprite: "test.png",
+      on_hit_effects: [],
     )
   let assert Ok(test_wand) = wand.set_spell(test_wand, 0, test_spell)
   let assert Ok(test_wand) = wand.set_spell(test_wand, 1, test_spell)
@@ -183,6 +185,7 @@ pub fn wand_with_empty_slots_test() {
       projectile_size: 1.0,
       visuals: test_visuals(),
       ui_sprite: "test.png",
+      on_hit_effects: [],
     )
   let assert Ok(test_wand) = wand.set_spell(test_wand, 0, test_spell)
 
@@ -225,6 +228,7 @@ pub fn double_spell_multicast_test() {
       projectile_size: 1.0,
       visuals: visuals,
       ui_sprite: "fireball.png",
+      on_hit_effects: [],
     )
   let spark =
     spell.damaging_spell(
@@ -236,6 +240,7 @@ pub fn double_spell_multicast_test() {
       projectile_size: 1.0,
       visuals: visuals,
       ui_sprite: "spark.png",
+      on_hit_effects: [],
     )
   let lightning =
     spell.damaging_spell(
@@ -247,6 +252,7 @@ pub fn double_spell_multicast_test() {
       projectile_size: 0.2,
       visuals: visuals,
       ui_sprite: "lightning.png",
+      on_hit_effects: [],
     )
 
   let assert Ok(test_wand) = wand.set_spell(test_wand, 0, double)
@@ -332,6 +338,7 @@ pub fn modifier_accumulation_test() {
       projectile_size: 1.0,
       visuals: visuals,
       ui_sprite: "fireball.png",
+      on_hit_effects: [],
     )
 
   let assert Ok(test_wand) = wand.set_spell(test_wand, 0, damage_mod)
