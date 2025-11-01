@@ -1,3 +1,5 @@
+import gleam/float
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam_community/maths
@@ -20,11 +22,16 @@ pub type EnemyType {
   EnemyType2
 }
 
+/// Status effects that can be applied to enemies
+pub type StatusEffect {
+  Burning(duration_remaining: Float, damage_per_second: Float)
+}
+
 pub type Enemy(id) {
   Enemy(
     id: id,
-    max_health: Int,
-    current_health: Int,
+    max_health: Float,
+    current_health: Float,
     damage: Float,
     damage_range: Float,
     attack_cooldown: Float,
@@ -39,12 +46,14 @@ pub type Enemy(id) {
     spritesheet: Option(spritesheet.Spritesheet),
     animation: Option(spritesheet.Animation),
     animation_state: spritesheet.AnimationState,
+    // Status effects
+    status_effects: List(StatusEffect),
   )
 }
 
 pub fn new(
   id id: id,
-  health health: Int,
+  health health: Float,
   damage damage: Float,
   damage_range damage_range: Float,
   attack_cooldown attack_cooldown: Float,
@@ -83,6 +92,7 @@ pub fn new(
     spritesheet: None,
     animation: None,
     animation_state: spritesheet.initial_state("idle"),
+    status_effects: [],
   )
 }
 
@@ -95,7 +105,10 @@ pub fn render(enemy: Enemy(Id), camera_position: Vec3(Float)) -> scene.Node(Id) 
 
   // Create health bar picture
   let health_bar_picture =
-    health_bar.create(enemy.current_health, enemy.max_health)
+    health_bar.create(
+      float.round(enemy.current_health),
+      float.round(enemy.max_health),
+    )
 
   // Calculate billboard rotation to face camera (for health bar)
   let health_bar_position =
@@ -195,7 +208,7 @@ pub fn basic(
 ) {
   new(
     id:,
-    health: 20,
+    health: 10.0,
     damage: 00.0,
     damage_range: 1.0,
     attack_cooldown: 1.0,
@@ -328,4 +341,72 @@ pub fn after_physics_update(
     |> result.map(transform.position)
     |> result.unwrap(or: enemy.position)
   Enemy(..enemy, position: new_position)
+}
+
+/// Apply a status effect to an enemy
+pub fn apply_status_effect(enemy: Enemy(id), effect: StatusEffect) -> Enemy(id) {
+  Enemy(..enemy, status_effects: [effect, ..enemy.status_effects])
+}
+
+/// Update all status effects and apply their damage over time
+pub fn update_status_effects(enemy: Enemy(id), delta_time: Float) -> Enemy(id) {
+  // Update each status effect
+  let #(updated_effects, total_damage) =
+    list.fold(enemy.status_effects, #([], 0.0), fn(acc, effect) {
+      let #(effects, damage) = acc
+      case effect {
+        Burning(duration, dps) -> {
+          let new_duration = duration -. delta_time
+          let tick_damage = dps *. delta_time
+          case new_duration >. 0.0 {
+            True -> #(
+              [Burning(new_duration, dps), ..effects],
+              damage +. tick_damage,
+            )
+            False -> #(effects, damage +. tick_damage)
+          }
+        }
+      }
+    })
+
+  // Apply accumulated damage and update effects
+  let new_health = float.max(enemy.current_health -. total_damage, 0.0)
+
+  Enemy(..enemy, current_health: new_health, status_effects: updated_effects)
+}
+
+/// Check if an enemy is currently burning
+pub fn is_burning(enemy: Enemy(id)) -> Bool {
+  list.any(enemy.status_effects, fn(effect) {
+    case effect {
+      Burning(_, _) -> True
+    }
+  })
+}
+
+/// Apply spell effects to an enemy (used when spells hit)
+/// This needs to be imported from spell module, but we can't due to circular dependency
+/// So we'll define a matching type here
+pub type AppliedSpellEffect {
+  AppliedAreaOfEffect(radius: Float)
+  AppliedBurning(duration: Float, damage_per_second: Float)
+}
+
+pub fn apply_spell_effects(
+  enemy: Enemy(id),
+  effects: List(AppliedSpellEffect),
+) -> Enemy(id) {
+  list.fold(effects, enemy, fn(acc_enemy, effect) {
+    case effect {
+      AppliedAreaOfEffect(_) -> acc_enemy
+      // AOE is handled in spell collision logic
+      AppliedBurning(duration, dps) -> {
+        // Only apply burning if not already burning (don't stack)
+        case is_burning(acc_enemy) {
+          True -> acc_enemy
+          False -> apply_status_effect(acc_enemy, Burning(duration, dps))
+        }
+      }
+    }
+  })
 }

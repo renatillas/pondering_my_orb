@@ -102,7 +102,7 @@ pub type Msg {
   EnemySpawnIntervalDecreased
   EnemyAttacksPlayer(damage: Float, enemy_position: Vec3(Float))
   // Projectiles
-  ProjectileDamagedEnemy(Id, Float, Vec3(Float))
+  ProjectileDamagedEnemy(Id, Float, Vec3(Float), List(spell.SpellEffect))
   EnemyKilled(Id)
   // XP & Leveling
   PlayerLeveledUp(new_level: Int)
@@ -179,6 +179,7 @@ fn generate_spell_rewards(visuals: spell.SpellVisuals) -> List(spell.Spell) {
   let possible_spells = [
     // Damage spells
     spell.fireball(visuals),
+    spell.lightning(visuals),
     spell.double_spell(),
     // Modifier spells
   ]
@@ -407,19 +408,24 @@ fn update(
         Some(physics_world),
       )
     }
-    ProjectileDamagedEnemy(enemy_id, damage, _knockback_direction) -> {
+    ProjectileDamagedEnemy(
+      enemy_id,
+      damage,
+      _knockback_direction,
+      spell_effects,
+    ) -> {
       // Knockback is now applied during Tick, so just handle damage here
+      let applied_effects = spell.spell_effects_to_applied(spell_effects)
+
       let enemy =
         list.find(model.enemies, fn(enemy) { enemy.id == enemy_id })
         |> result.map(fn(enemy) {
-          enemy.Enemy(
-            ..enemy,
-            current_health: enemy.current_health - float.round(damage),
-          )
+          enemy.Enemy(..enemy, current_health: enemy.current_health -. damage)
+          |> enemy.apply_spell_effects(applied_effects)
         })
 
       case enemy {
-        Ok(killed_enemy) if killed_enemy.current_health <= 0 -> #(
+        Ok(killed_enemy) if killed_enemy.current_health <=. 0.0 -> #(
           model,
           effect.from(fn(dispatch) { dispatch(EnemyKilled(killed_enemy.id)) }),
           ctx.physics_world,
@@ -573,6 +579,9 @@ fn handle_tick(
         )
       // Update enemy animations
       let updated_enemy = enemy.update_animation(updated_enemy, scaled_delta)
+      // Update status effects (burning, etc.)
+      let updated_enemy =
+        enemy.update_status_effects(updated_enemy, scaled_delta /. 1000.0)
       #(updated_enemy, effects)
     })
     |> list.unzip()
