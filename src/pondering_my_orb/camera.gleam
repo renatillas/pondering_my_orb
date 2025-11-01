@@ -73,7 +73,7 @@ pub fn update(
   )
 }
 
-pub fn view(camera: Camera, _player: player.Player) {
+pub fn view(camera: Camera) {
   let assert Ok(cam) =
     camera.perspective(field_of_view: 75.0, near: 0.1, far: 1000.0)
 
