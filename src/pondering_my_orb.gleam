@@ -127,7 +127,7 @@ pub fn main() -> Nil {
 
 fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), Option(_)) {
   let physics_world =
-    physics.new_world(physics.WorldConfig(gravity: Vec3(0.0, -9.81, 0.0)))
+    physics.new_world(physics.WorldConfig(gravity: Vec3(0.0, -20.0, 0.0)))
 
   let player_bindings = player.default_bindings()
 
