@@ -1109,6 +1109,13 @@ fn handle_ui_message(
       // Pointer lock is requested by the UI, not here
       #(Model(..model, is_paused: False), effect.none(), ctx.physics_world)
     }
+    ui.UpdateCameraDistance(distance) -> {
+      #(
+        Model(..model, camera: camera.Camera(..model.camera, distance:)),
+        effect.none(),
+        ctx.physics_world,
+      )
+    }
   }
 }
 
