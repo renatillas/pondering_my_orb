@@ -292,6 +292,7 @@ pub fn load_assets(cache: asset.AssetCache) -> AssetBundle {
     |> dict.insert(spell.Fireball, fireball_visuals)
     |> dict.insert(spell.Spark, spark_visuals)
     |> dict.insert(spell.LightningBolt, lightning_bolt_visuals)
+    |> dict.insert(spell.OrbitingSpell, spark_visuals)
 
   AssetBundle(
     ground: ground,

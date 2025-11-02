@@ -55,6 +55,8 @@ pub fn double_spell_casts_two_spells_test() {
       Vec3(1.0, 0.0, 0.0),
       0,
       option.None,
+      option.None,
+      [],
     )
 
   case result {
@@ -112,6 +114,8 @@ pub fn double_spell_with_one_spell_test() {
       Vec3(1.0, 0.0, 0.0),
       0,
       option.None,
+      option.None,
+      [],
     )
 
   case result {
@@ -168,6 +172,8 @@ pub fn double_spell_wrapping_test() {
       Vec3(1.0, 0.0, 0.0),
       0,
       option.None,
+      option.None,
+      [],
     )
 
   case result {
@@ -238,6 +244,8 @@ pub fn multiple_double_spells_test() {
       Vec3(1.0, 0.0, 0.0),
       0,
       option.None,
+      option.None,
+      [],
     )
 
   case result {
@@ -297,6 +305,8 @@ pub fn double_spell_with_empty_slot_test() {
       Vec3(1.0, 0.0, 0.0),
       0,
       option.None,
+      option.None,
+      [],
     )
 
   case result {
@@ -353,6 +363,8 @@ pub fn double_spell_with_modifier_test() {
       Vec3(1.0, 0.0, 0.0),
       0,
       option.None,
+      option.None,
+      [],
     )
 
   case result {
@@ -418,6 +430,8 @@ pub fn double_spell_wrapping_partial_test() {
       Vec3(1.0, 0.0, 0.0),
       0,
       option.None,
+      option.None,
+      [],
     )
 
   case result {

@@ -1,4 +1,6 @@
 import gleam/float
+import gleam/int
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam_community/maths
@@ -124,6 +126,8 @@ pub fn cast(
   direction: Vec3(Float),
   projectile_starting_index: Int,
   target_position: option.Option(Vec3(Float)),
+  player_center: option.Option(Vec3(Float)),
+  existing_projectiles: List(spell.Projectile),
 ) -> #(CastResult, Wand) {
   case start_index >= iv.length(wand.slots) {
     True -> #(WandEmpty, wand)
@@ -142,11 +146,28 @@ pub fn cast(
         direction,
         projectile_starting_index,
         target_position,
+        player_center,
+        existing_projectiles,
         False,
         start_index,
       )
     }
   }
+}
+
+/// Maximum number of orbiting projectiles allowed at once
+const max_orbiting_projectiles = 8
+
+/// Count existing orbiting projectiles
+fn count_orbiting_projectiles(projectiles: List(spell.Projectile)) -> Int {
+  projectiles
+  |> list.filter(fn(p) {
+    case p.projectile_type {
+      spell.Orbiting(_, _, _, _) -> True
+      _ -> False
+    }
+  })
+  |> list.length
 }
 
 /// Process spells with the draw system
@@ -164,6 +185,8 @@ fn process_with_draw(
   direction: Vec3(Float),
   projectile_id: Int,
   target_position: option.Option(Vec3(Float)),
+  player_center: option.Option(Vec3(Float)),
+  existing_projectiles: List(spell.Projectile),
   wrapped_during_cast: Bool,
   original_start_index: Int,
 ) -> #(CastResult, Wand) {
@@ -262,6 +285,8 @@ fn process_with_draw(
                     direction,
                     projectile_id,
                     target_position,
+                    player_center,
+                    existing_projectiles,
                     wrapped_flag,
                     original_start_index,
                   )
@@ -287,6 +312,8 @@ fn process_with_draw(
                         direction,
                         projectile_id,
                         target_position,
+                        player_center,
+                        existing_projectiles,
                         wrapped_flag,
                         original_start_index,
                       )
@@ -313,6 +340,8 @@ fn process_with_draw(
                             direction,
                             projectile_id,
                             target_position,
+                            player_center,
+                            existing_projectiles,
                             wrapped_flag,
                             original_start_index,
                           )
@@ -326,79 +355,28 @@ fn process_with_draw(
                       }
                     }
 
-                    spell.DamageSpell(id, damaging) -> {
-                      // Damage spell: create projectile, consume 1 draw
-                      let modified =
-                        spell.apply_modifiers(
-                          id,
-                          damaging,
-                          accumulated_modifiers,
-                        )
-                      let new_mana_used =
-                        total_mana_used +. modified.total_mana_cost
-
-                      // Accumulate cast delay from this spell
-                      let new_cast_delay_addition =
-                        total_cast_delay_addition +. modified.final_cast_delay
-
-                      // Check mana
-                      case wand.current_mana >=. new_mana_used {
-                        True -> {
-                          // Apply spread to direction (combine wand spread and spell spread)
-                          let total_spread =
-                            wand.spread +. modified.final_spread
-                          let spread_direction =
-                            apply_spread(direction, total_spread)
-
-                          // Determine projectile type based on spell
-                          let projectile_type = case
-                            damaging.is_beam,
-                            target_position
-                          {
-                            True, option.Some(target) -> spell.Beam(target)
-                            _, _ -> spell.Standard
-                          }
-
-                          let projectile =
-                            spell.Projectile(
-                              id: projectile_id,
-                              spell: modified,
-                              position: position,
-                              direction: spread_direction,
-                              time_alive: 0.0,
-                              animation_state: spritesheet.initial_state(
-                                "projectile",
-                              ),
-                              visuals: damaging.visuals,
-                              projectile_type: projectile_type,
-                            )
-
-                          process_with_draw(
-                            wand,
-                            current_index + 1,
-                            remaining_draw - 1,
-                            accumulated_modifiers,
-                            [projectile, ..projectiles],
-                            [wrapped_index, ..casting_indices],
-                            new_mana_used,
-                            new_cast_delay_addition,
-                            position,
-                            direction,
-                            projectile_id + 1,
-                            target_position,
-                            wrapped_flag,
-                            original_start_index,
-                          )
-                        }
-                        False -> #(
-                          NotEnoughMana(
-                            required: new_mana_used,
-                            available: wand.current_mana,
-                          ),
-                          wand,
-                        )
-                      }
-                    }
+                    spell.DamageSpell(id, damaging) ->
+                      process_damage_spell(
+                        wand,
+                        id,
+                        damaging,
+                        current_index,
+                        wrapped_index,
+                        remaining_draw,
+                        accumulated_modifiers,
+                        projectiles,
+                        casting_indices,
+                        total_mana_used,
+                        total_cast_delay_addition,
+                        position,
+                        direction,
+                        projectile_id,
+                        target_position,
+                        player_center,
+                        existing_projectiles,
+                        wrapped_flag,
+                        original_start_index,
+                      )
                   }
                 }
               }
@@ -407,6 +385,195 @@ fn process_with_draw(
         }
       }
     }
+  }
+}
+
+/// Process a damage spell (handles both orbiting and standard projectiles)
+fn process_damage_spell(
+  wand: Wand,
+  id: spell.Id,
+  damaging: spell.DamageSpell,
+  current_index: Int,
+  wrapped_index: Int,
+  remaining_draw: Int,
+  accumulated_modifiers: iv.Array(spell.ModifierSpell),
+  projectiles: List(spell.Projectile),
+  casting_indices: List(Int),
+  total_mana_used: Float,
+  total_cast_delay_addition: Float,
+  position: Vec3(Float),
+  direction: Vec3(Float),
+  projectile_id: Int,
+  target_position: option.Option(Vec3(Float)),
+  player_center: option.Option(Vec3(Float)),
+  existing_projectiles: List(spell.Projectile),
+  wrapped_during_cast: Bool,
+  original_start_index: Int,
+) -> #(CastResult, Wand) {
+  // Check if orbiting spell at limit - skip if so
+  case id, is_orbiting_at_limit(existing_projectiles, projectiles) {
+    spell.OrbitingSpell, True ->
+      process_with_draw(
+        wand,
+        current_index + 1,
+        remaining_draw - 1,
+        iv.new(),
+        projectiles,
+        casting_indices,
+        total_mana_used,
+        total_cast_delay_addition,
+        position,
+        direction,
+        projectile_id,
+        target_position,
+        player_center,
+        existing_projectiles,
+        wrapped_during_cast,
+        original_start_index,
+      )
+    _, _ -> {
+      let modified = spell.apply_modifiers(id, damaging, accumulated_modifiers)
+      let new_mana_used = total_mana_used +. modified.total_mana_cost
+      let new_cast_delay =
+        total_cast_delay_addition +. modified.final_cast_delay
+
+      // Check mana availability
+      case wand.current_mana <. new_mana_used {
+        True -> #(
+          NotEnoughMana(required: new_mana_used, available: wand.current_mana),
+          wand,
+        )
+        False -> {
+          let spread_direction =
+            apply_spread(direction, wand.spread +. modified.final_spread)
+
+          let projectile_type =
+            create_projectile_type(
+              id,
+              damaging,
+              target_position,
+              player_center,
+              position,
+              modified.final_speed,
+              existing_projectiles,
+              projectiles,
+            )
+
+          let projectile_position =
+            calculate_projectile_position(projectile_type, position)
+
+          let projectile =
+            spell.Projectile(
+              id: projectile_id,
+              spell: modified,
+              position: projectile_position,
+              direction: spread_direction,
+              time_alive: 0.0,
+              animation_state: spritesheet.initial_state("projectile"),
+              visuals: damaging.visuals,
+              projectile_type: projectile_type,
+            )
+
+          process_with_draw(
+            wand,
+            current_index + 1,
+            remaining_draw - 1,
+            iv.new(),
+            [projectile, ..projectiles],
+            [wrapped_index, ..casting_indices],
+            new_mana_used,
+            new_cast_delay,
+            position,
+            direction,
+            projectile_id + 1,
+            target_position,
+            player_center,
+            existing_projectiles,
+            wrapped_during_cast,
+            original_start_index,
+          )
+        }
+      }
+    }
+  }
+}
+
+/// Check if orbiting projectiles are at maximum limit
+fn is_orbiting_at_limit(
+  existing_projectiles: List(spell.Projectile),
+  current_projectiles: List(spell.Projectile),
+) -> Bool {
+  let total =
+    count_orbiting_projectiles(existing_projectiles)
+    + count_orbiting_projectiles(current_projectiles)
+  total >= max_orbiting_projectiles
+}
+
+/// Create the appropriate projectile type based on spell
+fn create_projectile_type(
+  id: spell.Id,
+  damaging: spell.DamageSpell,
+  target_position: option.Option(Vec3(Float)),
+  player_center: option.Option(Vec3(Float)),
+  cast_position: Vec3(Float),
+  speed: Float,
+  existing_projectiles: List(spell.Projectile),
+  current_projectiles: List(spell.Projectile),
+) -> spell.ProjectileType {
+  case damaging.is_beam, target_position, id {
+    True, option.Some(target), _ -> spell.Beam(target)
+    _, _, spell.OrbitingSpell ->
+      create_orbiting_projectile_type(
+        player_center,
+        cast_position,
+        speed,
+        existing_projectiles,
+        current_projectiles,
+      )
+    _, _, _ -> spell.Standard
+  }
+}
+
+/// Create an orbiting projectile type with proper spacing
+fn create_orbiting_projectile_type(
+  player_center: option.Option(Vec3(Float)),
+  cast_position: Vec3(Float),
+  speed: Float,
+  existing_projectiles: List(spell.Projectile),
+  current_projectiles: List(spell.Projectile),
+) -> spell.ProjectileType {
+  let center = option.unwrap(player_center, cast_position)
+  let orbit_radius = 3.0
+
+  let total_count =
+    count_orbiting_projectiles(existing_projectiles)
+    + count_orbiting_projectiles(current_projectiles)
+
+  let angle_spacing =
+    maths.pi() *. 2.0 /. int.to_float(max_orbiting_projectiles)
+  let initial_angle = int.to_float(total_count) *. angle_spacing
+
+  spell.Orbiting(
+    center_position: center,
+    orbit_angle: initial_angle,
+    orbit_radius: orbit_radius,
+    orbit_speed: speed,
+  )
+}
+
+/// Calculate starting position for projectile based on type
+fn calculate_projectile_position(
+  projectile_type: spell.ProjectileType,
+  default_position: Vec3(Float),
+) -> Vec3(Float) {
+  case projectile_type {
+    spell.Orbiting(center, angle, radius, _) ->
+      Vec3(
+        center.x +. radius *. maths.cos(angle),
+        center.y,
+        center.z +. radius *. maths.sin(angle),
+      )
+    _ -> default_position
   }
 }
 

@@ -1,3 +1,4 @@
+import gleam/bool
 import gleam/float
 import gleam/int
 import gleam/list
@@ -32,6 +33,7 @@ pub type Id {
   TripleSpell
   AddMana
   AddDamage
+  OrbitingSpell
 }
 
 pub type Spell {
@@ -145,6 +147,13 @@ pub type ProjectileType {
   Standard
   /// Beam that connects two points (like lightning)
   Beam(target_position: Vec3(Float))
+  /// Orbits around a center point (typically the player)
+  Orbiting(
+    center_position: Vec3(Float),
+    orbit_angle: Float,
+    orbit_radius: Float,
+    orbit_speed: Float,
+  )
 }
 
 /// Represents a projectile created by casting a spell
@@ -349,6 +358,28 @@ pub fn fireball(visuals: SpellVisuals) -> Spell {
   )
 }
 
+/// Orbiting Spell - Creates a projectile that orbits around the player and damages enemies on contact
+pub fn orbiting_spell(visuals: SpellVisuals) -> Spell {
+  DamageSpell(
+    id: OrbitingSpell,
+    kind: Damage(
+      name: "Orbiting Spell",
+      damage: 4.0,
+      projectile_speed: 2.0,
+      projectile_lifetime: 30.0,
+      mana_cost: 50.0,
+      projectile_size: 1.5,
+      cast_delay_addition: 0.0,
+      critical_chance: 0.05,
+      spread: 0.0,
+      visuals:,
+      ui_sprite: "spell_icons/orbiting_shards.png",
+      on_hit_effects: [],
+      is_beam: False,
+    ),
+  )
+}
+
 /// Double Spell - casts 2 spells at once (no mana cost)
 pub fn double_spell() -> Spell {
   MulticastSpell(
@@ -442,19 +473,91 @@ pub fn spell_effects_to_applied(
   })
 }
 
+/// Realign orbiting projectiles evenly around the player
+/// Preserves rotation by using first projectile's angle as reference
+fn realign_orbiting_projectiles(
+  projectiles: List(Projectile),
+  player_position: Vec3(Float),
+) -> List(Projectile) {
+  let #(orbiting, non_orbiting) =
+    list.partition(projectiles, fn(p) {
+      case p.projectile_type {
+        Orbiting(..) -> True
+        _ -> False
+      }
+    })
+
+  let orbiting_count = list.length(orbiting)
+  use <- bool.guard(orbiting_count == 0, return: projectiles)
+
+  let assert [first, ..] = orbiting
+  let assert Orbiting(_, base_rotation, _, _) = first.projectile_type
+
+  let angle_spacing = maths.pi() *. 2.0 /. int.to_float(orbiting_count)
+
+  let realigned_orbiting =
+    list.index_map(orbiting, fn(p, index) {
+      let assert Orbiting(_, _, radius, speed) = p.projectile_type
+
+      let angle = int.to_float(index) *. angle_spacing +. base_rotation
+      let normalized_angle = normalize_angle(angle)
+
+      let position =
+        Vec3(
+          player_position.x +. radius *. maths.cos(normalized_angle),
+          player_position.y,
+          player_position.z +. radius *. maths.sin(normalized_angle),
+        )
+
+      let direction =
+        Vec3(
+          -1.0 *. maths.sin(normalized_angle),
+          0.0,
+          maths.cos(normalized_angle),
+        )
+
+      Projectile(
+        ..p,
+        position: position,
+        direction: direction,
+        projectile_type: Orbiting(
+          center_position: player_position,
+          orbit_angle: normalized_angle,
+          orbit_radius: radius,
+          orbit_speed: speed,
+        ),
+      )
+    })
+
+  list.append(realigned_orbiting, non_orbiting)
+}
+
+/// Normalize angle to 0-2π range
+fn normalize_angle(angle: Float) -> Float {
+  let two_pi = maths.pi() *. 2.0
+  let normalized = angle -. two_pi *. float.floor(angle /. two_pi)
+  normalized
+}
+
 pub fn update(
   projectiles: List(Projectile),
   enemies: List(Enemy(id)),
   delta_time: Float,
   damage_enemy_msg: fn(id, Float, Vec3(Float), List(SpellEffect)) -> msg,
+  player_position: Vec3(Float),
 ) -> #(List(Projectile), List(ProjectileHit(id)), effect.Effect(msg)) {
   let updated_projectiles =
-    list.map(projectiles, update_position(_, delta_time /. 1000.0))
+    list.map(projectiles, fn(p) {
+      update_position(p, delta_time /. 1000.0, player_position)
+    })
+
+  let aligned_projectiles =
+    realign_orbiting_projectiles(updated_projectiles, player_position)
 
   // Check each projectile against each enemy for collisions
   let #(hits, remaining_projectiles) =
     list.fold(
-      over: updated_projectiles,
+      over: aligned_projectiles,
       from: #([], []),
       with: fn(acc, projectile) {
         let #(hits, remaining) = acc
@@ -531,6 +634,35 @@ pub fn update(
               Error(_) -> #(hits, [projectile, ..remaining])
             }
           }
+          Orbiting(..) -> {
+            // Orbiting projectiles: check collision, but don't remove on hit (persistent orbit)
+            let hit_enemy =
+              list.find(enemies, fn(enemy) {
+                vec3f.distance(projectile.position, enemy.position) <=. 1.0
+              })
+
+            case hit_enemy {
+              Ok(enemy) -> {
+                let base_spell = get_base_damage_spell(projectile.spell)
+                let hit =
+                  ProjectileHit(
+                    id: projectile.id,
+                    direction: projectile.direction,
+                    enemy_id: enemy.id,
+                    damage: projectile.spell.final_damage,
+                    position: projectile.position,
+                    time_alive: 0.0,
+                    animation_state: spritesheet.initial_state("hit"),
+                    spritesheet: projectile.visuals.hit_spritesheet,
+                    animation: projectile.visuals.hit_animation,
+                    spell_effects: base_spell.on_hit_effects,
+                  )
+
+                #([hit, ..hits], [projectile, ..remaining])
+              }
+              Error(_) -> #(hits, [projectile, ..remaining])
+            }
+          }
         }
       },
     )
@@ -602,7 +734,11 @@ pub fn update(
   #(final_projectiles, hits, effect.batch(effects))
 }
 
-fn update_position(projectile: Projectile, delta_time: Float) -> Projectile {
+fn update_position(
+  projectile: Projectile,
+  delta_time: Float,
+  player_position: Vec3(Float),
+) -> Projectile {
   let new_time_alive = projectile.time_alive +. delta_time
 
   // Update animation state using projectile's own animation
@@ -613,7 +749,7 @@ fn update_position(projectile: Projectile, delta_time: Float) -> Projectile {
       delta_time *. 1000.0,
     )
 
-  // Beam projectiles don't move, standard projectiles do
+  // Beam projectiles don't move, standard projectiles do, orbiting projectiles orbit
   case projectile.projectile_type {
     Beam(_) ->
       Projectile(
@@ -635,6 +771,24 @@ fn update_position(projectile: Projectile, delta_time: Float) -> Projectile {
         position: Vec3(new_x, new_y, new_z),
         time_alive: new_time_alive,
         animation_state: new_animation_state,
+      )
+    }
+    Orbiting(
+      center_position: _,
+      orbit_angle: current_angle,
+      orbit_radius: radius,
+      orbit_speed: speed,
+    ) -> {
+      Projectile(
+        ..projectile,
+        time_alive: new_time_alive,
+        animation_state: new_animation_state,
+        projectile_type: Orbiting(
+          center_position: player_position,
+          orbit_angle: current_angle +. speed *. delta_time,
+          orbit_radius: radius,
+          orbit_speed: speed,
+        ),
       )
     }
   }
@@ -670,6 +824,9 @@ pub fn view(
       Standard -> [view_standard_projectile(id, projectile, camera_position)]
       Beam(target_position) ->
         view_beam_projectile(id, projectile, target_position, camera_position)
+      Orbiting(_, _, _, _) -> [
+        view_standard_projectile(id, projectile, camera_position),
+      ]
     }
   })
 }
