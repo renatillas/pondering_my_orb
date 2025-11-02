@@ -35,6 +35,7 @@ pub type Model(tiramisu_msg) {
     score: score.Score,
     spell_rewards: option.Option(List(spell.Spell)),
     is_paused: Bool,
+    is_settings_open: Bool,
     resuming: Bool,
     resume_retry_count: Int,
     casting_spell_indices: List(Int),
@@ -45,6 +46,7 @@ pub type Model(tiramisu_msg) {
     time_since_last_cast: Float,
     current_spell_index: Int,
     is_recharging: Bool,
+    camera_distance: Float,
   )
 }
 
@@ -66,6 +68,9 @@ pub type Msg {
   SpellRewardClicked(spell.Spell)
   DoneWithLevelUp
   ResumeGame
+  OpenSettings
+  CloseSettings
+  CameraDistanceChanged(Float)
   PointerLockExited
   PointerLockAcquired
   NoOp
@@ -82,6 +87,7 @@ pub type UiToGameMsg {
   LevelUpComplete
   GamePaused
   GameResumed
+  UpdateCameraDistance(Float)
 }
 
 pub type GameState {
@@ -124,6 +130,7 @@ pub fn init(wrapper) -> #(Model(tiramisu_msg), effect.Effect(Msg)) {
       score: score.init(),
       spell_rewards: option.None,
       is_paused: False,
+      is_settings_open: False,
       resuming: False,
       resume_retry_count: 0,
       casting_spell_indices: [],
@@ -134,6 +141,7 @@ pub fn init(wrapper) -> #(Model(tiramisu_msg), effect.Effect(Msg)) {
       time_since_last_cast: 0.0,
       current_spell_index: 0,
       is_recharging: False,
+      camera_distance: 5.0,
     ),
     effect.batch([
       tiramisu_ui.register_lustre(),
@@ -411,6 +419,14 @@ pub fn update(
         ]),
       )
     }
+    OpenSettings -> #(Model(..model, is_settings_open: True), effect.none())
+    CloseSettings -> #(Model(..model, is_settings_open: False), effect.none())
+    CameraDistanceChanged(distance) -> #(
+      Model(..model, camera_distance: distance),
+      tiramisu_ui.dispatch_to_tiramisu(
+        model.wrapper(UpdateCameraDistance(distance)),
+      ),
+    )
     PointerLockExited -> {
       io.println("=== UI: Pointer Lock Exited ===")
       case model.resuming {
@@ -768,8 +784,7 @@ fn view_playing(model: Model(tiramisu_msg)) -> element.Element(Msg) {
       },
       // Pause menu - show when paused or resuming (but not during level-up)
       case model.is_paused, model.resuming, model.spell_rewards {
-        True, _, option.None | _, True, option.None ->
-          view_pause_menu(model.resuming)
+        True, _, option.None | _, True, option.None -> view_pause_menu(model)
         _, _, _ -> html.div([], [])
       },
     ],
@@ -876,7 +891,7 @@ fn view_spell_rewards_modal(
   )
 }
 
-fn view_pause_menu(resuming: Bool) -> element.Element(Msg) {
+fn view_pause_menu(model: Model(tiramisu_msg)) -> element.Element(Msg) {
   html.div(
     [
       attribute.class(
@@ -892,58 +907,147 @@ fn view_pause_menu(resuming: Bool) -> element.Element(Msg) {
           ),
           attribute.style("image-rendering", "pixelated"),
         ],
-        [
-          // Title
-          html.div([attribute.class("text-center mb-8")], [
-            html.h2(
-              [
-                attribute.class("text-5xl font-bold text-blue-300 mb-4"),
-                attribute.style(
-                  "text-shadow",
-                  "0 0 20px rgba(147, 197, 253, 0.8)",
-                ),
-              ],
-              [
-                html.text(case resuming {
-                  True -> "RESUMING..."
-                  False -> "PAUSED"
-                }),
-              ],
-            ),
-            html.p([attribute.class("text-xl text-blue-100")], [
-              html.text(case resuming {
-                True -> "Resuming game..."
-                False -> "Game is paused"
-              }),
-            ]),
-          ]),
-          // Resume button (disabled when resuming)
-          html.div([attribute.class("flex flex-col gap-4 items-center")], [
-            html.button(
-              [
-                attribute.class(case resuming {
-                  True ->
-                    "px-12 py-4 text-2xl font-bold bg-gradient-to-r from-gray-600 to-gray-700 text-gray-300 rounded-lg shadow-xl border-4 border-gray-500 cursor-not-allowed min-w-[300px] opacity-50"
-                  False ->
-                    "px-12 py-4 text-2xl font-bold bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg shadow-xl hover:scale-105 transform transition-all duration-200 border-4 border-green-400 cursor-pointer min-w-[300px]"
-                }),
-                attribute.style("text-shadow", "2px 2px 4px rgba(0,0,0,0.5)"),
-                attribute.disabled(resuming),
-                event.on_click(ResumeGame),
-              ],
-              [html.text("RESUME")],
-            ),
-            html.div([attribute.class("text-sm text-blue-200 mt-4")], [
-              html.text(case resuming {
-                True -> "Please wait..."
-                False -> "Press SPACE to resume"
-              }),
-            ]),
-          ]),
-        ],
+        case model.is_settings_open {
+          True -> view_settings_menu(model)
+          False -> view_pause_menu_content(model.resuming)
+        },
       ),
     ],
   )
+}
+
+fn view_pause_menu_content(resuming: Bool) -> List(element.Element(Msg)) {
+  [
+    // Title
+    html.div([attribute.class("text-center mb-8")], [
+      html.h2(
+        [
+          attribute.class("text-5xl font-bold text-blue-300 mb-4"),
+          attribute.style("text-shadow", "0 0 20px rgba(147, 197, 253, 0.8)"),
+        ],
+        [
+          html.text(case resuming {
+            True -> "RESUMING..."
+            False -> "PAUSED"
+          }),
+        ],
+      ),
+      html.p([attribute.class("text-xl text-blue-100")], [
+        html.text(case resuming {
+          True -> "Resuming game..."
+          False -> "Game is paused"
+        }),
+      ]),
+    ]),
+    html.div([attribute.class("flex flex-col gap-4 items-center mb-4")], [
+      html.button(
+        [
+          attribute.class(
+            "px-12 py-4 text-2xl font-bold bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg shadow-xl hover:scale-105 transform transition-all duration-200 border-4 border-green-400 cursor-pointer min-w-[300px]",
+          ),
+          attribute.style("text-shadow", "2px 2px 4px rgba(0,0,0,0.5)"),
+          attribute.disabled(resuming),
+          event.on_click(OpenSettings),
+        ],
+        [html.text("SETTINGS")],
+      ),
+    ]),
+    // Resume button (disabled when resuming)
+    html.div([attribute.class("flex flex-col gap-4 items-center")], [
+      html.button(
+        [
+          attribute.class(case resuming {
+            True ->
+              "px-12 py-4 text-2xl font-bold bg-gradient-to-r from-gray-600 to-gray-700 text-gray-300 rounded-lg shadow-xl border-4 border-gray-500 cursor-not-allowed min-w-[300px] opacity-50"
+            False ->
+              "px-12 py-4 text-2xl font-bold bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg shadow-xl hover:scale-105 transform transition-all duration-200 border-4 border-green-400 cursor-pointer min-w-[300px]"
+          }),
+          attribute.style("text-shadow", "2px 2px 4px rgba(0,0,0,0.5)"),
+          attribute.disabled(resuming),
+          event.on_click(ResumeGame),
+        ],
+        [html.text("RESUME")],
+      ),
+      html.div([attribute.class("text-sm text-blue-200 mt-4")], [
+        html.text(case resuming {
+          True -> "Please wait..."
+          False -> "Press SPACE to resume"
+        }),
+      ]),
+    ]),
+  ]
+}
+
+fn view_settings_menu(model: Model(tiramisu_msg)) -> List(element.Element(Msg)) {
+  [
+    // Title
+    html.div([attribute.class("text-center mb-8")], [
+      html.h2(
+        [
+          attribute.class("text-5xl font-bold text-blue-300 mb-4"),
+          attribute.style("text-shadow", "0 0 20px rgba(147, 197, 253, 0.8)"),
+        ],
+        [html.text("SETTINGS")],
+      ),
+    ]),
+    // Camera distance slider
+    html.div([attribute.class("mb-6")], [
+      html.label(
+        [
+          attribute.class("block text-xl text-blue-100 mb-3"),
+        ],
+        [html.text("Camera Distance")],
+      ),
+      html.div([attribute.class("flex items-center gap-4")], [
+        html.input([
+          attribute.type_("range"),
+          attribute.min("1.0"),
+          attribute.max("15.0"),
+          attribute.step("0.5"),
+          attribute.value(float.to_string(model.camera_distance)),
+          attribute.class(
+            "flex-1 h-3 bg-gray-700 rounded-lg appearance-none cursor-pointer slider",
+          ),
+          attribute.style("-webkit-appearance", "none"),
+          attribute.style("appearance", "none"),
+          event.on_input(fn(value) {
+            case float.parse(value) {
+              Ok(distance) -> CameraDistanceChanged(distance)
+              Error(Nil) -> {
+                let assert Ok(distance) = int.parse(value)
+                CameraDistanceChanged(int.to_float(distance))
+              }
+            }
+          }),
+        ]),
+        html.span(
+          [
+            attribute.class(
+              "text-lg text-blue-200 font-mono min-w-[60px] text-right",
+            ),
+          ],
+          [
+            html.text(
+              float.to_string(float.to_precision(model.camera_distance, 1)),
+            ),
+          ],
+        ),
+      ]),
+    ]),
+    // Go back button
+    html.div([attribute.class("flex justify-center mt-8")], [
+      html.button(
+        [
+          attribute.class(
+            "px-8 py-4 text-xl font-bold bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-lg shadow-xl hover:scale-105 transform transition-all duration-200 border-4 border-purple-400 cursor-pointer",
+          ),
+          attribute.style("text-shadow", "2px 2px 4px rgba(0,0,0,0.5)"),
+          event.on_click(CloseSettings),
+        ],
+        [html.text("GO BACK")],
+      ),
+    ]),
+  ]
 }
 
 fn view_spell_reward_card(reward_spell: spell.Spell) -> element.Element(Msg) {
