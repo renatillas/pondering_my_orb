@@ -14,6 +14,15 @@ import tiramisu/transform
 import vec/vec3.{type Vec3, Vec3}
 import vec/vec3f
 
+// Constants for projectile and effect behavior
+const beam_first_frame_threshold = 0.05
+
+const projectile_hit_lifetime = 1.5
+
+const beam_lightning_offset = 0.2
+
+const min_projectile_size = 0.1
+
 pub type Id {
   Fireball
   LightningBolt
@@ -212,7 +221,7 @@ pub fn apply_modifiers(
           cast_delay *. mod.cast_delay_multiplier,
           crit_chance *. mod.critical_chance_multiplier,
           spread *. mod.spread_multiplier,
-          mana_cost *. mod.projectile_lifetime_multiplier,
+          mana_cost +. mod.mana_cost,
         )
       },
     )
@@ -373,7 +382,7 @@ pub fn update(
           Beam(target_position) -> {
             // Beams always remain visible (added to remaining)
             // But only create hits on their first frame
-            case projectile.time_alive <. 0.05 {
+            case projectile.time_alive <. beam_first_frame_threshold {
               True -> {
                 // First frame - check for hit and create damage
                 let hit_enemy =
@@ -545,7 +554,7 @@ fn update_position(projectile: Projectile, delta_time: Float) -> Projectile {
   }
 }
 
-/// Update explosions and remove those that have finished
+/// Update projectile hits and remove those that have finished
 pub fn update_projectile_hits(
   projectile_hits: List(ProjectileHit(id)),
   delta_time: Float,
@@ -562,7 +571,7 @@ pub fn update_projectile_hits(
       animation_state: new_animation_state,
     )
   })
-  |> list.filter(fn(explosion) { explosion.time_alive <. 1.5 })
+  |> list.filter(fn(hit) { hit.time_alive <. projectile_hit_lifetime })
 }
 
 pub fn view(
@@ -617,8 +626,8 @@ fn view_beam_projectile(
   let beam_length = vec3f.length(beam_vector)
   let beam_direction = vec3f.normalize(beam_vector)
 
-  // Size of each sprite segment
-  let segment_size = projectile.spell.final_size
+  // Size of each sprite segment - ensure it's not zero or negative
+  let segment_size = float.max(projectile.spell.final_size, min_projectile_size)
   let segment_count = float.ceiling(beam_length /. segment_size)
   let segment_count_int = float.floor(segment_count) |> float.round()
 
@@ -635,7 +644,7 @@ fn view_beam_projectile(
       )
 
     // Add slight random offset perpendicular to beam for lightning effect
-    let offset_amount = 0.2
+    let offset_amount = beam_lightning_offset
     let random_offset_x = { float.random() -. 0.5 } *. offset_amount
     let random_offset_y = { float.random() -. 0.5 } *. offset_amount
 
@@ -734,7 +743,7 @@ pub fn view_hits(
   camera_position: Vec3(Float),
 ) -> scene.Node(id.Id) {
   // Full 3D billboard using proper quaternion-based look-at
-  // The explosion sprite should face the camera
+  // The hit sprite should face the camera
   let from_transform = transform.at(position: hit.position)
   let to_transform = transform.at(position: camera_position)
   let look_at_transform =
