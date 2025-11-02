@@ -27,9 +27,11 @@ pub type Id {
   Fireball
   LightningBolt
   Spark
+  Piercing
   DoubleSpell
   TripleSpell
   AddMana
+  AddDamage
 }
 
 pub type Spell {
@@ -69,6 +71,8 @@ pub type SpellEffect {
   AreaOfEffect(radius: Float)
   /// Applies burning status effect to hit enemies
   ApplyBurning(duration: Float, damage_per_second: Float)
+  /// Projectile passes through enemies instead of being destroyed
+  PiercingShot
 }
 
 pub type DamageSpell {
@@ -107,7 +111,31 @@ pub type ModifierSpell {
     critical_chance_addition: Float,
     spread_multiplier: Float,
     spread_addition: Float,
+    added_effects: List(SpellEffect),
     ui_sprite: String,
+  )
+}
+
+pub fn default_modifier(name: String, ui_sprite: String) {
+  Modifier(
+    name:,
+    mana_cost: 0.0,
+    damage_multiplier: 1.0,
+    damage_addition: 0.0,
+    projectile_speed_multiplier: 1.0,
+    projectile_speed_addition: 0.0,
+    projectile_size_multiplier: 1.0,
+    projectile_size_addition: 0.0,
+    projectile_lifetime_multiplier: 1.0,
+    projectile_lifetime_addition: 0.0,
+    cast_delay_multiplier: 1.0,
+    cast_delay_addition: 0.0,
+    critical_chance_multiplier: 1.0,
+    critical_chance_addition: 0.0,
+    spread_multiplier: 1.0,
+    spread_addition: 0.0,
+    added_effects: [],
+    ui_sprite:,
   )
 }
 
@@ -154,6 +182,16 @@ pub fn apply_modifiers(
   base_spell: DamageSpell,
   modifiers: iv.Array(ModifierSpell),
 ) -> ModifiedSpell {
+  // Collect all added effects from modifiers
+  let added_effects =
+    iv.fold(modifiers, [], fn(acc, mod) { list.append(acc, mod.added_effects) })
+
+  // Merge added effects with base spell effects
+  let final_effects = list.append(base_spell.on_hit_effects, added_effects)
+
+  // Update base spell with merged effects
+  let modified_base_spell = Damage(..base_spell, on_hit_effects: final_effects)
+
   // Fold over all modifiers to calculate final values
   let #(damage, speed, size, lifetime, cast_delay, crit_chance, spread) =
     iv.fold(
@@ -228,7 +266,7 @@ pub fn apply_modifiers(
     )
 
   ModifiedSpell(
-    base: DamageSpell(id:, kind: base_spell),
+    base: DamageSpell(id:, kind: modified_base_spell),
     final_damage:,
     final_speed:,
     final_size:,
@@ -329,23 +367,28 @@ pub fn add_mana() -> Spell {
   ModifierSpell(
     id: AddMana,
     kind: Modifier(
-      name: "Add Mana",
+      ..default_modifier("Add Mana", "spell_icons/mana.png"),
       mana_cost: -30.0,
-      damage_multiplier: 1.0,
-      damage_addition: 0.0,
-      projectile_speed_multiplier: 1.0,
-      projectile_speed_addition: 0.0,
-      projectile_size_multiplier: 1.0,
-      projectile_size_addition: 0.0,
-      projectile_lifetime_multiplier: 1.0,
-      projectile_lifetime_addition: 0.0,
-      cast_delay_multiplier: 1.0,
-      cast_delay_addition: 0.0,
-      critical_chance_multiplier: 1.0,
-      critical_chance_addition: 0.0,
-      spread_multiplier: 1.0,
-      spread_addition: 0.0,
-      ui_sprite: "spell_icons/mana.png",
+    ),
+  )
+}
+
+pub fn add_damage() -> Spell {
+  ModifierSpell(
+    id: AddDamage,
+    kind: Modifier(
+      ..default_modifier("Add Damage", "spell_icons/add_damage.png"),
+      damage_addition: 10.0,
+    ),
+  )
+}
+
+pub fn piercing() -> Spell {
+  ModifierSpell(
+    id: Piercing,
+    kind: Modifier(
+      ..default_modifier("Piercing", "spell_icons/piercing.png"),
+      added_effects: [PiercingShot],
     ),
   )
 }
@@ -374,14 +417,26 @@ fn get_base_damage_spell(modified: ModifiedSpell) -> DamageSpell {
   }
 }
 
+/// Check if a spell has the PiercingShot effect
+fn has_piercing(spell_effects: List(SpellEffect)) -> Bool {
+  list.any(spell_effects, fn(effect) {
+    case effect {
+      PiercingShot -> True
+      _ -> False
+    }
+  })
+}
+
 /// Convert spell effects to enemy applied effects (avoids circular dependency)
 pub fn spell_effects_to_applied(
   effects: List(SpellEffect),
 ) -> List(enemy.AppliedSpellEffect) {
-  list.map(effects, fn(effect) {
+  list.filter_map(effects, fn(effect) {
     case effect {
-      AreaOfEffect(radius) -> enemy.AppliedAreaOfEffect(radius)
-      ApplyBurning(duration, dps) -> enemy.AppliedBurning(duration, dps)
+      AreaOfEffect(radius) -> Ok(enemy.AppliedAreaOfEffect(radius))
+      ApplyBurning(duration, dps) -> Ok(enemy.AppliedBurning(duration, dps))
+      // PiercingShot is handled at projectile level, not applied to enemies
+      PiercingShot -> Error(Nil)
     }
   })
 }
@@ -444,7 +499,7 @@ pub fn update(
             }
           }
           Standard -> {
-            // Standard projectiles: check collision and remove on hit
+            // Standard projectiles: check collision and remove on hit (unless piercing)
             let hit_enemy =
               list.find(enemies, fn(enemy) {
                 vec3f.distance(projectile.position, enemy.position) <=. 1.0
@@ -466,7 +521,11 @@ pub fn update(
                     animation: projectile.visuals.hit_animation,
                     spell_effects: base_spell.on_hit_effects,
                   )
-                #([hit, ..hits], remaining)
+                // Keep piercing projectiles in remaining list
+                case has_piercing(base_spell.on_hit_effects) {
+                  True -> #([hit, ..hits], [projectile, ..remaining])
+                  False -> #([hit, ..hits], remaining)
+                }
               }
               Error(_) -> #(hits, [projectile, ..remaining])
             }
