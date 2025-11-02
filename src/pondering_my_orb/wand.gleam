@@ -1,10 +1,12 @@
 import gleam/float
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam_community/maths
 import iv
 import pondering_my_orb/spell.{type Spell}
 import tiramisu/spritesheet
-import vec/vec3.{type Vec3}
+import vec/vec3.{type Vec3, Vec3}
+import vec/vec3f
 
 /// Represents a wand with spell slots
 pub type Wand {
@@ -17,6 +19,7 @@ pub type Wand {
     cast_delay: Float,
     recharge_time: Float,
     spells_per_cast: Int,
+    spread: Float,
   )
 }
 
@@ -29,6 +32,7 @@ pub type CastResult {
     next_cast_index: Int,
     casting_indices: List(Int),
     did_wrap: Bool,
+    total_cast_delay_addition: Float,
   )
   /// Not enough mana to cast
   NotEnoughMana(required: Float, available: Float)
@@ -47,6 +51,7 @@ pub fn new(
   cast_delay cast_delay: Float,
   recharge_time recharge_time: Float,
   spells_per_cast spells_per_cast: Int,
+  spread spread: Float,
 ) -> Wand {
   Wand(
     name:,
@@ -57,6 +62,32 @@ pub fn new(
     cast_delay:,
     recharge_time:,
     spells_per_cast:,
+    spread:,
+  )
+}
+
+/// Create a new wand with random stats
+pub fn new_random(name: String) -> Wand {
+  let slot_count = case float.random() {
+    r if r <. 0.5 -> 2
+    _ -> 3
+  }
+
+  let cast_delay = 0.15 +. float.random() *. 0.1
+  let recharge_time = 0.33 +. float.random() *. 0.14
+  let max_mana = 80.0 +. float.random() *. 50.0
+  let mana_recharge_rate = 25.0 +. float.random() *. 15.0
+  let spread = 0.0
+
+  new(
+    name:,
+    slot_count:,
+    max_mana:,
+    mana_recharge_rate:,
+    cast_delay:,
+    recharge_time:,
+    spells_per_cast: 1,
+    spread:,
   )
 }
 
@@ -92,6 +123,7 @@ pub fn cast(
   position: Vec3(Float),
   direction: Vec3(Float),
   projectile_starting_index: Int,
+  target_position: option.Option(Vec3(Float)),
 ) -> #(CastResult, Wand) {
   case start_index >= iv.length(wand.slots) {
     True -> #(WandEmpty, wand)
@@ -105,9 +137,11 @@ pub fn cast(
         [],
         [],
         0.0,
+        0.0,
         position,
         direction,
         projectile_starting_index,
+        target_position,
       )
     }
   }
@@ -123,9 +157,11 @@ fn process_with_draw(
   projectiles: List(spell.Projectile),
   casting_indices: List(Int),
   total_mana_used: Float,
+  total_cast_delay_addition: Float,
   position: Vec3(Float),
   direction: Vec3(Float),
   projectile_id: Int,
+  target_position: option.Option(Vec3(Float)),
 ) -> #(CastResult, Wand) {
   let wand_length = iv.length(wand.slots)
 
@@ -157,6 +193,7 @@ fn process_with_draw(
                   next_cast_index: next_index,
                   casting_indices:,
                   did_wrap:,
+                  total_cast_delay_addition:,
                 ),
                 updated_wand,
               )
@@ -180,15 +217,17 @@ fn process_with_draw(
                 projectiles,
                 [wrapped_index, ..casting_indices],
                 total_mana_used,
+                total_cast_delay_addition,
                 position,
                 direction,
                 projectile_id,
+                target_position,
               )
             }
             Ok(Some(current_spell)) -> {
               // Process the spell based on type
               case current_spell {
-                spell.ModifierSpell(mod) -> {
+                spell.ModifierSpell(_, mod) -> {
                   // Modifiers: accumulate and consume 1 draw
                   let new_modifiers = iv.prepend(accumulated_modifiers, mod)
                   let new_mana_used = total_mana_used +. mod.mana_cost
@@ -204,9 +243,11 @@ fn process_with_draw(
                         projectiles,
                         [wrapped_index, ..casting_indices],
                         new_mana_used,
+                        total_cast_delay_addition,
                         position,
                         direction,
                         projectile_id,
+                        target_position,
                       )
                     False -> #(
                       NotEnoughMana(
@@ -218,7 +259,7 @@ fn process_with_draw(
                   }
                 }
 
-                spell.MulticastSpell(multicast) -> {
+                spell.MulticastSpell(_, multicast) -> {
                   // Multicast: consume 1 draw, add draw_add, process next spells
                   let new_draw = remaining_draw - 1 + multicast.draw_add
                   let new_mana_used = total_mana_used +. multicast.mana_cost
@@ -234,9 +275,11 @@ fn process_with_draw(
                         projectiles,
                         [wrapped_index, ..casting_indices],
                         new_mana_used,
+                        total_cast_delay_addition,
                         position,
                         direction,
                         projectile_id,
+                        target_position,
                       )
                     False -> #(
                       NotEnoughMana(
@@ -248,27 +291,46 @@ fn process_with_draw(
                   }
                 }
 
-                spell.DamageSpell(damaging) -> {
+                spell.DamageSpell(id, damaging) -> {
                   // Damage spell: create projectile, consume 1 draw
                   let modified =
-                    spell.apply_modifiers(damaging, accumulated_modifiers)
+                    spell.apply_modifiers(id, damaging, accumulated_modifiers)
                   let new_mana_used =
                     total_mana_used +. modified.total_mana_cost
+
+                  // Accumulate cast delay from this spell
+                  let new_cast_delay_addition =
+                    total_cast_delay_addition +. modified.final_cast_delay
 
                   // Check mana
                   case wand.current_mana >=. new_mana_used {
                     True -> {
+                      // Apply spread to direction (combine wand spread and spell spread)
+                      let total_spread = wand.spread +. modified.final_spread
+                      let spread_direction =
+                        apply_spread(direction, total_spread)
+
+                      // Determine projectile type based on spell
+                      let projectile_type = case
+                        damaging.is_beam,
+                        target_position
+                      {
+                        True, option.Some(target) -> spell.Beam(target)
+                        _, _ -> spell.Standard
+                      }
+
                       let projectile =
                         spell.Projectile(
                           id: projectile_id,
                           spell: modified,
                           position: position,
-                          direction: direction,
+                          direction: spread_direction,
                           time_alive: 0.0,
                           animation_state: spritesheet.initial_state(
                             "projectile",
                           ),
                           visuals: damaging.visuals,
+                          projectile_type: projectile_type,
                         )
 
                       process_with_draw(
@@ -279,9 +341,11 @@ fn process_with_draw(
                         [projectile, ..projectiles],
                         [wrapped_index, ..casting_indices],
                         new_mana_used,
+                        new_cast_delay_addition,
                         position,
                         direction,
                         projectile_id + 1,
+                        target_position,
                       )
                     }
                     False -> #(
@@ -370,6 +434,66 @@ fn check_slots_from(
         Ok(Some(_)) -> True
         _ -> check_slots_from(slots, current + 1, length)
       }
+    }
+  }
+}
+
+/// Apply spread (inaccuracy) to a direction vector
+/// spread_degrees: the maximum deviation in degrees (e.g., 5.0 means ±5 degrees)
+fn apply_spread(direction: Vec3(Float), spread_degrees: Float) -> Vec3(Float) {
+  case spread_degrees {
+    0.0 -> direction
+    _ -> {
+      // Convert spread from degrees to radians
+      let spread_radians = spread_degrees *. maths.pi() /. 180.0
+
+      // Generate random angles within the spread cone
+      // Random value between -spread and +spread
+      let horizontal_angle = { float.random() *. 2.0 -. 1.0 } *. spread_radians
+      let vertical_angle = { float.random() *. 2.0 -. 1.0 } *. spread_radians
+
+      // Get perpendicular vectors to the direction
+      // Use world up vector to find a perpendicular
+      let world_up = Vec3(0.0, 1.0, 0.0)
+
+      // Check if direction is too aligned with world up
+      let up_vector = case
+        float.absolute_value(vec3f.dot(direction, world_up)) >. 0.99
+      {
+        True -> Vec3(1.0, 0.0, 0.0)
+        False -> world_up
+      }
+
+      // Calculate right vector (perpendicular to direction and up)
+      let right = vec3f.cross(direction, up_vector) |> vec3f.normalize()
+
+      // Calculate true up vector (perpendicular to direction and right)
+      let up = vec3f.cross(right, direction) |> vec3f.normalize()
+
+      // Apply rotations
+      // Rotate around right axis (vertical spread)
+      let cos_v = maths.cos(vertical_angle)
+      let sin_v = maths.sin(vertical_angle)
+      let after_vertical =
+        Vec3(
+          direction.x *. cos_v +. up.x *. sin_v,
+          direction.y *. cos_v +. up.y *. sin_v,
+          direction.z *. cos_v +. up.z *. sin_v,
+        )
+        |> vec3f.normalize()
+
+      // Rotate around original direction axis (horizontal spread)
+      let cos_h = maths.cos(horizontal_angle)
+      let sin_h = maths.sin(horizontal_angle)
+      let final_direction =
+        Vec3(
+          after_vertical.x *. cos_h +. right.x *. sin_h,
+          after_vertical.y *. cos_h +. right.y *. sin_h,
+          after_vertical.z *. cos_h +. right.z *. sin_h,
+        )
+        |> vec3f.normalize()
+
+      final_direction
     }
   }
 }

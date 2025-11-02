@@ -1,3 +1,5 @@
+import gleam/float
+import gleam/int
 import gleam/list
 import gleam/option
 import gleam/result
@@ -12,10 +14,27 @@ import tiramisu/transform
 import vec/vec3.{type Vec3, Vec3}
 import vec/vec3f
 
+// Constants for projectile and effect behavior
+const beam_first_frame_threshold = 0.05
+
+const projectile_hit_lifetime = 1.5
+
+const beam_lightning_offset = 0.2
+
+const min_projectile_size = 0.1
+
+pub type Id {
+  Fireball
+  LightningBolt
+  Spark
+  DoubleSpell
+  TripleSpell
+}
+
 pub type Spell {
-  DamageSpell(DamageSpell)
-  ModifierSpell(ModifierSpell)
-  MulticastSpell(MulticastSpell)
+  DamageSpell(id: Id, kind: DamageSpell)
+  ModifierSpell(id: Id, kind: ModifierSpell)
+  MulticastSpell(id: Id, kind: MulticastSpell)
 }
 
 pub type MulticastCount {
@@ -59,9 +78,13 @@ pub type DamageSpell {
     projectile_speed: Float,
     projectile_lifetime: Float,
     projectile_size: Float,
+    cast_delay_addition: Float,
+    critical_chance: Float,
+    spread: Float,
     visuals: SpellVisuals,
     ui_sprite: String,
     on_hit_effects: List(SpellEffect),
+    is_beam: Bool,
   )
 }
 
@@ -77,8 +100,22 @@ pub type ModifierSpell {
     projectile_size_addition: Float,
     projectile_lifetime_multiplier: Float,
     projectile_lifetime_addition: Float,
+    cast_delay_multiplier: Float,
+    cast_delay_addition: Float,
+    critical_chance_multiplier: Float,
+    critical_chance_addition: Float,
+    spread_multiplier: Float,
+    spread_addition: Float,
     ui_sprite: String,
   )
+}
+
+/// Type of projectile behavior
+pub type ProjectileType {
+  /// Standard projectile that moves through space
+  Standard
+  /// Beam that connects two points (like lightning)
+  Beam(target_position: Vec3(Float))
 }
 
 /// Represents a projectile created by casting a spell
@@ -91,6 +128,7 @@ pub type Projectile {
     time_alive: Float,
     animation_state: spritesheet.AnimationState,
     visuals: SpellVisuals,
+    projectile_type: ProjectileType,
   )
 }
 
@@ -102,71 +140,21 @@ pub type ModifiedSpell {
     final_speed: Float,
     final_size: Float,
     final_lifetime: Float,
+    final_cast_delay: Float,
+    final_critical_chance: Float,
+    final_spread: Float,
     total_mana_cost: Float,
   )
 }
 
-/// Create a new damaging spell
-pub fn damaging_spell(
-  name name: String,
-  damage damage: Float,
-  projectile_speed projectile_speed: Float,
-  projectile_lifetime projectile_lifetime: Float,
-  mana_cost mana_cost: Float,
-  projectile_size projectile_size: Float,
-  visuals visuals: SpellVisuals,
-  ui_sprite ui_sprite: String,
-  on_hit_effects on_hit_effects: List(SpellEffect),
-) -> Spell {
-  DamageSpell(Damage(
-    name:,
-    damage:,
-    projectile_speed:,
-    projectile_lifetime:,
-    mana_cost:,
-    projectile_size:,
-    visuals:,
-    ui_sprite:,
-    on_hit_effects:,
-  ))
-}
-
-/// Create a new modifier spell
-pub fn modifier_spell(
-  name name: String,
-  damage_multiplier damage_multiplier: Float,
-  damage_addition damage_addition: Float,
-  projectile_speed_multiplier projectile_speed_multiplier: Float,
-  projectile_speed_addition projectile_speed_addition: Float,
-  projectile_size_multiplier projectile_size_multiplier: Float,
-  projectile_size_addition projectile_size_addition: Float,
-  projectile_lifetime_multiplier projectile_lifetime_multiplier: Float,
-  projectile_lifetime_addition projectile_lifetime_addition: Float,
-  mana_cost mana_cost: Float,
-  ui_sprite ui_sprite: String,
-) -> Spell {
-  ModifierSpell(Modifier(
-    name:,
-    mana_cost:,
-    damage_multiplier:,
-    damage_addition:,
-    projectile_speed_multiplier:,
-    projectile_speed_addition:,
-    projectile_size_multiplier:,
-    projectile_size_addition:,
-    projectile_lifetime_multiplier:,
-    projectile_lifetime_addition:,
-    ui_sprite:,
-  ))
-}
-
 /// Apply a list of modifiers to a damaging spell
 pub fn apply_modifiers(
+  id: Id,
   base_spell: DamageSpell,
   modifiers: iv.Array(ModifierSpell),
 ) -> ModifiedSpell {
   // Fold over all modifiers to calculate final values
-  let #(damage, speed, size, lifetime) =
+  let #(damage, speed, size, lifetime, cast_delay, crit_chance, spread) =
     iv.fold(
       modifiers,
       #(
@@ -174,39 +162,79 @@ pub fn apply_modifiers(
         base_spell.projectile_speed,
         base_spell.projectile_size,
         base_spell.projectile_lifetime,
+        base_spell.cast_delay_addition,
+        base_spell.critical_chance,
+        base_spell.spread,
       ),
       fn(acc, mod) {
-        let #(damage, speed, size, lifetime) = acc
+        let #(damage, speed, size, lifetime, cast_delay, crit_chance, spread) =
+          acc
         #(
           damage +. mod.damage_addition,
           speed +. mod.projectile_speed_addition,
           size +. mod.projectile_size_addition,
           lifetime +. mod.projectile_lifetime_addition,
+          cast_delay +. mod.cast_delay_addition,
+          crit_chance +. mod.critical_chance_addition,
+          spread +. mod.spread_addition,
         )
       },
     )
-  let #(final_damage, final_speed, final_size, final_lifetime, total_mana_cost) =
+  let #(
+    final_damage,
+    final_speed,
+    final_size,
+    final_lifetime,
+    final_cast_delay,
+    final_critical_chance,
+    final_spread,
+    total_mana_cost,
+  ) =
     iv.fold(
       modifiers,
-      #(damage, speed, size, lifetime, base_spell.mana_cost),
+      #(
+        damage,
+        speed,
+        size,
+        lifetime,
+        cast_delay,
+        crit_chance,
+        spread,
+        base_spell.mana_cost,
+      ),
       fn(acc, mod) {
-        let #(damage, speed, size, lifetime, mana_cost) = acc
+        let #(
+          damage,
+          speed,
+          size,
+          lifetime,
+          cast_delay,
+          crit_chance,
+          spread,
+          mana_cost,
+        ) = acc
         #(
           damage *. mod.damage_multiplier,
           speed *. mod.projectile_speed_multiplier,
           size *. mod.projectile_size_multiplier,
           lifetime *. mod.projectile_lifetime_multiplier,
-          mana_cost *. mod.projectile_lifetime_multiplier,
+          cast_delay *. mod.cast_delay_multiplier,
+          crit_chance *. mod.critical_chance_multiplier,
+          spread *. mod.spread_multiplier,
+          mana_cost +. mod.mana_cost,
         )
       },
     )
 
   ModifiedSpell(
-    base: DamageSpell(base_spell),
+    base: DamageSpell(id:, kind: base_spell),
     final_damage:,
     final_speed:,
     final_size:,
     final_lifetime:,
+    final_cast_delay:,
+    final_critical_chance:,
+    final_spread:,
     total_mana_cost:,
   )
 }
@@ -215,105 +243,85 @@ pub fn apply_modifiers(
 
 /// Basic projectile spell
 pub fn spark(visuals: SpellVisuals) -> Spell {
-  damaging_spell(
-    name: "Spark",
-    damage: 10.0,
-    projectile_speed: 10.0,
-    projectile_lifetime: 2.0,
-    mana_cost: 5.0,
-    projectile_size: 1.0,
-    visuals:,
-    ui_sprite: "spells/spark.png",
-    on_hit_effects: [],
+  DamageSpell(
+    id: Spark,
+    kind: Damage(
+      name: "Spark",
+      damage: 3.0,
+      projectile_speed: 50.0,
+      projectile_lifetime: 2.0,
+      mana_cost: 5.0,
+      projectile_size: 1.0,
+      cast_delay_addition: 0.05,
+      critical_chance: 0.05,
+      spread: 5.0,
+      visuals:,
+      ui_sprite: "spell_icons/spark.png",
+      on_hit_effects: [AreaOfEffect(2.0)],
+      is_beam: False,
+    ),
   )
 }
 
-/// Heavy damage spell
+/// Heavy damage spell - Beam type that connects player to enemy
 pub fn lightning(visuals: SpellVisuals) -> Spell {
-  damaging_spell(
-    name: "Lightning Bolt",
-    damage: 100.0,
-    projectile_speed: 100.0,
-    projectile_lifetime: 1.0,
-    mana_cost: 35.0,
-    projectile_size: 0.2,
-    visuals:,
-    ui_sprite: "spells/lightning_bolt.png",
-    on_hit_effects: [],
+  DamageSpell(
+    id: LightningBolt,
+    kind: Damage(
+      name: "Lightning Bolt",
+      damage: 100.0,
+      projectile_speed: 0.0,
+      projectile_lifetime: 0.3,
+      mana_cost: 100.0,
+      projectile_size: 1.0,
+      cast_delay_addition: 0.0,
+      critical_chance: 0.15,
+      spread: 0.0,
+      visuals:,
+      ui_sprite: "spell_icons/lightning_bolt.png",
+      on_hit_effects: [AreaOfEffect(10.0)],
+      is_beam: True,
+    ),
   )
 }
 
 /// Firebolt - Explodes on impact, damaging enemies in an area and setting them on fire
 pub fn fireball(visuals: SpellVisuals) -> Spell {
-  damaging_spell(
-    name: "Firebolt",
-    damage: 5.0,
-    projectile_speed: 20.0,
-    projectile_lifetime: 2.5,
-    mana_cost: 15.0,
-    projectile_size: 2.0,
-    visuals:,
-    ui_sprite: "spells/fireball.png",
-    on_hit_effects: [
-      AreaOfEffect(radius: 5.0),
-      ApplyBurning(duration: 3.0, damage_per_second: 2.0),
-    ],
+  DamageSpell(
+    id: Fireball,
+    kind: Damage(
+      name: "Firebolt",
+      damage: 5.0,
+      projectile_speed: 10.0,
+      projectile_lifetime: 2.5,
+      mana_cost: 15.0,
+      projectile_size: 2.0,
+      cast_delay_addition: 0.0,
+      critical_chance: 0.1,
+      spread: 10.0,
+      visuals:,
+      ui_sprite: "spell_icons/fireball.png",
+      on_hit_effects: [
+        AreaOfEffect(radius: 5.0),
+        ApplyBurning(duration: 3.0, damage_per_second: 1.0),
+      ],
+      is_beam: False,
+    ),
   )
 }
 
 /// Double Spell - casts 2 spells at once (no mana cost)
 pub fn double_spell() -> Spell {
-  MulticastSpell(Multicast(
-    name: "Double Spell",
-    mana_cost: 0.0,
-    spell_count: Fixed(2),
-    draw_add: 2,
-    ui_sprite: "spells/double_spell.png",
-  ))
-}
-
-/// Triple Spell - casts 3 spells at once
-pub fn triple_spell() -> Spell {
-  MulticastSpell(Multicast(
-    name: "Triple Spell",
-    mana_cost: 2.0,
-    spell_count: Fixed(3),
-    draw_add: 3,
-    ui_sprite: "spells/triple.png",
-  ))
-}
-
-/// Quadruple Spell - casts 4 spells at once
-pub fn quadruple_spell() -> Spell {
-  MulticastSpell(Multicast(
-    name: "Quadruple Spell",
-    mana_cost: 5.0,
-    spell_count: Fixed(4),
-    draw_add: 4,
-    ui_sprite: "spells/quadruple.png",
-  ))
-}
-
-/// Octuple Spell - casts 8 spells at once
-pub fn octuple_spell() -> Spell {
-  MulticastSpell(Multicast(
-    name: "Octuple Spell",
-    mana_cost: 30.0,
-    spell_count: Fixed(8),
-    draw_add: 8,
-    ui_sprite: "spells/octuple.png",
-  ))
-}
-
-/// Myriad Spell - casts all remaining spells
-pub fn myriad_spell() -> Spell {
-  MulticastSpell(Multicast(
-    name: "Myriad Spell",
-    mana_cost: 50.0,
-    spell_count: AllRemaining,
-    draw_add: 99,
-    ui_sprite: "spells/myriad.png",
-  ))
+  MulticastSpell(
+    id: DoubleSpell,
+    kind: Multicast(
+      name: "Double Spell",
+      mana_cost: 0.0,
+      spell_count: Fixed(2),
+      draw_add: 2,
+      ui_sprite: "spell_icons/double_spell.png",
+    ),
+  )
 }
 
 pub type ProjectileHit(id) {
@@ -335,7 +343,7 @@ pub type ProjectileHit(id) {
 /// Helper to get the base damage spell from a modified spell
 fn get_base_damage_spell(modified: ModifiedSpell) -> DamageSpell {
   case modified.base {
-    DamageSpell(damage_spell) -> damage_spell
+    DamageSpell(_, damage_spell) -> damage_spell
     _ -> panic as "Expected DamageSpell"
   }
 }
@@ -369,36 +377,73 @@ pub fn update(
       with: fn(acc, projectile) {
         let #(hits, remaining) = acc
 
-        // Find which enemy (if any) this projectile hit
-        let hit_enemy =
-          list.find(enemies, fn(enemy) {
-            vec3f.distance(projectile.position, enemy.position) <=. 1.0
-          })
+        // Handle beams differently - they only hit on spawn, but persist visually
+        case projectile.projectile_type {
+          Beam(target_position) -> {
+            // Beams always remain visible (added to remaining)
+            // But only create hits on their first frame
+            case projectile.time_alive <. beam_first_frame_threshold {
+              True -> {
+                // First frame - check for hit and create damage
+                let hit_enemy =
+                  list.find(enemies, fn(enemy) {
+                    vec3f.distance(target_position, enemy.position) <=. 2.0
+                  })
 
-        case hit_enemy {
-          Ok(enemy) -> {
-            // Projectile hit this enemy
-            let base_spell = get_base_damage_spell(projectile.spell)
-
-            // Create explosion using projectile's visuals
-            let hit =
-              ProjectileHit(
-                id: projectile.id,
-                direction: projectile.direction,
-                enemy_id: enemy.id,
-                damage: projectile.spell.final_damage,
-                position: projectile.position,
-                time_alive: 0.0,
-                animation_state: spritesheet.initial_state("hit"),
-                spritesheet: projectile.visuals.hit_spritesheet,
-                animation: projectile.visuals.hit_animation,
-                spell_effects: base_spell.on_hit_effects,
-              )
-            #([hit, ..hits], remaining)
+                case hit_enemy {
+                  Ok(enemy) -> {
+                    let base_spell = get_base_damage_spell(projectile.spell)
+                    let hit =
+                      ProjectileHit(
+                        id: projectile.id,
+                        direction: projectile.direction,
+                        enemy_id: enemy.id,
+                        damage: projectile.spell.final_damage,
+                        position: target_position,
+                        time_alive: 0.0,
+                        animation_state: spritesheet.initial_state("hit"),
+                        spritesheet: projectile.visuals.hit_spritesheet,
+                        animation: projectile.visuals.hit_animation,
+                        spell_effects: base_spell.on_hit_effects,
+                      )
+                    #([hit, ..hits], [projectile, ..remaining])
+                  }
+                  Error(_) -> #(hits, [projectile, ..remaining])
+                }
+              }
+              False -> {
+                // Not first frame - just keep rendering
+                #(hits, [projectile, ..remaining])
+              }
+            }
           }
-          Error(_) -> {
-            // Projectile didn't hit anything, keep it
-            #(hits, [projectile, ..remaining])
+          Standard -> {
+            // Standard projectiles: check collision and remove on hit
+            let hit_enemy =
+              list.find(enemies, fn(enemy) {
+                vec3f.distance(projectile.position, enemy.position) <=. 1.0
+              })
+
+            case hit_enemy {
+              Ok(enemy) -> {
+                let base_spell = get_base_damage_spell(projectile.spell)
+                let hit =
+                  ProjectileHit(
+                    id: projectile.id,
+                    direction: projectile.direction,
+                    enemy_id: enemy.id,
+                    damage: projectile.spell.final_damage,
+                    position: projectile.position,
+                    time_alive: 0.0,
+                    animation_state: spritesheet.initial_state("hit"),
+                    spritesheet: projectile.visuals.hit_spritesheet,
+                    animation: projectile.visuals.hit_animation,
+                    spell_effects: base_spell.on_hit_effects,
+                  )
+                #([hit, ..hits], remaining)
+              }
+              Error(_) -> #(hits, [projectile, ..remaining])
+            }
           }
         }
       },
@@ -472,14 +517,6 @@ pub fn update(
 }
 
 fn update_position(projectile: Projectile, delta_time: Float) -> Projectile {
-  let Vec3(x, y, z) = projectile.position
-  let Vec3(dx, dy, dz) = projectile.direction
-
-  let speed = projectile.spell.final_speed
-  let new_x = x +. dx *. speed *. delta_time
-  let new_y = y +. dy *. speed *. delta_time
-  let new_z = z +. dz *. speed *. delta_time
-
   let new_time_alive = projectile.time_alive +. delta_time
 
   // Update animation state using projectile's own animation
@@ -490,15 +527,34 @@ fn update_position(projectile: Projectile, delta_time: Float) -> Projectile {
       delta_time *. 1000.0,
     )
 
-  Projectile(
-    ..projectile,
-    position: Vec3(new_x, new_y, new_z),
-    time_alive: new_time_alive,
-    animation_state: new_animation_state,
-  )
+  // Beam projectiles don't move, standard projectiles do
+  case projectile.projectile_type {
+    Beam(_) ->
+      Projectile(
+        ..projectile,
+        time_alive: new_time_alive,
+        animation_state: new_animation_state,
+      )
+    Standard -> {
+      let Vec3(x, y, z) = projectile.position
+      let Vec3(dx, dy, dz) = projectile.direction
+
+      let speed = projectile.spell.final_speed
+      let new_x = x +. dx *. speed *. delta_time
+      let new_y = y +. dy *. speed *. delta_time
+      let new_z = z +. dz *. speed *. delta_time
+
+      Projectile(
+        ..projectile,
+        position: Vec3(new_x, new_y, new_z),
+        time_alive: new_time_alive,
+        animation_state: new_animation_state,
+      )
+    }
+  }
 }
 
-/// Update explosions and remove those that have finished
+/// Update projectile hits and remove those that have finished
 pub fn update_projectile_hits(
   projectile_hits: List(ProjectileHit(id)),
   delta_time: Float,
@@ -515,7 +571,7 @@ pub fn update_projectile_hits(
       animation_state: new_animation_state,
     )
   })
-  |> list.filter(fn(explosion) { explosion.time_alive <. 1.5 })
+  |> list.filter(fn(hit) { hit.time_alive <. projectile_hit_lifetime })
 }
 
 pub fn view(
@@ -523,28 +579,115 @@ pub fn view(
   projectiles: List(Projectile),
   camera_position: Vec3(Float),
 ) -> List(scene.Node(id)) {
-  list.map(projectiles, fn(projectile) {
-    // Constrained billboard: sprite faces camera while aligning with travel direction
-    // The fireball sprite animates left-to-right, so we want:
-    // - Sprite's horizontal axis aligned with travel direction (trail points backward)
-    // - Sprite faces the camera as much as possible
+  list.flat_map(projectiles, fn(projectile) {
+    case projectile.projectile_type {
+      Standard -> [view_standard_projectile(id, projectile, camera_position)]
+      Beam(target_position) ->
+        view_beam_projectile(id, projectile, target_position, camera_position)
+    }
+  })
+}
 
-    // Build rotation from direction and camera position
+fn view_standard_projectile(
+  id: fn(Int) -> id,
+  projectile: Projectile,
+  camera_position: Vec3(Float),
+) -> scene.Node(id) {
+  // Constrained billboard: sprite faces camera while aligning with travel direction
+  let rotation =
+    constrained_billboard_rotation(
+      projectile.position,
+      projectile.direction,
+      camera_position,
+    )
+
+  scene.animated_sprite(
+    id: id(projectile.id),
+    spritesheet: projectile.visuals.projectile_spritesheet,
+    animation: projectile.visuals.projectile_animation,
+    state: projectile.animation_state,
+    width: projectile.spell.final_size,
+    height: projectile.spell.final_size,
+    transform: transform.at(position: projectile.position)
+      |> transform.with_quaternion_rotation(rotation),
+    pixel_art: True,
+    physics: option.None,
+  )
+}
+
+fn view_beam_projectile(
+  id: fn(Int) -> id,
+  projectile: Projectile,
+  target_position: Vec3(Float),
+  camera_position: Vec3(Float),
+) -> List(scene.Node(id)) {
+  // Calculate beam direction and length
+  let beam_vector = vec3f.subtract(target_position, projectile.position)
+  let beam_length = vec3f.length(beam_vector)
+  let beam_direction = vec3f.normalize(beam_vector)
+
+  // Size of each sprite segment - ensure it's not zero or negative
+  let segment_size = float.max(projectile.spell.final_size, min_projectile_size)
+  let segment_count = float.ceiling(beam_length /. segment_size)
+  let segment_count_int = float.floor(segment_count) |> float.round()
+
+  // Create list of segments along the beam
+  list.range(0, segment_count_int - 1)
+  |> list.map(fn(i) {
+    // Calculate position for this segment
+    let t = int.to_float(i) *. segment_size
+    let segment_pos =
+      Vec3(
+        projectile.position.x +. beam_direction.x *. t,
+        projectile.position.y +. beam_direction.y *. t,
+        projectile.position.z +. beam_direction.z *. t,
+      )
+
+    // Add slight random offset perpendicular to beam for lightning effect
+    let offset_amount = beam_lightning_offset
+    let random_offset_x = { float.random() -. 0.5 } *. offset_amount
+    let random_offset_y = { float.random() -. 0.5 } *. offset_amount
+
+    // Find perpendicular vectors to beam_direction
+    let up = Vec3(0.0, 1.0, 0.0)
+    let right = vec3f.normalize(vec3f.cross(beam_direction, up))
+    let actual_up = vec3f.normalize(vec3f.cross(right, beam_direction))
+
+    let offset_pos =
+      Vec3(
+        segment_pos.x
+          +. right.x
+          *. random_offset_x
+          +. actual_up.x
+          *. random_offset_y,
+        segment_pos.y
+          +. right.y
+          *. random_offset_x
+          +. actual_up.y
+          *. random_offset_y,
+        segment_pos.z
+          +. right.z
+          *. random_offset_x
+          +. actual_up.z
+          *. random_offset_y,
+      )
+
+    // Build rotation facing camera
     let rotation =
       constrained_billboard_rotation(
-        projectile.position,
-        projectile.direction,
+        offset_pos,
+        beam_direction,
         camera_position,
       )
 
     scene.animated_sprite(
-      id: id(projectile.id),
+      id: id(projectile.id * 1000 + i),
       spritesheet: projectile.visuals.projectile_spritesheet,
       animation: projectile.visuals.projectile_animation,
       state: projectile.animation_state,
-      width: projectile.spell.final_size,
-      height: projectile.spell.final_size,
-      transform: transform.at(position: projectile.position)
+      width: segment_size,
+      height: segment_size,
+      transform: transform.at(position: offset_pos)
         |> transform.with_quaternion_rotation(rotation),
       pixel_art: True,
       physics: option.None,
@@ -600,7 +743,7 @@ pub fn view_hits(
   camera_position: Vec3(Float),
 ) -> scene.Node(id.Id) {
   // Full 3D billboard using proper quaternion-based look-at
-  // The explosion sprite should face the camera
+  // The hit sprite should face the camera
   let from_transform = transform.at(position: hit.position)
   let to_transform = transform.at(position: camera_position)
   let look_at_transform =

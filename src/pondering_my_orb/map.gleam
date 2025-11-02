@@ -14,25 +14,22 @@ pub type Box
 pub type Ground
 
 pub opaque type Obstacle(kind) {
-  Box(instances: List(#(asset.Object3D, asset.Texture, Transform)))
-  Ground(model: asset.Object3D, instances: List(Transform))
+  Foliage(instances: List(#(asset.Object3D, asset.Texture, Transform)))
+  Ground(instances: List(Transform))
 }
 
-pub fn box(
+pub fn foliage(
   instances: List(#(asset.Object3D, asset.Texture, Transform)),
 ) -> Obstacle(Box) {
-  Box(instances:)
+  Foliage(instances:)
 }
 
-pub fn ground(
-  model: asset.Object3D,
-  instances: List(Transform),
-) -> Obstacle(Ground) {
-  Ground(model:, instances:)
+pub fn ground(instances: List(Transform)) -> Obstacle(Ground) {
+  Ground(instances:)
 }
 
 pub fn view_foliage(obstacles: Obstacle(Box), base_id: Id) -> scene.Node(Id) {
-  let assert Box(instances:) = obstacles
+  let assert Foliage(instances:) = obstacles
 
   // Group instances by model and texture
   // For now, assuming all instances share the same model and texture

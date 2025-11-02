@@ -4,6 +4,7 @@ import gleam/int
 import gleam/io
 import gleam/list
 import gleam/option
+import gleam/string
 import iv
 import lustre
 import lustre/attribute
@@ -47,6 +48,13 @@ pub type Model(tiramisu_msg) {
     current_spell_index: Int,
     is_recharging: Bool,
     camera_distance: Float,
+    // Wand stats
+    wand_max_mana: Float,
+    wand_mana_recharge_rate: Float,
+    wand_cast_delay: Float,
+    wand_recharge_time: Float,
+    wand_capacity: Int,
+    wand_spread: Float,
   )
 }
 
@@ -109,6 +117,13 @@ pub type GameState {
     time_since_last_cast: Float,
     current_spell_index: Int,
     is_recharging: Bool,
+    // Wand stats
+    wand_max_mana: Float,
+    wand_mana_recharge_rate: Float,
+    wand_cast_delay: Float,
+    wand_recharge_time: Float,
+    wand_capacity: Int,
+    wand_spread: Float,
   )
 }
 
@@ -142,6 +157,12 @@ pub fn init(wrapper) -> #(Model(tiramisu_msg), effect.Effect(Msg)) {
       current_spell_index: 0,
       is_recharging: False,
       camera_distance: 5.0,
+      wand_max_mana: 100.0,
+      wand_mana_recharge_rate: 30.0,
+      wand_cast_delay: 0.2,
+      wand_recharge_time: 0.5,
+      wand_capacity: 3,
+      wand_spread: 0.0,
     ),
     effect.batch([
       tiramisu_ui.register_lustre(),
@@ -205,6 +226,12 @@ pub fn update(
           time_since_last_cast: state.time_since_last_cast,
           current_spell_index: state.current_spell_index,
           is_recharging: state.is_recharging,
+          wand_max_mana: state.wand_max_mana,
+          wand_mana_recharge_rate: state.wand_mana_recharge_rate,
+          wand_cast_delay: state.wand_cast_delay,
+          wand_recharge_time: state.wand_recharge_time,
+          wand_capacity: state.wand_capacity,
+          wand_spread: state.wand_spread,
         ),
         effect.none(),
       )
@@ -373,9 +400,9 @@ pub fn update(
     SpellRewardClicked(selected_spell) -> {
       io.println("=== UI: Spell Reward Clicked ===")
       let spell_name = case selected_spell {
-        spell.DamageSpell(dmg) -> dmg.name
-        spell.ModifierSpell(mod) -> mod.name
-        spell.MulticastSpell(multicast) -> multicast.name
+        spell.DamageSpell(_, dmg) -> dmg.name
+        spell.ModifierSpell(_, mod) -> mod.name
+        spell.MulticastSpell(_, multicast) -> multicast.name
       }
       io.println("UI: Clicked spell: " <> spell_name)
 
@@ -615,120 +642,140 @@ fn view_playing(model: Model(tiramisu_msg)) -> element.Element(Msg) {
           ),
           attribute.style("image-rendering", "pixelated"),
           attribute.style("backdrop-filter", "blur(4px)"),
-          attribute.style("z-index", "200"),
+          attribute.style("z-index", "350"),
         ],
-        [
-          // Health section
-          html.div([attribute.class("mb-4")], [
-            html.div([attribute.class("flex items-center gap-2 mb-2")], [
-              html.span([attribute.class("text-red-400 text-lg")], [
-                html.text("❤"),
+        list.flatten([
+          [
+            // Health section
+            html.div([attribute.class("mb-4")], [
+              html.div([attribute.class("text-gray-300 text-sm mb-1")], [
+                html.text(
+                  float_to_string_rounded(model.player_health)
+                  <> " / "
+                  <> float_to_string_rounded(model.player_max_health),
+                ),
               ]),
-              html.span([attribute.class("text-white font-bold")], [
-                html.text("HEALTH"),
-              ]),
-            ]),
-            html.div([attribute.class("text-gray-300 text-sm mb-1")], [
-              html.text(
-                float_to_string_rounded(model.player_health)
-                <> " / "
-                <> float_to_string_rounded(model.player_max_health),
+              render_pixel_bar(
+                current: model.player_health,
+                max: model.player_max_health,
+                color_class: health_color_class(
+                  model.player_health,
+                  model.player_max_health,
+                ),
+                bg_class: "bg-red-950",
               ),
             ]),
-            render_pixel_bar(
-              current: model.player_health,
-              max: model.player_max_health,
-              color_class: health_color_class(
-                model.player_health,
-                model.player_max_health,
-              ),
-              bg_class: "bg-red-950",
-            ),
-          ]),
-          // Mana section
-          html.div([attribute.class("mb-4")], [
-            html.div([attribute.class("flex items-center gap-2 mb-2")], [
-              html.span([attribute.class("text-blue-400 text-lg")], [
-                html.text("✦"),
+            // Mana section
+            html.div([attribute.class("mb-4")], [
+              html.div([attribute.class("text-gray-300 text-sm mb-1")], [
+                html.text(
+                  float_to_string_rounded(model.player_mana)
+                  <> " / "
+                  <> float_to_string_rounded(model.player_max_mana),
+                ),
               ]),
-              html.span([attribute.class("text-white font-bold")], [
-                html.text("MANA"),
-              ]),
-            ]),
-            html.div([attribute.class("text-gray-300 text-sm mb-1")], [
-              html.text(
-                float_to_string_rounded(model.player_mana)
-                <> " / "
-                <> float_to_string_rounded(model.player_max_mana),
+              render_pixel_bar(
+                current: model.player_mana,
+                max: model.player_max_mana,
+                color_class: "bg-blue-500",
+                bg_class: "bg-blue-950",
               ),
             ]),
-            render_pixel_bar(
-              current: model.player_mana,
-              max: model.player_max_mana,
-              color_class: "bg-blue-500",
-              bg_class: "bg-blue-950",
-            ),
-          ]),
-          // Wand section
-          html.div([], [
-            html.div([attribute.class("flex items-center gap-2 mb-2")], [
-              html.span([attribute.class("text-amber-400 text-lg")], [
-                html.text("⚡"),
-              ]),
-              html.span([attribute.class("text-white font-bold")], [
-                html.text("WAND"),
-              ]),
-              html.span([attribute.class("text-purple-400 text-sm ml-2")], [
-                html.text("Draw: " <> int.to_string(model.spells_per_cast)),
-              ]),
+            // Wand section
+            html.div([], [
+              // Cast delay bar
+              render_cast_delay_bar(
+                model.time_since_last_cast,
+                model.cast_delay,
+                model.recharge_time,
+                model.current_spell_index,
+                iv.length(model.wand_slots),
+                model.is_recharging,
+              ),
+              render_wand_slots(
+                model.wand_slots,
+                model.drag_state,
+                model.casting_spell_indices,
+              ),
             ]),
-            // Cast delay bar
-            render_cast_delay_bar(
-              model.time_since_last_cast,
-              model.cast_delay,
-              model.recharge_time,
-              model.current_spell_index,
-              iv.length(model.wand_slots),
-              model.is_recharging,
-            ),
-            render_wand_slots(
-              model.wand_slots,
-              model.drag_state,
-              model.casting_spell_indices,
-            ),
-          ]),
-          html.div([attribute.class("mb-4")], [
-            html.div([attribute.class("flex items-center gap-2 mb-2")], [
-              html.span([attribute.class("text-yellow-400 text-lg")], [
-                html.text("⭐"),
+            html.div([attribute.class("mb-4")], [
+              html.div([attribute.class("text-gray-300 text-sm m-1")], [
+                html.text(float_to_string_rounded(model.score.total_score)),
               ]),
-              html.span([attribute.class("text-white font-bold")], [
-                html.text("SCORE"),
-              ]),
+              // Streak display
+              case model.score.current_multiplier >. 1.0 {
+                True ->
+                  html.div([attribute.class("text-orange-400 text-xs")], [
+                    html.text(
+                      "STREAK: "
+                      <> float.to_string(float.to_precision(
+                        model.score.current_multiplier,
+                        2,
+                      ))
+                      <> "x",
+                    ),
+                  ])
+                False ->
+                  html.div([attribute.class("text-gray-500 text-xs")], [
+                    html.text("No streak"),
+                  ])
+              },
             ]),
-            html.div([attribute.class("text-gray-300 text-sm mb-1")], [
-              html.text(float_to_string_rounded(model.score.total_score)),
-            ]),
-            // Streak display
-            case model.score.current_multiplier >. 1.0 {
-              True ->
-                html.div([attribute.class("text-orange-400 text-xs")], [
-                  html.text(
-                    "STREAK: "
-                    <> float.to_string(float.to_precision(
-                      model.score.current_multiplier,
-                      2,
-                    ))
-                    <> "x",
+          ],
+          // Wand stats section (only when paused)
+          case model.is_paused || model.resuming {
+            True -> [
+              html.div(
+                [
+                  attribute.class(
+                    "mt-4 pt-4 border-t-2 border-amber-500/50 pointer-events-auto",
                   ),
-                ])
-              False ->
-                html.div([attribute.class("text-gray-500 text-xs")], [
-                  html.text("No streak"),
-                ])
-            },
-          ]),
-        ],
+                ],
+                [
+                  html.div([attribute.class("flex items-center gap-2 mb-3")], [
+                    html.span([attribute.class("text-amber-300 text-sm")], [
+                      html.text("⚡"),
+                    ]),
+                    html.span(
+                      [attribute.class("text-amber-300 font-bold text-sm")],
+                      [
+                        html.text("WAND STATS"),
+                      ],
+                    ),
+                  ]),
+                  html.div([attribute.class("space-y-1")], [
+                    view_wand_stat_compact(
+                      "Cast Delay",
+                      model.wand_cast_delay,
+                      "s",
+                    ),
+                    view_wand_stat_compact(
+                      "Recharge",
+                      model.wand_recharge_time,
+                      "s",
+                    ),
+                    view_wand_stat_compact("Max Mana", model.wand_max_mana, ""),
+                    view_wand_stat_compact(
+                      "Recharge",
+                      model.wand_mana_recharge_rate,
+                      "/s",
+                    ),
+                    html.div([attribute.class("flex justify-between text-xs")], [
+                      html.span([attribute.class("text-blue-200")], [
+                        html.text("Capacity:"),
+                      ]),
+                      html.span([attribute.class("text-white font-bold")], [
+                        html.text(int.to_string(model.wand_capacity)),
+                      ]),
+                    ]),
+                    view_wand_stat_compact("Spread", model.wand_spread, "°"),
+                  ]),
+                ],
+              ),
+            ]
+            False -> []
+          },
+        ]),
       ),
       // XP bar at bottom of screen
       html.div(
@@ -895,7 +942,7 @@ fn view_pause_menu(model: Model(tiramisu_msg)) -> element.Element(Msg) {
   html.div(
     [
       attribute.class(
-        "fixed inset-0 flex items-center justify-center bg-black/70 backdrop-blur-sm pointer-events-auto",
+        "fixed inset-0 flex items-center justify-center bg-black/70 pointer-events-auto",
       ),
       attribute.style("z-index", "300"),
     ],
@@ -909,14 +956,17 @@ fn view_pause_menu(model: Model(tiramisu_msg)) -> element.Element(Msg) {
         ],
         case model.is_settings_open {
           True -> view_settings_menu(model)
-          False -> view_pause_menu_content(model.resuming)
+          False -> view_pause_menu_content(model.resuming, model)
         },
       ),
     ],
   )
 }
 
-fn view_pause_menu_content(resuming: Bool) -> List(element.Element(Msg)) {
+fn view_pause_menu_content(
+  resuming: Bool,
+  _model: Model(tiramisu_msg),
+) -> List(element.Element(Msg)) {
   [
     // Title
     html.div([attribute.class("text-center mb-8")], [
@@ -943,7 +993,7 @@ fn view_pause_menu_content(resuming: Bool) -> List(element.Element(Msg)) {
       html.button(
         [
           attribute.class(
-            "px-12 py-4 text-2xl font-bold bg-gradient-to-r from-green-600 to-emerald-600 text-white rounded-lg shadow-xl hover:scale-105 transform transition-all duration-200 border-4 border-green-400 cursor-pointer min-w-[300px]",
+            "px-12 py-4 text-2xl font-bold bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-lg shadow-xl hover:scale-105 transform transition-all duration-200 border-4 border-purple-400 cursor-pointer min-w-[300px]",
           ),
           attribute.style("text-shadow", "2px 2px 4px rgba(0,0,0,0.5)"),
           attribute.disabled(resuming),
@@ -1050,11 +1100,24 @@ fn view_settings_menu(model: Model(tiramisu_msg)) -> List(element.Element(Msg)) 
   ]
 }
 
+fn view_wand_stat_compact(
+  label: String,
+  value: Float,
+  unit: String,
+) -> element.Element(Msg) {
+  html.div([attribute.class("flex justify-between text-xs")], [
+    html.span([attribute.class("text-blue-200")], [html.text(label <> ":")]),
+    html.span([attribute.class("text-white font-bold")], [
+      html.text(float.to_string(float.to_precision(value, 2)) <> " " <> unit),
+    ]),
+  ])
+}
+
 fn view_spell_reward_card(reward_spell: spell.Spell) -> element.Element(Msg) {
   let #(name, sprite_path, description, type_label, type_color) = case
     reward_spell
   {
-    spell.DamageSpell(dmg_spell) -> #(
+    spell.DamageSpell(_, dmg_spell) -> #(
       dmg_spell.name,
       dmg_spell.ui_sprite,
       "Damage: "
@@ -1064,7 +1127,7 @@ fn view_spell_reward_card(reward_spell: spell.Spell) -> element.Element(Msg) {
       "DAMAGE",
       "bg-red-600 border-red-400",
     )
-    spell.ModifierSpell(mod_spell) -> {
+    spell.ModifierSpell(_, mod_spell) -> {
       let effects =
         [
           case mod_spell.damage_multiplier {
@@ -1119,7 +1182,7 @@ fn view_spell_reward_card(reward_spell: spell.Spell) -> element.Element(Msg) {
         "bg-green-600 border-green-400",
       )
     }
-    spell.MulticastSpell(multicast_spell) -> {
+    spell.MulticastSpell(_, multicast_spell) -> {
       let description = case multicast_spell.spell_count {
         spell.Fixed(n) -> "Casts " <> int.to_string(n) <> " spells at once"
         spell.AllRemaining -> "Casts all remaining spells"
@@ -1134,12 +1197,15 @@ fn view_spell_reward_card(reward_spell: spell.Spell) -> element.Element(Msg) {
     }
   }
 
+  let tooltip_text = spell_tooltip(reward_spell)
+
   html.button(
     [
       attribute.class(
         "flex flex-col items-center p-6 bg-gray-900/80 border-4 rounded-lg hover:scale-105 hover:bg-gray-800/80 transform transition-all duration-200 cursor-pointer min-w-[200px]",
       ),
       attribute.class(type_color),
+      attribute.attribute("title", tooltip_text),
       event.on_click(SpellRewardClicked(reward_spell)),
     ],
     [
@@ -1398,18 +1464,20 @@ fn render_wand_slot_item(
   let #(slot, slot_index) = ensaimada.item_data(item)
   let is_casting = list.contains(casting_indices, slot_index)
 
-  let #(content_element) = case slot {
+  let #(content_element, tooltip) = case slot {
     option.Some(spell_item) -> {
       let sprite_path = spell_ui_sprite(spell_item)
+      let tooltip_text = spell_tooltip(spell_item)
       #(
         html.img([
           attribute.src(sprite_path),
           attribute.class("w-full h-full object-contain"),
           attribute.style("image-rendering", "pixelated"),
         ]),
+        tooltip_text,
       )
     }
-    option.None -> #(html.div([], []))
+    option.None -> #(html.div([], []), "")
   }
 
   let border_class = case is_casting {
@@ -1418,15 +1486,23 @@ fn render_wand_slot_item(
     False -> "border-2"
   }
 
+  let tooltip_attrs = case tooltip {
+    "" -> []
+    text -> [attribute.attribute("title", text)]
+  }
+
   html.div(
-    [
-      attribute.class(
-        "w-12 h-12 "
-        <> border_class
-        <> " flex items-center justify-center shadow-lg relative transition-all hover:scale-110 cursor-move pointer-events-auto",
-      ),
-      attribute.style("image-rendering", "pixelated"),
-    ],
+    list.flatten([
+      [
+        attribute.class(
+          "w-12 h-12 "
+          <> border_class
+          <> " flex items-center justify-center shadow-lg relative transition-all hover:scale-110 cursor-move pointer-events-auto",
+        ),
+        attribute.style("image-rendering", "pixelated"),
+      ],
+      tooltip_attrs,
+    ]),
     [
       content_element,
       // Inner shadow effect
@@ -1483,23 +1559,32 @@ fn render_spell_bag_item(
 ) -> element.Element(Msg) {
   let #(spell_item, count) = ensaimada.item_data(item)
   let sprite_path = spell_ui_sprite(spell_item)
+  let tooltip_text = spell_tooltip(spell_item)
   let #(bg_class, border_class) = case spell_item {
-    spell.DamageSpell(_) -> #("bg-red-600", "border-red-400")
-    spell.ModifierSpell(_) -> #("bg-green-600", "border-green-400")
-    spell.MulticastSpell(_) -> #("bg-purple-600", "border-purple-400")
+    spell.DamageSpell(_, _) -> #("bg-red-600", "border-red-400")
+    spell.ModifierSpell(_, _) -> #("bg-green-600", "border-green-400")
+    spell.MulticastSpell(_, _) -> #("bg-purple-600", "border-purple-400")
+  }
+
+  let tooltip_attrs = case tooltip_text {
+    "" -> []
+    text -> [attribute.attribute("title", text)]
   }
 
   html.div(
-    [
-      attribute.class(
-        "relative w-12 h-12 "
-        <> bg_class
-        <> " border-2 "
-        <> border_class
-        <> " flex items-center justify-center shadow-lg transition-all hover:scale-110 cursor-move pointer-events-auto",
-      ),
-      attribute.style("image-rendering", "pixelated"),
-    ],
+    list.flatten([
+      [
+        attribute.class(
+          "relative w-12 h-12 "
+          <> bg_class
+          <> " border-2 "
+          <> border_class
+          <> " flex items-center justify-center shadow-lg transition-all hover:scale-110 cursor-move pointer-events-auto",
+        ),
+        attribute.style("image-rendering", "pixelated"),
+      ],
+      tooltip_attrs,
+    ]),
     [
       html.img([
         attribute.src(sprite_path),
@@ -1525,9 +1610,9 @@ fn render_spell_bag_item(
 
 fn spell_ui_sprite(spell_item: spell.Spell) -> String {
   case spell_item {
-    spell.DamageSpell(damage_spell) -> damage_spell.ui_sprite
-    spell.ModifierSpell(modifier_spell) -> modifier_spell.ui_sprite
-    spell.MulticastSpell(multicast_spell) -> multicast_spell.ui_sprite
+    spell.DamageSpell(_, damage_spell) -> damage_spell.ui_sprite
+    spell.ModifierSpell(_, modifier_spell) -> modifier_spell.ui_sprite
+    spell.MulticastSpell(_, multicast_spell) -> multicast_spell.ui_sprite
   }
 }
 
@@ -1535,6 +1620,255 @@ fn float_to_string_rounded(value: Float) -> String {
   value
   |> float.round()
   |> int.to_string()
+}
+
+/// Generate tooltip text showing spell stats
+fn spell_tooltip(spell_item: spell.Spell) -> String {
+  case spell_item {
+    spell.DamageSpell(_, damage_spell) -> {
+      let stats = [
+        damage_spell.name,
+        "─────────────",
+        "Damage: "
+          <> float.to_string(float.to_precision(damage_spell.damage, 1)),
+        "Speed: "
+          <> float.to_string(float.to_precision(
+          damage_spell.projectile_speed,
+          1,
+        )),
+        "Lifetime: "
+          <> float.to_string(float.to_precision(
+          damage_spell.projectile_lifetime,
+          1,
+        ))
+          <> "s",
+        "Size: "
+          <> float.to_string(float.to_precision(damage_spell.projectile_size, 1)),
+        "Mana: "
+          <> float.to_string(float.to_precision(damage_spell.mana_cost, 1)),
+      ]
+
+      // Add cast delay if non-zero
+      let stats = case damage_spell.cast_delay_addition {
+        0.0 -> stats
+        delay -> [
+          "Cast Delay: +"
+            <> float.to_string(float.to_precision(delay, 2))
+            <> "s",
+          ..stats
+        ]
+      }
+
+      // Add critical chance if non-zero
+      let stats = case damage_spell.critical_chance {
+        0.0 -> stats
+        crit -> {
+          let crit_percent =
+            float.to_string(float.to_precision(crit *. 100.0, 1))
+          ["Crit Chance: " <> crit_percent <> "%", ..stats]
+        }
+      }
+
+      // Add spread if non-zero
+      let stats = case damage_spell.spread {
+        0.0 -> stats
+        spread -> [
+          "Spread: +" <> float.to_string(float.to_precision(spread, 1)) <> "°",
+          ..stats
+        ]
+      }
+
+      string.join(list.reverse(stats), "\n")
+    }
+    spell.ModifierSpell(_, modifier_spell) -> {
+      let stats = [modifier_spell.name, "─────────────"]
+
+      // Damage
+      let stats = case
+        modifier_spell.damage_multiplier,
+        modifier_spell.damage_addition
+      {
+        1.0, 0.0 -> stats
+        mult, add -> {
+          let text = case mult, add {
+            1.0, _ -> "Damage: +" <> float.to_string(float.to_precision(add, 1))
+            _, 0.0 ->
+              "Damage: x" <> float.to_string(float.to_precision(mult, 2))
+            _, _ ->
+              "Damage: +"
+              <> float.to_string(float.to_precision(add, 1))
+              <> ", x"
+              <> float.to_string(float.to_precision(mult, 2))
+          }
+          [text, ..stats]
+        }
+      }
+
+      // Speed
+      let stats = case
+        modifier_spell.projectile_speed_multiplier,
+        modifier_spell.projectile_speed_addition
+      {
+        1.0, 0.0 -> stats
+        mult, add -> {
+          let text = case mult, add {
+            1.0, _ -> "Speed: +" <> float.to_string(float.to_precision(add, 1))
+            _, 0.0 -> "Speed: x" <> float.to_string(float.to_precision(mult, 2))
+            _, _ ->
+              "Speed: +"
+              <> float.to_string(float.to_precision(add, 1))
+              <> ", x"
+              <> float.to_string(float.to_precision(mult, 2))
+          }
+          [text, ..stats]
+        }
+      }
+
+      // Lifetime
+      let stats = case
+        modifier_spell.projectile_lifetime_multiplier,
+        modifier_spell.projectile_lifetime_addition
+      {
+        1.0, 0.0 -> stats
+        mult, add -> {
+          let text = case mult, add {
+            1.0, _ ->
+              "Lifetime: +"
+              <> float.to_string(float.to_precision(add, 1))
+              <> "s"
+            _, 0.0 ->
+              "Lifetime: x" <> float.to_string(float.to_precision(mult, 2))
+            _, _ ->
+              "Lifetime: +"
+              <> float.to_string(float.to_precision(add, 1))
+              <> "s, x"
+              <> float.to_string(float.to_precision(mult, 2))
+          }
+          [text, ..stats]
+        }
+      }
+
+      // Size
+      let stats = case
+        modifier_spell.projectile_size_multiplier,
+        modifier_spell.projectile_size_addition
+      {
+        1.0, 0.0 -> stats
+        mult, add -> {
+          let text = case mult, add {
+            1.0, _ -> "Size: +" <> float.to_string(float.to_precision(add, 1))
+            _, 0.0 -> "Size: x" <> float.to_string(float.to_precision(mult, 2))
+            _, _ ->
+              "Size: +"
+              <> float.to_string(float.to_precision(add, 1))
+              <> ", x"
+              <> float.to_string(float.to_precision(mult, 2))
+          }
+          [text, ..stats]
+        }
+      }
+
+      // Cast delay
+      let stats = case
+        modifier_spell.cast_delay_multiplier,
+        modifier_spell.cast_delay_addition
+      {
+        1.0, 0.0 -> stats
+        mult, add -> {
+          let text = case mult, add {
+            1.0, _ ->
+              "Cast Delay: +"
+              <> float.to_string(float.to_precision(add, 2))
+              <> "s"
+            _, 0.0 ->
+              "Cast Delay: x" <> float.to_string(float.to_precision(mult, 2))
+            _, _ ->
+              "Cast Delay: +"
+              <> float.to_string(float.to_precision(add, 2))
+              <> "s, x"
+              <> float.to_string(float.to_precision(mult, 2))
+          }
+          [text, ..stats]
+        }
+      }
+
+      // Critical chance
+      let stats = case
+        modifier_spell.critical_chance_multiplier,
+        modifier_spell.critical_chance_addition
+      {
+        1.0, 0.0 -> stats
+        mult, add -> {
+          let text = case mult, add {
+            1.0, _ -> {
+              let percent = float.to_string(float.to_precision(add *. 100.0, 1))
+              "Crit Chance: +" <> percent <> "%"
+            }
+            _, 0.0 ->
+              "Crit Chance: x" <> float.to_string(float.to_precision(mult, 2))
+            _, _ -> {
+              let percent = float.to_string(float.to_precision(add *. 100.0, 1))
+              "Crit Chance: +"
+              <> percent
+              <> "%, x"
+              <> float.to_string(float.to_precision(mult, 2))
+            }
+          }
+          [text, ..stats]
+        }
+      }
+
+      // Spread
+      let stats = case
+        modifier_spell.spread_multiplier,
+        modifier_spell.spread_addition
+      {
+        1.0, 0.0 -> stats
+        mult, add -> {
+          let text = case mult, add {
+            1.0, _ ->
+              "Spread: +" <> float.to_string(float.to_precision(add, 1)) <> "°"
+            _, 0.0 ->
+              "Spread: x" <> float.to_string(float.to_precision(mult, 2))
+            _, _ ->
+              "Spread: +"
+              <> float.to_string(float.to_precision(add, 1))
+              <> "°, x"
+              <> float.to_string(float.to_precision(mult, 2))
+          }
+          [text, ..stats]
+        }
+      }
+
+      // Mana cost
+      let stats = case modifier_spell.mana_cost {
+        0.0 -> stats
+        cost -> [
+          "Mana: " <> float.to_string(float.to_precision(cost, 1)),
+          ..stats
+        ]
+      }
+
+      string.join(list.reverse(stats), "\n")
+    }
+    spell.MulticastSpell(_, multicast_spell) -> {
+      let count_text = case multicast_spell.spell_count {
+        spell.Fixed(n) -> "Casts " <> int.to_string(n) <> " spells"
+        spell.AllRemaining -> "Casts all remaining spells"
+      }
+
+      string.join(
+        [
+          multicast_spell.name,
+          "─────────────",
+          count_text,
+          "Mana: "
+            <> float.to_string(float.to_precision(multicast_spell.mana_cost, 1)),
+        ],
+        "\n",
+      )
+    }
+  }
 }
 
 fn render_cast_delay_bar(
