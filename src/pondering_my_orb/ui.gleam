@@ -5,6 +5,8 @@ import gleam/io
 import gleam/list
 import gleam/option
 import gleam/string
+import grille_pain
+import grille_pain/lustre/toast
 import iv
 import lustre
 import lustre/attribute
@@ -12,11 +14,14 @@ import lustre/effect
 import lustre/element
 import lustre/element/html
 import lustre/event
+import pondering_my_orb/loot
+import pondering_my_orb/perk
 import pondering_my_orb/pointer_lock
 import pondering_my_orb/pointer_lock_request
 import pondering_my_orb/score
 import pondering_my_orb/spell
 import pondering_my_orb/spell_bag
+import pondering_my_orb/wand
 import tiramisu/ui as tiramisu_ui
 
 pub type Model(tiramisu_msg) {
@@ -55,6 +60,9 @@ pub type Model(tiramisu_msg) {
     wand_recharge_time: Float,
     wand_capacity: Int,
     wand_spread: Float,
+    // Wand selection
+    pending_wand: option.Option(wand.Wand),
+    showing_wand_selection: Bool,
   )
 }
 
@@ -81,6 +89,9 @@ pub type Msg {
   CameraDistanceChanged(Float)
   PointerLockExited
   PointerLockAcquired
+  LootPickedUp(loot.LootType)
+  AcceptWand
+  RejectWand
   NoOp
 }
 
@@ -96,6 +107,9 @@ pub type UiToGameMsg {
   GamePaused
   GameResumed
   UpdateCameraDistance(Float)
+  ApplyLoot(loot.LootType)
+  CloseLootUI
+  WandSelectionComplete
 }
 
 pub type GameState {
@@ -163,11 +177,17 @@ pub fn init(wrapper) -> #(Model(tiramisu_msg), effect.Effect(Msg)) {
       wand_recharge_time: 0.5,
       wand_capacity: 3,
       wand_spread: 0.0,
+      pending_wand: option.None,
+      showing_wand_selection: False,
     ),
     effect.batch([
       tiramisu_ui.register_lustre(),
       pointer_lock.setup_pointer_lock_listener(fn() { PointerLockExited }, fn() {
         PointerLockAcquired
+      }),
+      effect.from(fn(_) {
+        let assert Ok(_) = grille_pain.simple()
+        Nil
       }),
     ]),
   )
@@ -464,17 +484,22 @@ pub fn update(
           )
           #(Model(..model, resuming: False), effect.none())
         }
-        // Only auto-pause if we're actually playing and not in level-up and not already paused
+        // Only auto-pause if we're actually playing and not in level-up and not already paused and not showing wand selection
         False ->
-          case model.game_phase, model.spell_rewards, model.is_paused {
-            Playing, option.None, False -> {
+          case
+            model.game_phase,
+            model.spell_rewards,
+            model.is_paused,
+            model.showing_wand_selection
+          {
+            Playing, option.None, False, False -> {
               io.println("=== UI: Pointer Lock Exited - Auto Pausing ===")
               #(
                 Model(..model, is_paused: True),
                 tiramisu_ui.dispatch_to_tiramisu(model.wrapper(GamePaused)),
               )
             }
-            _, _, _ -> #(model, effect.none())
+            _, _, _, _ -> #(model, effect.none())
           }
       }
     }
@@ -496,6 +521,79 @@ pub fn update(
         }
         False -> #(model, effect.none())
       }
+    }
+    LootPickedUp(loot_type) -> {
+      // For perks: show toast and apply immediately
+      // For wands: show modal for user to decide
+      case loot_type {
+        loot.PerkLoot(perk_value) -> {
+          let perk_info = perk.get_info(perk_value)
+          let toast_message =
+            "⭐ " <> perk_info.name <> " (" <> perk_info.description <> ")"
+
+          #(
+            model,
+            effect.batch([
+              toast.toast(toast_message),
+              tiramisu_ui.dispatch_to_tiramisu(
+                model.wrapper(ApplyLoot(loot_type)),
+              ),
+            ]),
+          )
+        }
+        loot.WandLoot(new_wand) -> {
+          // Show wand selection modal, freeze game, and exit pointer lock
+          #(
+            Model(
+              ..model,
+              pending_wand: option.Some(new_wand),
+              showing_wand_selection: True,
+            ),
+            effect.batch([
+              tiramisu_ui.dispatch_to_tiramisu(model.wrapper(CloseLootUI)),
+              effect.from(fn(_) {
+                // Exit pointer lock so user can click buttons
+                let _ = pointer_lock_request.exit_pointer_lock()
+                Nil
+              }),
+            ]),
+          )
+        }
+      }
+    }
+    AcceptWand -> {
+      // User accepted the new wand
+      case model.pending_wand {
+        option.Some(new_wand) -> {
+          #(
+            Model(
+              ..model,
+              pending_wand: option.None,
+              showing_wand_selection: False,
+            ),
+            effect.batch([
+              tiramisu_ui.dispatch_to_tiramisu(
+                model.wrapper(ApplyLoot(loot.WandLoot(new_wand))),
+              ),
+              tiramisu_ui.dispatch_to_tiramisu(
+                model.wrapper(WandSelectionComplete),
+              ),
+              effect.from(fn(_) { pointer_lock_request.request_pointer_lock_sync() }),
+            ]),
+          )
+        }
+        option.None -> #(model, effect.none())
+      }
+    }
+    RejectWand -> {
+      // User rejected the new wand
+      #(
+        Model(..model, pending_wand: option.None, showing_wand_selection: False),
+        effect.batch([
+          tiramisu_ui.dispatch_to_tiramisu(model.wrapper(WandSelectionComplete)),
+          effect.from(fn(_) { pointer_lock_request.request_pointer_lock_sync() }),
+        ]),
+      )
     }
     NoOp -> #(model, effect.none())
   }
@@ -829,10 +927,22 @@ fn view_playing(model: Model(tiramisu_msg)) -> element.Element(Msg) {
         option.Some(rewards) -> view_spell_rewards_modal(model, rewards)
         option.None -> html.div([], [])
       },
-      // Pause menu - show when paused or resuming (but not during level-up)
-      case model.is_paused, model.resuming, model.spell_rewards {
-        True, _, option.None | _, True, option.None -> view_pause_menu(model)
-        _, _, _ -> html.div([], [])
+      // Pause menu - show when paused or resuming (but not during level-up or wand selection)
+      case
+        model.is_paused,
+        model.resuming,
+        model.spell_rewards,
+        model.showing_wand_selection
+      {
+        True, _, option.None, False | _, True, option.None, False ->
+          view_pause_menu(model)
+        _, _, _, _ -> html.div([], [])
+      },
+      // Wand selection modal
+      case model.showing_wand_selection, model.pending_wand {
+        True, option.Some(new_wand) ->
+          view_wand_selection_modal(model, new_wand)
+        _, _ -> html.div([], [])
       },
     ],
   )
@@ -936,6 +1046,196 @@ fn view_spell_rewards_modal(
       ),
     ],
   )
+}
+
+fn view_wand_selection_modal(
+  model: Model(tiramisu_msg),
+  new_wand: wand.Wand,
+) -> element.Element(Msg) {
+  html.div(
+    [
+      attribute.class(
+        "fixed inset-0 flex items-center justify-center z-50 bg-black bg-opacity-75 p-4 pointer-events-auto",
+      ),
+    ],
+    [
+      html.div(
+        [
+          attribute.class(
+            "bg-gradient-to-br from-purple-900 to-blue-900 rounded-lg shadow-2xl max-w-5xl w-full p-8 border-4 border-yellow-400",
+          ),
+        ],
+        [
+          // Title
+          html.h2(
+            [
+              attribute.class(
+                "text-4xl font-bold text-center mb-6 text-yellow-300",
+              ),
+              attribute.style("text-shadow", "2px 2px 4px rgba(0,0,0,0.7)"),
+            ],
+            [html.text("🪄 New Wand Found!")],
+          ),
+          // Comparison container
+          html.div([attribute.class("grid grid-cols-2 gap-8 mb-8")], [
+            // Current wand
+            view_wand_display(
+              "Your Current Wand",
+              model.wand_slots,
+              model.wand_max_mana,
+              model.wand_mana_recharge_rate,
+              model.wand_cast_delay,
+              model.wand_recharge_time,
+              model.wand_capacity,
+              model.wand_spread,
+            ),
+            // New wand
+            view_wand_display(
+              "New Wand",
+              new_wand.slots,
+              new_wand.max_mana,
+              new_wand.mana_recharge_rate,
+              new_wand.cast_delay,
+              new_wand.recharge_time,
+              iv.length(new_wand.slots),
+              new_wand.spread,
+            ),
+          ]),
+          // Buttons
+          html.div([attribute.class("flex gap-4 justify-center")], [
+            html.button(
+              [
+                attribute.class(
+                  "px-8 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg text-xl transition-colors cursor-pointer",
+                ),
+                attribute.style("text-shadow", "2px 2px 4px rgba(0,0,0,0.5)"),
+                event.on_click(RejectWand),
+              ],
+              [html.text("Keep Current")],
+            ),
+            html.button(
+              [
+                attribute.class(
+                  "px-8 py-3 bg-green-600 hover:bg-green-700 text-white font-bold rounded-lg text-xl transition-colors cursor-pointer",
+                ),
+                attribute.style("text-shadow", "2px 2px 4px rgba(0,0,0,0.5)"),
+                event.on_click(AcceptWand),
+              ],
+              [html.text("Take New Wand")],
+            ),
+          ]),
+        ],
+      ),
+    ],
+  )
+}
+
+fn view_wand_display(
+  title: String,
+  slots: iv.Array(option.Option(spell.Spell)),
+  max_mana: Float,
+  mana_recharge_rate: Float,
+  cast_delay: Float,
+  recharge_time: Float,
+  capacity: Int,
+  spread: Float,
+) -> element.Element(Msg) {
+  html.div(
+    [
+      attribute.class(
+        "bg-gray-800 bg-opacity-50 rounded-lg p-6 border-2 border-gray-600",
+      ),
+    ],
+    [
+      html.h3(
+        [
+          attribute.class("text-2xl font-bold mb-4 text-center text-blue-200"),
+          attribute.style("text-shadow", "1px 1px 2px rgba(0,0,0,0.7)"),
+        ],
+        [html.text(title)],
+      ),
+      // Wand stats
+      html.div([attribute.class("mb-4 space-y-2")], [
+        view_wand_stat_compact("Max Mana", max_mana, ""),
+        view_wand_stat_compact("Mana Regen", mana_recharge_rate, "/s"),
+        view_wand_stat_compact("Cast Delay", cast_delay, "s"),
+        view_wand_stat_compact("Recharge", recharge_time, "s"),
+        view_wand_stat_compact("Capacity", int.to_float(capacity), ""),
+        view_wand_stat_compact("Spread", spread, "°"),
+      ]),
+      // Spell slots
+      html.div([attribute.class("space-y-2")], [
+        html.div(
+          [
+            attribute.class(
+              "text-sm font-semibold text-gray-300 mb-2 text-center",
+            ),
+          ],
+          [html.text("Spells:")],
+        ),
+        html.div(
+          [attribute.class("grid grid-cols-3 gap-2")],
+          iv.to_list(slots)
+            |> list.map(view_spell_slot),
+        ),
+      ]),
+    ],
+  )
+}
+
+fn view_spell_slot(
+  spell_opt: option.Option(spell.Spell),
+) -> element.Element(Msg) {
+  case spell_opt {
+    option.Some(spell_value) -> {
+      let #(sprite_path, name) = case spell_value {
+        spell.DamageSpell(_, dmg_spell) -> #(
+          dmg_spell.ui_sprite,
+          dmg_spell.name,
+        )
+        spell.ModifierSpell(_, mod_spell) -> #(
+          mod_spell.ui_sprite,
+          mod_spell.name,
+        )
+        spell.MulticastSpell(_, multicast_spell) -> #(
+          multicast_spell.ui_sprite,
+          multicast_spell.name,
+        )
+      }
+
+      html.div(
+        [
+          attribute.class(
+            "bg-gray-700 rounded p-2 flex flex-col items-center justify-center hover:bg-gray-600 transition-colors",
+          ),
+          attribute.attribute("title", name),
+        ],
+        [
+          html.img([
+            attribute.src(sprite_path),
+            attribute.class("w-12 h-12 pixelated"),
+            attribute.alt(name),
+          ]),
+          html.div([attribute.class("text-xs text-center mt-1 text-gray-200")], [
+            html.text(name),
+          ]),
+        ],
+      )
+    }
+    option.None ->
+      html.div(
+        [
+          attribute.class(
+            "bg-gray-800 rounded p-2 h-20 flex items-center justify-center border-2 border-dashed border-gray-600",
+          ),
+        ],
+        [
+          html.span([attribute.class("text-gray-500 text-xs")], [
+            html.text("Empty"),
+          ]),
+        ],
+      )
+  }
 }
 
 fn view_pause_menu(model: Model(tiramisu_msg)) -> element.Element(Msg) {
@@ -1105,9 +1405,9 @@ fn view_wand_stat_compact(
   value: Float,
   unit: String,
 ) -> element.Element(Msg) {
-  html.div([attribute.class("flex justify-between text-xs")], [
-    html.span([attribute.class("text-blue-200")], [html.text(label <> ":")]),
-    html.span([attribute.class("text-white font-bold")], [
+  html.div([attribute.class("flex justify-between")], [
+    html.span([attribute.class("text-gray-300")], [html.text(label <> ":")]),
+    html.span([attribute.class("font-bold")], [
       html.text(float.to_string(float.to_precision(value, 2)) <> " " <> unit),
     ]),
   ])

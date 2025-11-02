@@ -25,6 +25,7 @@ gleam_community_maths = ">= 2.0.0 and < 3.0.0"
 paint = ">= 1.0.0 and < 2.0.0"
 ensaimada = ">= 2.0.0 and < 3.0.0"
 plinth = ">= 0.7.2 and < 1.0.0"
+grille_pain = "1.1.4"
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

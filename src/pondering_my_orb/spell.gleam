@@ -29,6 +29,7 @@ pub type Id {
   Spark
   DoubleSpell
   TripleSpell
+  AddMana
 }
 
 pub type Spell {
@@ -320,6 +321,31 @@ pub fn double_spell() -> Spell {
       spell_count: Fixed(2),
       draw_add: 2,
       ui_sprite: "spell_icons/double_spell.png",
+    ),
+  )
+}
+
+pub fn add_mana() -> Spell {
+  ModifierSpell(
+    id: AddMana,
+    kind: Modifier(
+      name: "Add Mana",
+      mana_cost: -30.0,
+      damage_multiplier: 1.0,
+      damage_addition: 0.0,
+      projectile_speed_multiplier: 1.0,
+      projectile_speed_addition: 0.0,
+      projectile_size_multiplier: 1.0,
+      projectile_size_addition: 0.0,
+      projectile_lifetime_multiplier: 1.0,
+      projectile_lifetime_addition: 0.0,
+      cast_delay_multiplier: 1.0,
+      cast_delay_addition: 0.0,
+      critical_chance_multiplier: 1.0,
+      critical_chance_addition: 0.0,
+      spread_multiplier: 1.0,
+      spread_addition: 0.0,
+      ui_sprite: "spell_icons/mana.png",
     ),
   )
 }

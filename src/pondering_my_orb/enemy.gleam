@@ -48,6 +48,9 @@ pub type Enemy(id) {
     animation_state: spritesheet.AnimationState,
     // Status effects
     status_effects: List(StatusEffect),
+    // Elite status
+    is_elite: Bool,
+    xp_value: Int,
   )
 }
 
@@ -93,6 +96,8 @@ pub fn new(
     animation: None,
     animation_state: spritesheet.initial_state("idle"),
     status_effects: [],
+    is_elite: False,
+    xp_value: 10,
   )
 }
 
@@ -142,6 +147,12 @@ pub fn render(enemy: Enemy(Id), camera_position: Vec3(Float)) -> scene.Node(Id) 
       physics: Some(enemy.physics_body),
     )
 
+  // Elite enemies are bigger
+  let size_multiplier = case enemy.is_elite {
+    True -> 1.5
+    False -> 1.0
+  }
+
   // Choose between sprite or fallback mesh
   let enemy_visual = case enemy.spritesheet, enemy.animation {
     Some(sheet), Some(anim) -> {
@@ -150,8 +161,8 @@ pub fn render(enemy: Enemy(Id), camera_position: Vec3(Float)) -> scene.Node(Id) 
         spritesheet: sheet,
         animation: anim,
         state: enemy.animation_state,
-        width: 2.0,
-        height: 2.5,
+        width: 2.0 *. size_multiplier,
+        height: 2.5 *. size_multiplier,
         transform: transform.at(position: enemy.position)
           |> transform.with_euler_rotation(enemy.rotation),
         pixel_art: True,
@@ -162,9 +173,9 @@ pub fn render(enemy: Enemy(Id), camera_position: Vec3(Float)) -> scene.Node(Id) 
       // Fallback to cylinder if sprites not loaded yet
       let assert Ok(capsule) =
         geometry.cylinder(
-          radius_top: 0.5,
-          radius_bottom: 0.5,
-          height: 2.0,
+          radius_top: 0.5 *. size_multiplier,
+          radius_bottom: 0.5 *. size_multiplier,
+          height: 2.0 *. size_multiplier,
           radial_segments: 10,
         )
       let assert Ok(material) =
@@ -216,6 +227,32 @@ pub fn basic(
     position:,
     enemy_type:,
   )
+}
+
+/// Create an elite enemy with enhanced stats and guaranteed loot drops
+pub fn elite(
+  id id: id,
+  position position: Vec3(Float),
+  enemy_type enemy_type: EnemyType,
+) {
+  let base_enemy =
+    new(
+      id:,
+      health: 50.0,
+      // 4x health
+      damage: 15.0,
+      // ~2.4x damage
+      damage_range: 1.5,
+      // 1.5x range
+      attack_cooldown: 0.8,
+      // Slightly faster attacks
+      speed: 10.0,
+      // ~1.3x speed
+      position:,
+      enemy_type:,
+    )
+
+  Enemy(..base_enemy, is_elite: True, xp_value: 50)
 }
 
 pub fn set_spritesheet(

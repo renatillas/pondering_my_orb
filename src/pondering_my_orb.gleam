@@ -11,8 +11,10 @@ import gleam_community/maths
 import iv
 import paint/canvas
 import pondering_my_orb/camera
+import pondering_my_orb/damage_number
 import pondering_my_orb/enemy.{type Enemy}
 import pondering_my_orb/id.{type Id}
+import pondering_my_orb/loot
 import pondering_my_orb/map
 import pondering_my_orb/player
 import pondering_my_orb/score
@@ -77,10 +79,18 @@ pub type Model {
     next_xp_shard_id: Int,
     xp_spritesheet: Option(spritesheet.Spritesheet),
     xp_animation: Option(spritesheet.Animation),
+    // Loot System
+    loot_drops: List(loot.LootDrop),
+    next_loot_drop_id: Int,
+    // Damage Numbers
+    damage_numbers: List(damage_number.DamageNumber),
+    next_damage_number_id: Int,
     // Spell Effects
     visuals: Dict(spell.Id, spell.SpellVisuals),
     // Level-up rewards
     showing_spell_rewards: Bool,
+    // Wand selection
+    showing_wand_selection: Bool,
     // Pause state
     is_paused: Bool,
     // Score
@@ -161,7 +171,12 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), Option(_)) {
       next_xp_shard_id: 0,
       xp_spritesheet: None,
       xp_animation: None,
+      loot_drops: [],
+      next_loot_drop_id: 0,
+      damage_numbers: [],
+      next_damage_number_id: 0,
       showing_spell_rewards: False,
+      showing_wand_selection: False,
       is_paused: False,
       score: score.init(),
       visuals: dict.new(),
@@ -184,6 +199,7 @@ fn generate_spell_rewards(
     spell.lightning(lightning_bolt_visuals),
     spell.spark(spark_visuals),
     spell.double_spell(),
+    spell.add_mana(),
   ]
 
   // Shuffle and take 3 random spells
@@ -338,30 +354,44 @@ fn update(
           model.player.position.z +. offset_z,
         )
 
-      // Randomly choose enemy type
-      let enemy_type = case float.random() >. 0.5 {
-        True -> enemy.EnemyType1
-        False -> enemy.EnemyType2
+      // 15% chance to spawn elite enemy
+      let is_elite = float.random() <. 0.15
+
+      // Elite enemies use sprite 2, normal enemies use sprite 1
+      let enemy_type = case is_elite {
+        True -> enemy.EnemyType2
+        False -> enemy.EnemyType1
       }
 
-      // Create enemy and set spritesheet based on type
-      let new_enemy =
-        enemy.basic(
-          id.enemy(model.next_enemy_id),
-          position: spawn_position,
-          enemy_type: enemy_type,
-        )
+      // Create enemy
+      let new_enemy = case is_elite {
+        True ->
+          enemy.elite(
+            id.enemy(model.next_enemy_id),
+            position: spawn_position,
+            enemy_type: enemy_type,
+          )
+        False ->
+          enemy.basic(
+            id.enemy(model.next_enemy_id),
+            position: spawn_position,
+            enemy_type: enemy_type,
+          )
+      }
 
+      // Set spritesheet based on whether elite or not
       let new_enemy = case
-        enemy_type,
+        is_elite,
         model.enemy1_spritesheet,
         model.enemy1_animation,
         model.enemy2_spritesheet,
         model.enemy2_animation
       {
-        enemy.EnemyType1, Some(sheet), Some(anim), _, _ ->
+        // Elite enemies use sprite 2
+        True, _, _, Some(sheet), Some(anim) ->
           enemy.set_spritesheet(new_enemy, sheet, anim)
-        enemy.EnemyType2, _, _, Some(sheet), Some(anim) ->
+        // Normal enemies use sprite 1
+        False, Some(sheet), Some(anim), _, _ ->
           enemy.set_spritesheet(new_enemy, sheet, anim)
         _, _, _, _, _ -> new_enemy
       }
@@ -421,35 +451,117 @@ fn update(
         })
 
       case enemy {
-        Ok(killed_enemy) if killed_enemy.current_health <=. 0.0 -> #(
-          model,
-          effect.from(fn(dispatch) { dispatch(EnemyKilled(killed_enemy.id)) }),
-          ctx.physics_world,
-        )
-        Ok(damaged_enemy) -> #(
-          Model(
-            ..model,
-            enemies: list.map(model.enemies, fn(enemy) {
-              case enemy.id == damaged_enemy.id {
-                True -> damaged_enemy
-                False -> enemy
-              }
-            }),
-          ),
-          effect.none(),
-          ctx.physics_world,
-        )
+        Ok(killed_enemy) if killed_enemy.current_health <=. 0.0 -> {
+          // Spawn damage number for kill
+          let damage_num =
+            damage_number.new(
+              id.damage_number(model.next_damage_number_id),
+              damage,
+              killed_enemy.position,
+              False,
+            )
+
+          #(
+            Model(
+              ..model,
+              damage_numbers: [damage_num, ..model.damage_numbers],
+              next_damage_number_id: model.next_damage_number_id + 1,
+            ),
+            effect.from(fn(dispatch) { dispatch(EnemyKilled(killed_enemy.id)) }),
+            ctx.physics_world,
+          )
+        }
+        Ok(damaged_enemy) -> {
+          // Spawn damage number for hit
+          let damage_num =
+            damage_number.new(
+              id.damage_number(model.next_damage_number_id),
+              damage,
+              damaged_enemy.position,
+              False,
+            )
+
+          #(
+            Model(
+              ..model,
+              enemies: list.map(model.enemies, fn(enemy) {
+                case enemy.id == damaged_enemy.id {
+                  True -> damaged_enemy
+                  False -> enemy
+                }
+              }),
+              damage_numbers: [damage_num, ..model.damage_numbers],
+              next_damage_number_id: model.next_damage_number_id + 1,
+            ),
+            effect.none(),
+            ctx.physics_world,
+          )
+        }
         _ -> #(model, effect.none(), ctx.physics_world)
       }
     }
     EnemyKilled(enemy_id) -> {
-      // Spawn XP shard at enemy position
-      let enemy_position =
+      // Find killed enemy
+      let enemy =
         list.find(model.enemies, fn(e) { e.id == enemy_id })
-        |> result.map(fn(e) { e.position })
-        |> result.unwrap(Vec3(0.0, 0.0, 0.0))
+        |> result.unwrap(enemy.basic(
+          id.enemy(0),
+          Vec3(0.0, 0.0, 0.0),
+          enemy.EnemyType1,
+        ))
 
-      let new_shard = xp_shard.new(model.next_xp_shard_id, enemy_position)
+      // Spawn XP shard at enemy position
+      let new_shard = xp_shard.new(model.next_xp_shard_id, enemy.position)
+
+      // Spawn loot drop if enemy was elite
+      let #(loot_drops, next_loot_id) = case enemy.is_elite {
+        True -> {
+          // Get spell visuals for each spell type
+          let spark_visuals =
+            dict.get(model.visuals, spell.Spark)
+            |> result.unwrap(spell.SpellVisuals(
+              projectile_spritesheet: spell.mock_spritesheet(),
+              projectile_animation: spell.mock_animation(),
+              hit_spritesheet: spell.mock_spritesheet(),
+              hit_animation: spell.mock_animation(),
+            ))
+
+          let fireball_visuals =
+            dict.get(model.visuals, spell.Fireball)
+            |> result.unwrap(spell.SpellVisuals(
+              projectile_spritesheet: spell.mock_spritesheet(),
+              projectile_animation: spell.mock_animation(),
+              hit_spritesheet: spell.mock_spritesheet(),
+              hit_animation: spell.mock_animation(),
+            ))
+
+          let lightning_visuals =
+            dict.get(model.visuals, spell.LightningBolt)
+            |> result.unwrap(spell.SpellVisuals(
+              projectile_spritesheet: spell.mock_spritesheet(),
+              projectile_animation: spell.mock_animation(),
+              hit_spritesheet: spell.mock_spritesheet(),
+              hit_animation: spell.mock_animation(),
+            ))
+
+          // Create spell instances with their proper visuals
+          let available_spells = [
+            spell.spark(spark_visuals),
+            spell.fireball(fireball_visuals),
+            spell.lightning(lightning_visuals),
+          ]
+
+          let new_loot =
+            loot.generate_elite_drop(
+              id.loot_drop(model.next_loot_drop_id),
+              enemy.position,
+              available_spells,
+            )
+
+          #([new_loot, ..model.loot_drops], model.next_loot_drop_id + 1)
+        }
+        False -> #(model.loot_drops, model.next_loot_drop_id)
+      }
 
       #(
         Model(
@@ -457,6 +569,8 @@ fn update(
           enemies: list.filter(model.enemies, fn(enemy) { enemy_id != enemy.id }),
           xp_shards: [new_shard, ..model.xp_shards],
           next_xp_shard_id: model.next_xp_shard_id + 1,
+          loot_drops:,
+          next_loot_drop_id: next_loot_id,
           score: score.enemy_killed(model.score),
         ),
         effect.none(),
@@ -491,11 +605,16 @@ fn handle_tick(
     ctx.physics_world,
   ))
 
-  // Freeze game when showing spell rewards or paused
-  let time_scale = case model.showing_spell_rewards, model.is_paused {
-    True, _ -> 0.0
-    _, True -> 0.0
-    False, False -> 1.0
+  // Freeze game when showing spell rewards, wand selection, or paused
+  let time_scale = case
+    model.showing_spell_rewards,
+    model.showing_wand_selection,
+    model.is_paused
+  {
+    True, _, _ -> 0.0
+    _, True, _ -> 0.0
+    _, _, True -> 0.0
+    False, False, False -> 1.0
   }
   let scaled_delta = ctx.delta_time *. time_scale
 
@@ -510,12 +629,13 @@ fn handle_tick(
     }
     && model.enemy_spawn_interval_ms > 500
 
-  // Only handle player input if spell rewards are not showing and game is not paused
+  // Only handle player input if spell rewards are not showing, wand selection is not showing, and game is not paused
   let #(player, impulse, camera_pitch, input_effects) = case
     model.showing_spell_rewards,
+    model.showing_wand_selection,
     model.is_paused
   {
-    False, False ->
+    False, False, False ->
       player.handle_input(
         model.player,
         velocity: physics.get_velocity(physics_world, id.player())
@@ -528,7 +648,7 @@ fn handle_tick(
         pointer_locked_msg: PointerLocked,
         pointer_lock_failed_msg: PointerLockFailed,
       )
-    _, _ -> #(model.player, vec3f.zero, model.camera.pitch, [])
+    _, _, _ -> #(model.player, vec3f.zero, model.camera.pitch, [])
   }
 
   let #(enemies, enemy_effects) =
@@ -641,10 +761,42 @@ fn handle_tick(
       }
     })
 
-  let #(player, leveled_up) =
+  // Update loot drop positions after physics
+  let updated_loot_drops =
+    list.map(model.loot_drops, loot.update_position(_, physics_world))
+
+  // Add XP and check for level up first
+  let #(player_with_xp, leveled_up) =
     player
     |> player.with_position(player_position)
     |> player.add_xp(collected_xp)
+
+  // Check for loot pickups and send toast to UI
+  let #(picked_up_loot_ids, loot_pickup_effects) =
+    list.fold(updated_loot_drops, #([], []), fn(acc, loot_drop) {
+      let #(ids, effects) = acc
+      case loot.can_pickup(loot_drop, player_with_xp.position, 2.0) {
+        True -> {
+          let new_effect =
+            tiramisu_ui.dispatch_to_lustre(ui.LootPickedUp(loot_drop.loot_type))
+          #([loot_drop.id, ..ids], [new_effect, ..effects])
+        }
+        False -> acc
+      }
+    })
+
+  // Remove picked up loot
+  let remaining_loot =
+    list.filter(updated_loot_drops, fn(loot_drop) {
+      !list.contains(picked_up_loot_ids, loot_drop.id)
+    })
+
+  let player = player_with_xp
+
+  // Update damage numbers
+  let updated_damage_numbers =
+    list.map(model.damage_numbers, damage_number.update(_, scaled_delta))
+    |> list.filter(fn(num) { !damage_number.is_expired(num) })
 
   let #(
     player,
@@ -729,6 +881,7 @@ fn handle_tick(
       death_effect,
       level_up_effect,
       interval_decrease_effect,
+      effect.batch(loot_pickup_effects),
     ])
 
   #(
@@ -741,6 +894,8 @@ fn handle_tick(
       next_projectile_id:,
       enemies:,
       xp_shards: remaining_shards,
+      loot_drops: remaining_loot,
+      damage_numbers: updated_damage_numbers,
       pending_player_knockback: None,
       score: new_score,
       game_time_elapsed_ms: new_game_time,
@@ -944,11 +1099,7 @@ fn handle_assets_loaded(
 
   // Set up player's initial spell and sprites
   let assert Ok(updated_wand) =
-    wand.set_spell(
-      model.player.wand,
-      0,
-      spell.lightning(lightning_bolt_visuals),
-    )
+    wand.set_spell(model.player.wand, 0, spell.spark(spark_visuals))
   let updated_player =
     player.Player(..model.player, wand: updated_wand)
     |> player.set_spritesheets(
@@ -1142,6 +1293,66 @@ fn handle_ui_message(
         ctx.physics_world,
       )
     }
+    ui.ApplyLoot(loot_type) -> {
+      case loot_type {
+        loot.PerkLoot(perk_value) -> {
+          // Apply perk to player
+          let updated_player = player.apply_perk(model.player, perk_value)
+          #(
+            Model(..model, player: updated_player),
+            effect.none(),
+            ctx.physics_world,
+          )
+        }
+        loot.WandLoot(new_wand) -> {
+          // Transfer all spells from old wand to spell bag
+          let old_wand_spells =
+            iv.to_list(model.player.wand.slots)
+            |> list.filter_map(fn(maybe_spell) {
+              case maybe_spell {
+                option.Some(spell) -> Ok(spell)
+                option.None -> Error(Nil)
+              }
+            })
+
+          // Add all old spells to spell bag
+          let updated_spell_bag =
+            list.fold(old_wand_spells, model.player.spell_bag, fn(bag, spell) {
+              spell_bag.add_spell(bag, spell)
+            })
+
+          // Replace wand and update spell bag
+          let updated_player =
+            player.Player(
+              ..model.player,
+              wand: new_wand,
+              spell_bag: updated_spell_bag,
+            )
+
+          #(
+            Model(..model, player: updated_player),
+            effect.none(),
+            ctx.physics_world,
+          )
+        }
+      }
+    }
+    ui.CloseLootUI -> {
+      // Close wand selection UI and freeze game
+      #(
+        Model(..model, showing_wand_selection: True),
+        effect.none(),
+        ctx.physics_world,
+      )
+    }
+    ui.WandSelectionComplete -> {
+      // User finished selecting wand, unfreeze game
+      #(
+        Model(..model, showing_wand_selection: False),
+        effect.none(),
+        ctx.physics_world,
+      )
+    }
   }
 }
 
@@ -1180,6 +1391,16 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> scene.Node(Id) {
     _, _ -> []
   }
 
+  // Render loot drops
+  let loot_drops = list.map(model.loot_drops, loot.render)
+
+  // Render damage numbers
+  let damage_numbers =
+    list.map(model.damage_numbers, damage_number.render(
+      _,
+      model.camera.position,
+    ))
+
   // Pass camera position for billboard rotation
   let enemy = model.enemies |> list.map(enemy.render(_, model.camera.position))
   scene.empty(
@@ -1192,6 +1413,8 @@ fn view(model: Model, _ctx: tiramisu.Context(Id)) -> scene.Node(Id) {
       projectiles,
       explosions,
       xp_shards,
+      loot_drops,
+      damage_numbers,
       [
         player.view(id.player(), model.player),
         camera,

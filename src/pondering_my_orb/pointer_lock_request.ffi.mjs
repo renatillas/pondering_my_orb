@@ -21,3 +21,17 @@ export function request_pointer_lock_sync() {
     console.warn('[PointerLock] Pointer Lock API not supported');
   }
 }
+
+export function exit_pointer_lock() {
+  const exitFn =
+    document.exitPointerLock ||
+    document.webkitExitPointerLock ||
+    document.mozExitPointerLock;
+
+  if (exitFn) {
+    console.log('[PointerLock] Exiting pointer lock...');
+    exitFn.call(document);
+  } else {
+    console.warn('[PointerLock] Exit Pointer Lock API not supported');
+  }
+}

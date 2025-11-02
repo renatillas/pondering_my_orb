@@ -142,6 +142,8 @@ pub fn cast(
         direction,
         projectile_starting_index,
         target_position,
+        False,
+        start_index,
       )
     }
   }
@@ -162,6 +164,8 @@ fn process_with_draw(
   direction: Vec3(Float),
   projectile_id: Int,
   target_position: option.Option(Vec3(Float)),
+  wrapped_during_cast: Bool,
+  original_start_index: Int,
 ) -> #(CastResult, Wand) {
   let wand_length = iv.length(wand.slots)
 
@@ -180,11 +184,10 @@ fn process_with_draw(
               let updated_wand = Wand(..wand, current_mana: new_mana)
 
               let next_index = current_index % wand_length
-              let wrapped_past_end = current_index >= wand_length
               let has_spells_ahead = has_any_spell_from(wand.slots, next_index)
 
-              // Wrap if we exceeded slot count OR no spells remain
-              let did_wrap = wrapped_past_end || !has_spells_ahead
+              // Wrap if we actually wrapped during the cast OR no spells remain ahead
+              let did_wrap = wrapped_during_cast || !has_spells_ahead
 
               #(
                 CastSuccess(
@@ -203,16 +206,51 @@ fn process_with_draw(
         False -> {
           // Wrap index if we've gone past the end
           let wrapped_index = current_index % wand_length
+          // Track if we wrapped around (processing spells from beginning after passing end)
+          let is_wrapping = current_index >= wand_length
+          let wrapped_flag = wrapped_during_cast || is_wrapping
 
-          // Get current spell slot
-          case iv.get(wand.slots, wrapped_index) {
+          // Stop if we've wrapped back to or past the original start (completed full cycle)
+          // This prevents infinite loops when draw remains but all spells processed
+          let completed_cycle = wrapped_flag && wrapped_index >= original_start_index
+          case completed_cycle {
+            True -> {
+              // End cast - we've processed all available spells
+              case projectiles {
+                [] -> #(NoSpellToCast, wand)
+                _ -> {
+                  let new_mana = wand.current_mana -. total_mana_used
+                  let updated_wand = Wand(..wand, current_mana: new_mana)
+                  let next_index = wrapped_index
+                  let has_spells_ahead = has_any_spell_from(wand.slots, next_index)
+                  let did_wrap = wrapped_flag || !has_spells_ahead
+
+                  #(
+                    CastSuccess(
+                      projectiles:,
+                      remaining_mana: new_mana,
+                      next_cast_index: next_index,
+                      casting_indices:,
+                      did_wrap:,
+                      total_cast_delay_addition:,
+                    ),
+                    updated_wand,
+                  )
+                }
+              }
+            }
+            False -> {
+              // Continue processing
+              // Get current spell slot
+              case iv.get(wand.slots, wrapped_index) {
             Error(_) -> #(WandEmpty, wand)
             Ok(None) -> {
-              // Empty slot, consume 1 draw and continue
+              // Empty slot, skip but don't consume draw (like modifiers)
+              // This allows multicasts to continue past empty slots
               process_with_draw(
                 wand,
                 current_index + 1,
-                remaining_draw - 1,
+                remaining_draw,
                 accumulated_modifiers,
                 projectiles,
                 [wrapped_index, ..casting_indices],
@@ -222,41 +260,34 @@ fn process_with_draw(
                 direction,
                 projectile_id,
                 target_position,
+                wrapped_flag,
+                original_start_index,
               )
             }
             Ok(Some(current_spell)) -> {
               // Process the spell based on type
               case current_spell {
                 spell.ModifierSpell(_, mod) -> {
-                  // Modifiers: accumulate and consume 1 draw
+                  // Modifiers: accumulate but DON'T consume draw (they draw the next spell automatically)
+                  // Modifier mana cost is included in the modified spell's total cost, not charged separately
                   let new_modifiers = iv.prepend(accumulated_modifiers, mod)
-                  let new_mana_used = total_mana_used +. mod.mana_cost
 
-                  // Check mana
-                  case wand.current_mana >=. new_mana_used {
-                    True ->
-                      process_with_draw(
-                        wand,
-                        current_index + 1,
-                        remaining_draw - 1,
-                        new_modifiers,
-                        projectiles,
-                        [wrapped_index, ..casting_indices],
-                        new_mana_used,
-                        total_cast_delay_addition,
-                        position,
-                        direction,
-                        projectile_id,
-                        target_position,
-                      )
-                    False -> #(
-                      NotEnoughMana(
-                        required: new_mana_used,
-                        available: wand.current_mana,
-                      ),
-                      wand,
-                    )
-                  }
+                  process_with_draw(
+                    wand,
+                    current_index + 1,
+                    remaining_draw,
+                    new_modifiers,
+                    projectiles,
+                    [wrapped_index, ..casting_indices],
+                    total_mana_used,
+                    total_cast_delay_addition,
+                    position,
+                    direction,
+                    projectile_id,
+                    target_position,
+                    wrapped_flag,
+                    original_start_index,
+                  )
                 }
 
                 spell.MulticastSpell(_, multicast) -> {
@@ -280,6 +311,8 @@ fn process_with_draw(
                         direction,
                         projectile_id,
                         target_position,
+                        wrapped_flag,
+                        original_start_index,
                       )
                     False -> #(
                       NotEnoughMana(
@@ -337,7 +370,7 @@ fn process_with_draw(
                         wand,
                         current_index + 1,
                         remaining_draw - 1,
-                        iv.new(),
+                        accumulated_modifiers,
                         [projectile, ..projectiles],
                         [wrapped_index, ..casting_indices],
                         new_mana_used,
@@ -346,6 +379,8 @@ fn process_with_draw(
                         direction,
                         projectile_id + 1,
                         target_position,
+                        wrapped_flag,
+                        original_start_index,
                       )
                     }
                     False -> #(
@@ -358,6 +393,8 @@ fn process_with_draw(
                   }
                 }
               }
+            }
+          }
             }
           }
         }
