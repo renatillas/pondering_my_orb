@@ -208,8 +208,8 @@ pub fn basic(
 ) {
   new(
     id:,
-    health: 10.0,
-    damage: 00.0,
+    health: 12.5,
+    damage: 6.25,
     damage_range: 1.0,
     attack_cooldown: 1.0,
     speed: 7.5,

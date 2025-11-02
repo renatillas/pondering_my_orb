@@ -1,4 +1,5 @@
 import gleam/bool
+import gleam/dict.{type Dict}
 import gleam/float
 import gleam/int
 import gleam/io
@@ -7,6 +8,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam_community/maths
+import iv
 import paint/canvas
 import pondering_my_orb/camera
 import pondering_my_orb/enemy.{type Enemy}
@@ -76,9 +78,7 @@ pub type Model {
     xp_spritesheet: Option(spritesheet.Spritesheet),
     xp_animation: Option(spritesheet.Animation),
     // Spell Effects
-    fireball_spritesheet: Option(spritesheet.Spritesheet),
-    fireball_animation: Option(spritesheet.Animation),
-    explosion_spritesheet: Option(spritesheet.Spritesheet),
+    visuals: Dict(spell.Id, spell.SpellVisuals),
     // Level-up rewards
     showing_spell_rewards: Bool,
     // Pause state
@@ -161,12 +161,10 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), Option(_)) {
       next_xp_shard_id: 0,
       xp_spritesheet: None,
       xp_animation: None,
-      fireball_spritesheet: None,
-      fireball_animation: None,
-      explosion_spritesheet: None,
       showing_spell_rewards: False,
       is_paused: False,
       score: score.init(),
+      visuals: dict.new(),
     ),
     effect.from(fn(_) { debug.show_collider_wireframes(physics_world, False) }),
     Some(physics_world),
@@ -174,14 +172,18 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), Option(_)) {
 }
 
 /// Generate a pool of 3 random spell rewards for leveling up
-fn generate_spell_rewards(visuals: spell.SpellVisuals) -> List(spell.Spell) {
+fn generate_spell_rewards(
+  visuals: Dict(spell.Id, spell.SpellVisuals),
+) -> List(spell.Spell) {
+  let assert Ok(fireball_visuals) = dict.get(visuals, spell.Fireball)
+  let assert Ok(spark_visuals) = dict.get(visuals, spell.Spark)
+  let assert Ok(lightning_bolt_visuals) = dict.get(visuals, spell.LightningBolt)
   // Define a pool of possible spells to choose from
   let possible_spells = [
-    // Damage spells
-    spell.fireball(visuals),
-    spell.lightning(visuals),
+    spell.fireball(fireball_visuals),
+    spell.lightning(lightning_bolt_visuals),
+    spell.spark(spark_visuals),
     spell.double_spell(),
-    // Modifier spells
   ]
 
   // Shuffle and take 3 random spells
@@ -199,20 +201,11 @@ fn update(
   case msg {
     GameStarted -> {
       let assets = [
-        asset.FBXAsset(
-          "PSX_Dungeon/Models/Floor_Tiles.fbx",
-          Some("PSX_Dungeon/Textures/"),
-        ),
-        asset.TextureAsset("PSX_Dungeon/Textures/TEX_Ground_04.png"),
         // Load a selection of tree models
         asset.FBXAsset("tree_pack_1.1/models/tree01.fbx", None),
         asset.FBXAsset("tree_pack_1.1/models/tree05.fbx", None),
         asset.FBXAsset("tree_pack_1.1/models/tree10.fbx", None),
         asset.FBXAsset("tree_pack_1.1/models/tree15.fbx", None),
-        // Load a selection of bush models
-        asset.FBXAsset("tree_pack_1.1/models/bush01.fbx", None),
-        asset.FBXAsset("tree_pack_1.1/models/bush03.fbx", None),
-        asset.FBXAsset("tree_pack_1.1/models/bush05.fbx", None),
         // Load textures for trees and bushes
         asset.TextureAsset("tree_pack_1.1/textures/tree01.png"),
         asset.TextureAsset("tree_pack_1.1/textures/tree05.png"),
@@ -225,8 +218,11 @@ fn update(
         asset.TextureAsset("spr_coin_azu.png"),
         asset.TextureAsset("SPRITESHEET_Files/FireBall_2_64x64.png"),
         asset.TextureAsset("SPRITESHEET_Files/Explosion_2_64x64.png"),
-        asset.TextureAsset("mago_idle.png"),
-        asset.TextureAsset("mago_attacking.png"),
+        asset.TextureAsset("spell_projectiles/spark.png"),
+        asset.TextureAsset("SPRITESHEET_Files/IceShatter_2_96x96.png"),
+        asset.TextureAsset("player/mago_idle.png"),
+        asset.TextureAsset("player/mago_attacking.png"),
+        asset.TextureAsset("spell_projectiles/lightning_bolt.png"),
         // Enemy sprites
         asset.TextureAsset("enemy_1.png"),
         asset.TextureAsset("enemy_2.png"),
@@ -468,45 +464,16 @@ fn update(
       )
     }
     PlayerLeveledUp(_new_level) -> {
-      // Generate spell rewards and send to UI
-      case
-        model.fireball_spritesheet,
-        model.fireball_animation,
-        model.explosion_spritesheet
-      {
-        Some(fireball_spritesheet),
-          Some(fireball_animation),
-          Some(explosion_spritesheet)
-        -> {
-          let explosion_animation =
-            spritesheet.animation(
-              name: "explosion",
-              frames: list.range(1, 44),
-              frame_duration: 40.0,
-              loop: spritesheet.Once,
-            )
+      let spell_rewards = generate_spell_rewards(model.visuals)
 
-          let visuals =
-            spell.SpellVisuals(
-              projectile_spritesheet: fireball_spritesheet,
-              projectile_animation: fireball_animation,
-              hit_spritesheet: explosion_spritesheet,
-              hit_animation: explosion_animation,
-            )
-
-          let spell_rewards = generate_spell_rewards(visuals)
-
-          #(
-            Model(..model, showing_spell_rewards: True),
-            effect.batch([
-              tiramisu_ui.dispatch_to_lustre(ui.ShowSpellRewards(spell_rewards)),
-              effect.exit_pointer_lock(),
-            ]),
-            Some(physics_world),
-          )
-        }
-        _, _, _ -> #(model, effect.none(), Some(physics_world))
-      }
+      #(
+        Model(..model, showing_spell_rewards: True),
+        effect.batch([
+          tiramisu_ui.dispatch_to_lustre(ui.ShowSpellRewards(spell_rewards)),
+          effect.exit_pointer_lock(),
+        ]),
+        Some(physics_world),
+      )
     }
     UIMessage(ui_msg) -> handle_ui_message(model, ui_msg, physics_world, ctx)
   }
@@ -720,6 +687,13 @@ fn handle_tick(
         time_since_last_cast: player.auto_cast.time_since_last_cast,
         current_spell_index: player.auto_cast.current_spell_index,
         is_recharging: player.auto_cast.is_recharging,
+        // Wand stats
+        wand_max_mana: player.wand.max_mana,
+        wand_mana_recharge_rate: player.wand.mana_recharge_rate,
+        wand_cast_delay: player.wand.cast_delay,
+        wand_recharge_time: player.wand.recharge_time,
+        wand_capacity: iv.length(player.wand.slots),
+        wand_spread: player.wand.spread,
       )),
     )
 
@@ -781,8 +755,6 @@ fn handle_assets_loaded(
   assets: asset.BatchLoadResult,
   ctx: tiramisu.Context(Id),
 ) -> #(Model, Effect(Msg), Option(physics.PhysicsWorld(Id))) {
-  let assert Ok(floor_fbx) =
-    asset.get_fbx(assets.cache, "PSX_Dungeon/Models/Floor_Tiles.fbx")
   // Load tree models
   let assert Ok(tree01_fbx) =
     asset.get_fbx(assets.cache, "tree_pack_1.1/models/tree01.fbx")
@@ -857,6 +829,33 @@ fn handle_assets_loaded(
       loop: spritesheet.Once,
     )
 
+  // Load spark texture and create spritesheet
+  let assert Ok(spark_texture) =
+    asset.get_texture(assets.cache, "spell_projectiles/spark.png")
+  let assert Ok(spark_spritesheet) =
+    spritesheet.from_grid(spark_texture, columns: 1, rows: 1)
+  let spark_animation =
+    spritesheet.animation(
+      name: "spark",
+      frames: list.range(1, 45),
+      frame_duration: 50.0,
+      loop: spritesheet.Repeat,
+    )
+
+  // Load explosion texture and create spritesheet
+  let assert Ok(spark_explosion_texture) =
+    asset.get_texture(assets.cache, "SPRITESHEET_Files/IceShatter_2_96x96.png")
+  let assert Ok(spark_explosion_spritesheet) =
+    spritesheet.from_grid(spark_explosion_texture, columns: 49, rows: 1)
+
+  let spark_explosion_animation =
+    spritesheet.animation(
+      name: "explosion",
+      frames: list.range(1, 44),
+      frame_duration: 40.0,
+      loop: spritesheet.Once,
+    )
+
   // Create spell visuals for fireball
   let fireball_visuals =
     spell.SpellVisuals(
@@ -866,9 +865,38 @@ fn handle_assets_loaded(
       hit_animation: explosion_animation,
     )
 
+  let spark_visuals =
+    spell.SpellVisuals(
+      projectile_spritesheet: spark_spritesheet,
+      projectile_animation: spark_animation,
+      hit_spritesheet: spark_explosion_spritesheet,
+      hit_animation: spark_explosion_animation,
+    )
+
+  // Load lightning bolt texture and create spritesheet
+  let assert Ok(lightning_bolt_texture) =
+    asset.get_texture(assets.cache, "spell_projectiles/lightning_bolt.png")
+  let assert Ok(lightning_bolt_spritesheet) =
+    spritesheet.from_grid(lightning_bolt_texture, columns: 1, rows: 1)
+  let lightning_bolt_animation =
+    spritesheet.animation(
+      name: "projectile",
+      frames: [0],
+      frame_duration: 50.0,
+      loop: spritesheet.Repeat,
+    )
+
+  let lightning_bolt_visuals =
+    spell.SpellVisuals(
+      projectile_spritesheet: lightning_bolt_spritesheet,
+      projectile_animation: lightning_bolt_animation,
+      hit_spritesheet: explosion_spritesheet,
+      hit_animation: explosion_animation,
+    )
+
   // Load player sprite textures (single frame images)
   let assert Ok(mago_idle_texture) =
-    asset.get_texture(assets.cache, "mago_idle.png")
+    asset.get_texture(assets.cache, "player/mago_idle.png")
   let assert Ok(mago_idle_spritesheet) =
     spritesheet.from_grid(mago_idle_texture, columns: 1, rows: 1)
   let mago_idle_animation =
@@ -880,7 +908,7 @@ fn handle_assets_loaded(
     )
 
   let assert Ok(mago_attacking_texture) =
-    asset.get_texture(assets.cache, "mago_attacking.png")
+    asset.get_texture(assets.cache, "player/mago_attacking.png")
   let assert Ok(mago_attacking_spritesheet) =
     spritesheet.from_grid(mago_attacking_texture, columns: 1, rows: 1)
   let mago_attacking_animation =
@@ -916,7 +944,11 @@ fn handle_assets_loaded(
 
   // Set up player's initial spell and sprites
   let assert Ok(updated_wand) =
-    wand.set_spell(model.player.wand, 0, spell.fireball(fireball_visuals))
+    wand.set_spell(
+      model.player.wand,
+      0,
+      spell.lightning(lightning_bolt_visuals),
+    )
   let updated_player =
     player.Player(..model.player, wand: updated_wand)
     |> player.set_spritesheets(
@@ -972,7 +1004,7 @@ fn handle_assets_loaded(
     })
     |> list.take(40)
 
-  let foliage = Some(map.box(foliage_triplets))
+  let foliage = Some(map.foliage(foliage_triplets))
 
   let ground =
     list.flatten(
@@ -988,7 +1020,7 @@ fn handle_assets_loaded(
         })
       }),
     )
-    |> map.ground(floor_fbx.scene, _)
+    |> map.ground
     |> Some
 
   let effects =
@@ -1006,6 +1038,11 @@ fn handle_assets_loaded(
       ),
     ])
 
+  let visuals =
+    dict.insert(model.visuals, spell.Fireball, fireball_visuals)
+    |> dict.insert(spell.Spark, spark_visuals)
+    |> dict.insert(spell.LightningBolt, lightning_bolt_visuals)
+
   #(
     Model(
       ..model,
@@ -1015,13 +1052,11 @@ fn handle_assets_loaded(
       game_phase: Playing,
       xp_spritesheet: Some(xp_spritesheet),
       xp_animation: Some(xp_animation),
-      fireball_spritesheet: Some(fireball_spritesheet),
-      fireball_animation: Some(fireball_animation),
-      explosion_spritesheet: Some(explosion_spritesheet),
       enemy1_spritesheet: Some(enemy1_spritesheet),
       enemy1_animation: Some(enemy1_animation),
       enemy2_spritesheet: Some(enemy2_spritesheet),
       enemy2_animation: Some(enemy2_animation),
+      visuals:,
     ),
     effects,
     ctx.physics_world,
@@ -1058,15 +1093,6 @@ fn handle_ui_message(
       )
     }
     ui.SpellRewardSelected(selected_spell) -> {
-      // Add the selected spell to the player's spell bag
-      io.println("=== SPELL REWARD SELECTED ===")
-      let spell_name = case selected_spell {
-        spell.DamageSpell(dmg) -> dmg.name
-        spell.ModifierSpell(mod) -> mod.name
-        spell.MulticastSpell(multicast) -> multicast.name
-      }
-      io.println("Selected spell: " <> spell_name)
-
       let updated_spell_bag =
         spell_bag.add_spell(model.player.spell_bag, selected_spell)
 

@@ -222,16 +222,7 @@ pub fn view(player_id: id.Id, player: Player) {
 }
 
 pub fn init() -> Player {
-  let wand =
-    wand.new(
-      name: "Player's Wand",
-      slot_count: 5,
-      max_mana: 200.0,
-      mana_recharge_rate: 30.0,
-      cast_delay: 0.2,
-      recharge_time: 1.0,
-      spells_per_cast: 1,
-    )
+  let wand = wand.new_random("Player's Wand")
 
   let spell_bag = spell_bag.new()
 
@@ -520,18 +511,28 @@ pub fn update(
       next_cast_index:,
       casting_indices:,
       did_wrap:,
+      total_cast_delay_addition:,
     )) -> {
       // Determine timing based on whether wand wrapped
       let #(timer, index, recharging) = case did_wrap {
         True -> {
           // Wand wrapped: enter reload, reset to slot 0
-          let max_delay =
-            float.max(player.wand.cast_delay, player.wand.recharge_time)
-          #(player.wand.cast_delay -. max_delay, 0, True)
+          // Total reload time is the max of (cast_delay + spell delays) or recharge_time
+          let total_reload_time =
+            float.max(
+              player.wand.cast_delay +. total_cast_delay_addition,
+              player.wand.recharge_time,
+            )
+          // Timer needs to count from negative value up to cast_delay
+          // to achieve the total reload time
+          #(player.wand.cast_delay -. total_reload_time, 0, True)
         }
         False -> {
-          // Normal cast: apply cast delay, continue to next spell
-          #(0.0, next_cast_index, False)
+          // Normal cast: apply cast delay (base + additions from spells), continue to next spell
+          // Timer counts up to cast_delay, so we start at a negative value
+          // to achieve total delay of (cast_delay + spell delays)
+          let total_delay = player.wand.cast_delay +. total_cast_delay_addition
+          #(player.wand.cast_delay -. total_delay, next_cast_index, False)
         }
       }
 
@@ -664,6 +665,7 @@ fn cast_spell(
           spawn_position,
           normalized_direction,
           next_projectile_id,
+          option.Some(nearest_enemy.position),
         )
 
       // Increment projectile ID based on number of projectiles created
