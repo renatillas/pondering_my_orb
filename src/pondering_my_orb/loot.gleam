@@ -31,9 +31,7 @@ pub type LootDrop {
 }
 
 /// Generate a random wand with spells
-pub fn generate_random_wand(
-  available_spells: List(Spell),
-) -> Wand {
+pub fn generate_random_wand(available_spells: List(Spell)) -> Wand {
   // Random wand stats
   let slot_count = case float.random() {
     r if r <. 0.3 -> 2

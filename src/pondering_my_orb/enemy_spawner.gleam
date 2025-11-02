@@ -27,7 +27,8 @@ pub fn spawn_enemy(config: SpawnConfig) -> Enemy(id.Id) {
 
   let random_angle = float.random() *. 2.0 *. maths.pi()
   let random_distance =
-    min_spawn_radius +. { float.random() *. { max_spawn_radius -. min_spawn_radius } }
+    min_spawn_radius
+    +. { float.random() *. { max_spawn_radius -. min_spawn_radius } }
 
   let offset_x = maths.cos(random_angle) *. random_distance
   let offset_z = maths.sin(random_angle) *. random_distance
@@ -89,9 +90,7 @@ pub fn should_decrease_spawn_interval(
   current_interval: Int,
   threshold: Float,
 ) -> Bool {
-  {
-    float.floor(new_time /. threshold) >. float.floor(old_time /. threshold)
-  }
+  { float.floor(new_time /. threshold) >. float.floor(old_time /. threshold) }
   && current_interval > 500
 }
 
