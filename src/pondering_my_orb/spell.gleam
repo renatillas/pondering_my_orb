@@ -367,7 +367,7 @@ pub fn orbiting_spell(visuals: SpellVisuals) -> Spell {
       damage: 4.0,
       projectile_speed: 2.0,
       projectile_lifetime: 30.0,
-      mana_cost: 50.0,
+      mana_cost: 20.0,
       projectile_size: 1.5,
       cast_delay_addition: 0.0,
       critical_chance: 0.05,
@@ -635,7 +635,6 @@ pub fn update(
             }
           }
           Orbiting(..) -> {
-            // Orbiting projectiles: check collision, but don't remove on hit (persistent orbit)
             let hit_enemy =
               list.find(enemies, fn(enemy) {
                 vec3f.distance(projectile.position, enemy.position) <=. 1.0
@@ -658,7 +657,7 @@ pub fn update(
                     spell_effects: base_spell.on_hit_effects,
                   )
 
-                #([hit, ..hits], [projectile, ..remaining])
+                #([hit, ..hits], remaining)
               }
               Error(_) -> #(hits, [projectile, ..remaining])
             }
