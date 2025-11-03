@@ -280,7 +280,7 @@ pub fn update(
   enemy_velocity enemy_velocity: Vec3(Float),
   physics_world physics_world: physics.PhysicsWorld(Id),
   delta_time delta_time: Float,
-  enemy_attacks_player_msg enemy_attacks_player_msg: fn(Float, Vec3(Float)) ->
+  enemy_attacks_player_msg enemy_attacks_player_msg: fn(id, Float, Vec3(Float)) ->
     msg,
 ) -> #(Enemy(id), Effect(msg)) {
   // Calculate direction to target (keep it horizontal)
@@ -317,7 +317,7 @@ pub fn update(
     True -> #(
       0.0,
       effect.from(fn(dispatch) {
-        dispatch(enemy_attacks_player_msg(enemy.damage, enemy.position))
+        dispatch(enemy_attacks_player_msg(enemy.id, enemy.damage, enemy.position))
       }),
     )
     False -> #(time_since_last_attack, effect.none())

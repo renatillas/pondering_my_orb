@@ -1,5 +1,6 @@
 import gleam/bool
 import gleam/dict
+import gleam/float
 import gleam/int
 import gleam/io
 import gleam/javascript/promise
@@ -19,6 +20,7 @@ import pondering_my_orb/game_state.{
 }
 import pondering_my_orb/id.{type Id}
 import pondering_my_orb/loot
+import pondering_my_orb/perk
 import pondering_my_orb/player
 import pondering_my_orb/reward_system
 import pondering_my_orb/scene_renderer
@@ -97,8 +99,8 @@ fn update(
       effect.none(),
       ctx.physics_world,
     )
-    game_state.EnemyAttacksPlayer(damage:, enemy_position:) ->
-      handle_enemy_attacks_player(model, damage, enemy_position, ctx)
+    game_state.EnemyAttacksPlayer(enemy_id:, damage:, enemy_position:) ->
+      handle_enemy_attacks_player(model, enemy_id, damage, enemy_position, ctx)
     game_state.EnemySpawned -> handle_enemy_spawned(model, physics_world)
     game_state.EnemySpawnStarted(id) -> #(
       game_state.Model(..model, enemy_spawner_id: Some(id)),
@@ -124,6 +126,8 @@ fn update(
       handle_enemy_killed(model, enemy_id, physics_world)
     game_state.PlayerLeveledUp(_new_level) ->
       handle_player_leveled_up(model, physics_world)
+    game_state.ChestOpened(_chest_id, perk) ->
+      handle_chest_opened(model, perk, physics_world, ctx)
     game_state.UIMessage(ui_msg) ->
       handle_ui_message(model, ui_msg, physics_world, ctx)
   }
@@ -263,6 +267,7 @@ fn handle_assets_loaded(
 /// Handle enemy attacks player
 fn handle_enemy_attacks_player(
   model: Model,
+  enemy_id: Id,
   damage: Float,
   enemy_position: Vec3(Float),
   ctx: tiramisu.Context(Id),
@@ -279,15 +284,51 @@ fn handle_enemy_attacks_player(
   // Always apply knockback when enemy attacks
   let pending_knockback = Some(vec3f.scale(knockback_direction, 3000.0))
 
+  // Apply damage and get reflected amount (Mirror perk)
+  let #(damaged_player, reflected_damage) =
+    player.take_damage(model.player, damage)
+
+  // Apply reflected damage back to the attacking enemy (Mirror perk)
+  let updated_enemies = case reflected_damage >. 0.0 {
+    True -> {
+      list.map(model.enemies, fn(enemy) {
+        case enemy.id == enemy_id {
+          True ->
+            enemy.Enemy(
+              ..enemy,
+              current_health: enemy.current_health -. reflected_damage,
+            )
+          False -> enemy
+        }
+      })
+    }
+    False -> model.enemies
+  }
+
+  // Create effect to kill reflected enemy if it died
+  let reflect_kill_effect = case reflected_damage >. 0.0 {
+    True -> {
+      case list.find(updated_enemies, fn(e) { e.id == enemy_id }) {
+        Ok(reflected_enemy) if reflected_enemy.current_health <=. 0.0 ->
+          effect.from(fn(dispatch) {
+            dispatch(game_state.EnemyKilled(enemy_id))
+          })
+        _ -> effect.none()
+      }
+    }
+    False -> effect.none()
+  }
+
   #(
     game_state.Model(
       ..model,
-      player: player.take_damage(model.player, damage),
+      player: damaged_player,
+      enemies: updated_enemies,
       pending_player_knockback: pending_knockback,
       camera: camera.Camera(..model.camera, shake_time: screen_shake_duration),
       score: score.take_damage(model.score),
     ),
-    effect.none(),
+    reflect_kill_effect,
     ctx.physics_world,
   )
 }
@@ -365,27 +406,62 @@ fn handle_projectile_damaged_enemy(
 ) -> #(Model, Effect(Msg), Option(_)) {
   let applied_effects = spell.spell_effects_to_applied(spell_effects)
 
-  let enemy =
+  // Find the enemy to get its current HP for Execute perk
+  let enemy_result =
     list.find(model.enemies, fn(enemy) { enemy.id == enemy_id })
+  let enemy_hp_percent = case enemy_result {
+    Ok(e) -> option.Some(e.current_health /. e.max_health)
+    Error(_) -> option.None
+  }
+
+  // Apply all damage perks (Big Bonk, Idle Juice, Scarf, Vampirism, etc.)
+  let #(final_damage, is_critical, self_damage, heal_amount) =
+    player.apply_damage_perks(model.player, damage, enemy_hp_percent)
+
+  // Apply self-damage from perks like Kevin's Punch
+  let #(damaged_player, _reflect) = case self_damage >. 0.0 {
+    True -> player.take_damage(model.player, self_damage)
+    False -> #(model.player, 0.0)
+  }
+
+  // Apply healing from Vampirism
+  let healed_player = case heal_amount >. 0.0 {
+    True -> {
+      let new_hp =
+        float.min(
+          damaged_player.max_health,
+          damaged_player.current_health +. heal_amount,
+        )
+      player.Player(..damaged_player, current_health: new_hp)
+    }
+    False -> damaged_player
+  }
+
+  let enemy =
+    enemy_result
     |> result.map(fn(enemy) {
-      enemy.Enemy(..enemy, current_health: enemy.current_health -. damage)
+      enemy.Enemy(..enemy, current_health: enemy.current_health -. final_damage)
       |> enemy.apply_spell_effects(applied_effects)
     })
 
   case enemy {
     Ok(killed_enemy) if killed_enemy.current_health <=. 0.0 -> {
+      // Apply on-kill effects (BloodThirst, etc.)
+      let final_player = player.on_enemy_killed(healed_player)
+
       // Spawn damage number for kill
       let damage_num =
         damage_number.new(
           id.damage_number(model.next_damage_number_id),
-          damage,
+          final_damage,
           killed_enemy.position,
-          False,
+          is_critical,
         )
 
       #(
         game_state.Model(
           ..model,
+          player: final_player,
           damage_numbers: [damage_num, ..model.damage_numbers],
           next_damage_number_id: model.next_damage_number_id + 1,
         ),
@@ -400,14 +476,15 @@ fn handle_projectile_damaged_enemy(
       let damage_num =
         damage_number.new(
           id.damage_number(model.next_damage_number_id),
-          damage,
+          final_damage,
           damaged_enemy.position,
-          False,
+          is_critical,
         )
 
       #(
         game_state.Model(
           ..model,
+          player: healed_player,
           enemies: list.map(model.enemies, fn(enemy) {
             case enemy.id == damaged_enemy.id {
               True -> damaged_enemy
@@ -421,7 +498,11 @@ fn handle_projectile_damaged_enemy(
         ctx.physics_world,
       )
     }
-    _ -> #(model, effect.none(), ctx.physics_world)
+    _ -> #(
+      game_state.Model(..model, player: healed_player),
+      effect.none(),
+      ctx.physics_world,
+    )
   }
 }
 
@@ -446,49 +527,55 @@ fn handle_enemy_killed(
   // Spawn loot drop if enemy was elite
   let #(loot_drops, next_loot_id) = case enemy.is_elite {
     True -> {
-      // Get spell visuals for each spell type
-      let spark_visuals =
-        dict.get(model.visuals, spell.Spark)
-        |> result.unwrap(spell.SpellVisuals(
-          projectile_spritesheet: spell.mock_spritesheet(),
-          projectile_animation: spell.mock_animation(),
-          hit_spritesheet: spell.mock_spritesheet(),
-          hit_animation: spell.mock_animation(),
-        ))
+      // 10% chance for elite to drop loot
+      case float.random() <. 0.1 {
+        True -> {
+          // Get spell visuals for each spell type
+          let spark_visuals =
+            dict.get(model.visuals, spell.Spark)
+            |> result.unwrap(spell.SpellVisuals(
+              projectile_spritesheet: spell.mock_spritesheet(),
+              projectile_animation: spell.mock_animation(),
+              hit_spritesheet: spell.mock_spritesheet(),
+              hit_animation: spell.mock_animation(),
+            ))
 
-      let fireball_visuals =
-        dict.get(model.visuals, spell.Fireball)
-        |> result.unwrap(spell.SpellVisuals(
-          projectile_spritesheet: spell.mock_spritesheet(),
-          projectile_animation: spell.mock_animation(),
-          hit_spritesheet: spell.mock_spritesheet(),
-          hit_animation: spell.mock_animation(),
-        ))
+          let fireball_visuals =
+            dict.get(model.visuals, spell.Fireball)
+            |> result.unwrap(spell.SpellVisuals(
+              projectile_spritesheet: spell.mock_spritesheet(),
+              projectile_animation: spell.mock_animation(),
+              hit_spritesheet: spell.mock_spritesheet(),
+              hit_animation: spell.mock_animation(),
+            ))
 
-      let lightning_visuals =
-        dict.get(model.visuals, spell.LightningBolt)
-        |> result.unwrap(spell.SpellVisuals(
-          projectile_spritesheet: spell.mock_spritesheet(),
-          projectile_animation: spell.mock_animation(),
-          hit_spritesheet: spell.mock_spritesheet(),
-          hit_animation: spell.mock_animation(),
-        ))
+          let lightning_visuals =
+            dict.get(model.visuals, spell.LightningBolt)
+            |> result.unwrap(spell.SpellVisuals(
+              projectile_spritesheet: spell.mock_spritesheet(),
+              projectile_animation: spell.mock_animation(),
+              hit_spritesheet: spell.mock_spritesheet(),
+              hit_animation: spell.mock_animation(),
+            ))
 
-      // Create spell instances with their proper visuals
-      let available_spells = [
-        spell.spark(spark_visuals),
-        spell.fireball(fireball_visuals),
-        spell.lightning(lightning_visuals),
-      ]
+          // Create spell instances with their proper visuals
+          let available_spells = [
+            spell.spark(spark_visuals),
+            spell.fireball(fireball_visuals),
+            spell.lightning(lightning_visuals),
+          ]
 
-      let new_loot =
-        loot.generate_elite_drop(
-          id.loot_drop(model.next_loot_drop_id),
-          enemy.position,
-          available_spells,
-        )
+          let new_loot =
+            loot.generate_elite_drop(
+              id.loot_drop(model.next_loot_drop_id),
+              enemy.position,
+              available_spells,
+            )
 
-      #([new_loot, ..model.loot_drops], model.next_loot_drop_id + 1)
+          #([new_loot, ..model.loot_drops], model.next_loot_drop_id + 1)
+        }
+        False -> #(model.loot_drops, model.next_loot_drop_id)
+      }
     }
     False -> #(model.loot_drops, model.next_loot_drop_id)
   }
@@ -519,6 +606,26 @@ fn handle_player_leveled_up(
     game_state.Model(..model, showing_spell_rewards: True),
     effect.batch([
       tiramisu_ui.dispatch_to_lustre(ui.ShowSpellRewards(spell_rewards)),
+      effect.exit_pointer_lock(),
+    ]),
+    Some(physics_world),
+  )
+}
+
+/// Handle chest opened
+fn handle_chest_opened(
+  model: Model,
+  perk_value: perk.Perk,
+  physics_world: physics.PhysicsWorld(Id),
+  _ctx: tiramisu.Context(Id),
+) -> #(Model, Effect(Msg), Option(_)) {
+  io.println("=== CHEST OPENED ===")
+  io.println("Perk: " <> perk.get_info(perk_value).name)
+  io.println("Setting showing_perk_slot_machine: True")
+  #(
+    game_state.Model(..model, showing_perk_slot_machine: True),
+    effect.batch([
+      tiramisu_ui.dispatch_to_lustre(ui.StartPerkSlotMachine(perk_value)),
       effect.exit_pointer_lock(),
     ]),
     Some(physics_world),
@@ -704,24 +811,24 @@ fn handle_ui_message(
         spell.AddTrigger -> spell.add_trigger()
         spell.DoubleSpell -> spell.double_spell()
         spell.Fireball -> {
-          let assert Ok(visuals) = dict.get(echo model.visuals, id)
+          let assert Ok(visuals) = dict.get(model.visuals, id)
           spell.fireball(visuals)
         }
         spell.LightningBolt -> {
-          let assert Ok(visuals) = dict.get(echo model.visuals, id)
+          let assert Ok(visuals) = dict.get(model.visuals, id)
           spell.lightning(visuals)
         }
         spell.OrbitingSpell -> {
-          let assert Ok(visuals) = dict.get(echo model.visuals, id)
+          let assert Ok(visuals) = dict.get(model.visuals, id)
           spell.orbiting_spell(visuals)
         }
         spell.Piercing -> spell.piercing()
         spell.Spark -> {
-          let assert Ok(visuals) = dict.get(echo model.visuals, id)
+          let assert Ok(visuals) = dict.get(model.visuals, id)
           spell.spark(visuals)
         }
         spell.SparkWithTrigger -> {
-          let assert Ok(visuals) = dict.get(echo model.visuals, id)
+          let assert Ok(visuals) = dict.get(model.visuals, id)
           spell.spark_with_trigger(visuals)
         }
         spell.RapidFire -> spell.rapid_fire()
@@ -774,6 +881,36 @@ fn handle_ui_message(
       #(
         game_state.Model(..model, player: updated_player),
         effect.none(),
+        ctx.physics_world,
+      )
+    }
+    ui.PerkSlotMachineStarted -> {
+      io.println("=== PERK SLOT MACHINE STARTED ===")
+      // Freeze the game while slot machine is showing
+      #(
+        game_state.Model(..model, showing_perk_slot_machine: True),
+        effect.none(),
+        ctx.physics_world,
+      )
+    }
+    ui.PerkSlotMachineComplete(perk_value) -> {
+      io.println("=== PERK SLOT MACHINE COMPLETE ===")
+      io.println("Perk: " <> perk.get_info(perk_value).name)
+      // Apply the perk to the player and unfreeze game
+      let updated_player = player.apply_perk(model.player, perk_value)
+      #(
+        game_state.Model(
+          ..model,
+          player: updated_player,
+          showing_perk_slot_machine: False,
+          is_paused: False,
+        ),
+        effect.batch([
+          effect.request_pointer_lock(
+            on_success: game_state.PointerLocked,
+            on_error: game_state.PointerLockFailed,
+          ),
+        ]),
         ctx.physics_world,
       )
     }

@@ -6,7 +6,6 @@ import gleam/list
 import gleam/option
 import gleam/string
 import grille_pain
-import grille_pain/lustre/toast
 import iv
 import lustre
 import lustre/attribute
@@ -21,6 +20,9 @@ import pondering_my_orb/pointer_lock_request
 import pondering_my_orb/score
 import pondering_my_orb/spell
 import pondering_my_orb/spell_bag
+import plinth/javascript/global
+import pondering_my_orb/ui/components/perk_slot_machine
+import pondering_my_orb/ui/model as slot_machine_model
 import pondering_my_orb/wand
 import tiramisu/ui as tiramisu_ui
 
@@ -65,6 +67,8 @@ pub type Model(tiramisu_msg) {
     showing_wand_selection: Bool,
     // Debug menu
     is_debug_menu_open: Bool,
+    // Perk slot machine
+    perk_slot_machine: option.Option(slot_machine_model.SlotMachineState),
   )
 }
 
@@ -100,6 +104,10 @@ pub type Msg {
   UpdateWandStat(WandStatUpdate)
   // Pause state synchronization
   SetPaused(Bool)
+  // Perk slot machine
+  StartPerkSlotMachine(perk.Perk)
+  UpdateSlotMachineAnimation(Float)
+  ClosePerkSlotMachine
   NoOp
 }
 
@@ -132,6 +140,9 @@ pub type UiToGameMsg {
   DebugMenuClosed
   DebugAddSpellToBag(spell.Id)
   DebugUpdateWandStat(WandStatUpdate)
+  // Perk slot machine
+  PerkSlotMachineStarted
+  PerkSlotMachineComplete(perk.Perk)
 }
 
 pub type GameState {
@@ -202,6 +213,7 @@ pub fn init(wrapper) -> #(Model(tiramisu_msg), effect.Effect(Msg)) {
       pending_wand: option.None,
       showing_wand_selection: False,
       is_debug_menu_open: False,
+      perk_slot_machine: option.None,
     ),
     effect.batch([
       tiramisu_ui.register_lustre(),
@@ -516,22 +528,26 @@ pub fn update(
           )
           #(Model(..model, resuming: False), effect.none())
         }
-        // Only auto-pause if we're actually playing and not in level-up and not already paused and not showing wand selection
+        // Only auto-pause if we're actually playing and not in level-up and not already paused and not showing wand selection and not showing perk slot machine
         False ->
           case
             model.game_phase,
             model.spell_rewards,
             model.is_paused,
-            model.showing_wand_selection
+            model.showing_wand_selection,
+            model.perk_slot_machine
           {
-            Playing, option.None, False, False -> {
+            Playing, option.None, False, False, option.None -> {
               io.println("=== UI: Pointer Lock Exited - Auto Pausing ===")
               #(
                 Model(..model, is_paused: True),
                 tiramisu_ui.dispatch_to_tiramisu(model.wrapper(GamePaused)),
               )
             }
-            _, _, _, _ -> #(model, effect.none())
+            _, _, _, _, _ -> {
+              io.println("=== UI: Pointer Lock Exited - Not Auto Pausing ===")
+              #(model, effect.none())
+            }
           }
       }
     }
@@ -559,17 +575,19 @@ pub fn update(
       // For wands: show modal for user to decide
       case loot_type {
         loot.PerkLoot(perk_value) -> {
-          let perk_info = perk.get_info(perk_value)
-          let toast_message =
-            "⭐ " <> perk_info.name <> " (" <> perk_info.description <> ")"
-
+          // Start the slot machine animation
           #(
             model,
             effect.batch([
-              toast.toast(toast_message),
-              tiramisu_ui.dispatch_to_tiramisu(
-                model.wrapper(ApplyLoot(loot_type)),
-              ),
+              effect.from(fn(dispatch) {
+                dispatch(StartPerkSlotMachine(perk_value))
+              }),
+              tiramisu_ui.dispatch_to_tiramisu(model.wrapper(CloseLootUI)),
+              effect.from(fn(_) {
+                // Exit pointer lock so user can click the continue button
+                let _ = pointer_lock_request.exit_pointer_lock()
+                Nil
+              }),
             ]),
           )
         }
@@ -662,6 +680,116 @@ pub fn update(
       }),
       effect.none(),
     )
+    StartPerkSlotMachine(selected_perk) -> {
+      io.println("UI: StartPerkSlotMachine - " <> perk.get_info(selected_perk).name)
+      // Generate 3 random perks for display
+      let reel1 = perk.random()
+      let reel2 = perk.random()
+      let reel3 = perk.random()
+
+      #(
+        Model(
+          ..model,
+          perk_slot_machine: option.Some(slot_machine_model.SlotMachineState(
+            selected_perk:,
+            reel1:,
+            reel2:,
+            reel3:,
+            animation_phase: slot_machine_model.Spinning,
+            time_elapsed: 0.0,
+          )),
+        ),
+        effect.batch([
+          // Notify game to freeze
+          tiramisu_ui.dispatch_to_tiramisu(model.wrapper(PerkSlotMachineStarted)),
+          // Start animation loop
+          schedule_slot_machine_tick(),
+        ]),
+      )
+    }
+    UpdateSlotMachineAnimation(delta_time) -> {
+      case model.perk_slot_machine {
+        option.Some(state) -> {
+          let new_time = state.time_elapsed +. delta_time /. 1000.0
+
+          // Update animation phase based on time
+          let new_phase = case new_time {
+            t if t <. 2.0 -> slot_machine_model.Spinning
+            t if t <. 2.5 -> slot_machine_model.StoppingLeft
+            t if t <. 3.0 -> slot_machine_model.StoppingMiddle
+            t if t <. 3.5 -> slot_machine_model.StoppingRight
+            _ -> {
+              case state.animation_phase {
+                slot_machine_model.Stopped -> slot_machine_model.Stopped
+                _ -> {
+                  io.println("UI: Animation reached STOPPED state")
+                  slot_machine_model.Stopped
+                }
+              }
+            }
+          }
+
+          // Randomize reels during spinning phase
+          let #(new_reel1, new_reel2, new_reel3) = case new_phase {
+            slot_machine_model.Spinning ->
+              // Change reels every 100ms
+              case float.modulo(new_time *. 1000.0, 100.0) {
+                Ok(mod) if mod <. delta_time -> #(
+                  perk.random(),
+                  perk.random(),
+                  perk.random(),
+                )
+                _ -> #(state.reel1, state.reel2, state.reel3)
+              }
+            _ -> #(state.reel1, state.reel2, state.reel3)
+          }
+
+          let next_effect = case new_phase {
+            slot_machine_model.Stopped -> effect.none()
+            _ -> schedule_slot_machine_tick()
+          }
+
+          #(
+            Model(
+              ..model,
+              perk_slot_machine: option.Some(
+                slot_machine_model.SlotMachineState(
+                  ..state,
+                  time_elapsed: new_time,
+                  animation_phase: new_phase,
+                  reel1: new_reel1,
+                  reel2: new_reel2,
+                  reel3: new_reel3,
+                ),
+              ),
+            ),
+            next_effect,
+          )
+        }
+        option.None -> #(model, effect.none())
+      }
+    }
+    ClosePerkSlotMachine -> {
+      io.println("UI: ClosePerkSlotMachine clicked")
+      case model.perk_slot_machine {
+        option.Some(state) -> {
+          io.println(
+            "UI: Dispatching PerkSlotMachineComplete - "
+            <> perk.get_info(state.selected_perk).name,
+          )
+          #(
+            Model(..model, perk_slot_machine: option.None),
+            tiramisu_ui.dispatch_to_tiramisu(
+              model.wrapper(PerkSlotMachineComplete(state.selected_perk)),
+            ),
+          )
+        }
+        option.None -> {
+          io.println("UI: ERROR - perk_slot_machine is None!")
+          #(model, effect.none())
+        }
+      }
+    }
     NoOp -> #(model, effect.none())
   }
 }
@@ -680,6 +808,16 @@ fn reorder_array(
     }
     _, _ -> items
   }
+}
+
+/// Schedule a slot machine animation tick (16ms ~= 60fps)
+fn schedule_slot_machine_tick() -> effect.Effect(Msg) {
+  effect.from(fn(dispatch) {
+    global.set_timeout(16, fn() {
+      dispatch(UpdateSlotMachineAnimation(16.0))
+    })
+    Nil
+  })
 }
 
 pub fn view(model: Model(tiramisu_msg)) -> element.Element(Msg) {
@@ -941,17 +1079,19 @@ fn view_playing(model: Model(tiramisu_msg)) -> element.Element(Msg) {
         option.Some(rewards) -> view_spell_rewards_modal(model, rewards)
         option.None -> html.div([], [])
       },
-      // Pause menu - show when paused or resuming (but not during level-up, wand selection, or debug menu)
+      // Pause menu - show when paused or resuming (but not during level-up, wand selection, perk selection, or debug menu)
       case
         model.is_paused,
         model.resuming,
         model.spell_rewards,
         model.showing_wand_selection,
-        model.is_debug_menu_open
+        model.is_debug_menu_open,
+        model.perk_slot_machine
       {
-        True, _, option.None, False, False | _, True, option.None, False, False ->
+        True, _, option.None, False, False, option.None
+        | _, True, option.None, False, False, option.None ->
           view_pause_menu(model)
-        _, _, _, _, _ -> html.div([], [])
+        _, _, _, _, _, _ -> html.div([], [])
       },
       // Wand selection modal
       case model.showing_wand_selection, model.pending_wand {
@@ -963,6 +1103,12 @@ fn view_playing(model: Model(tiramisu_msg)) -> element.Element(Msg) {
       case model.is_debug_menu_open {
         True -> view_debug_menu(model)
         False -> html.div([], [])
+      },
+      // Perk slot machine modal
+      case model.perk_slot_machine {
+        option.Some(state) ->
+          perk_slot_machine.view(state, ClosePerkSlotMachine)
+        option.None -> html.div([], [])
       },
     ],
   )

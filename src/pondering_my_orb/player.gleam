@@ -75,6 +75,11 @@ pub type Player {
     current_xp: Int,
     xp_to_next_level: Int,
     level: Int,
+    // Perks
+    perks: List(perk.Perk),
+    // Perk state tracking
+    time_standing_still: Float,
+    is_airborne: Bool,
     // Animation
     idle_spritesheet: Option(spritesheet.Spritesheet),
     idle_animation: Option(spritesheet.Animation),
@@ -125,6 +130,9 @@ pub fn new(
     current_xp: 0,
     xp_to_next_level: 100,
     level: 1,
+    perks: [],
+    time_standing_still: 0.0,
+    is_airborne: False,
     idle_spritesheet: None,
     idle_animation: None,
     attacking_spritesheet: None,
@@ -411,14 +419,27 @@ pub fn handle_input(
       direction,
     )
 
-  let #(player, impulse) =
+  let #(player, impulse, _is_airborne) =
     calculate_jump(player, physics_world, input_state, bindings)
+
+  // Track time standing still for IdleJuice perk
+  let is_moving = velocity.x != 0.0 || velocity.z != 0.0
+  let time_standing_still = case is_moving {
+    True -> 0.0
+    False -> player.time_standing_still
+  }
 
   let new_rotation = Vec3(0.0, player_yaw, player_roll)
   let quaternion_rotation = transform.euler_to_quaternion(new_rotation)
 
   let updated_player =
-    Player(..player, rotation: new_rotation, quaternion_rotation:, velocity:)
+    Player(
+      ..player,
+      rotation: new_rotation,
+      quaternion_rotation:,
+      velocity:,
+      time_standing_still:,
+    )
 
   #(updated_player, impulse, camera_pitch, effects)
 }
@@ -428,38 +449,141 @@ fn calculate_jump(
   physics_world: physics.PhysicsWorld(id),
   input_state: input.InputState,
   bindings: input.InputBindings(PlayerAction),
-) -> #(Player, Vec3(Float)) {
+) -> #(Player, Vec3(Float), Bool) {
   let raycast_origin =
     Vec3(player.position.x, player.position.y -. 1.6, player.position.z)
 
   // Cast ray downward to detect ground
   let raycast_direction = Vec3(0.0, -1.0, 0.0)
 
-  case
+  let on_ground =
     physics.raycast(
       physics_world,
       origin: raycast_origin,
       direction: raycast_direction,
       max_distance: 0.0,
-    ),
-    input.is_action_pressed(input_state, bindings, Jump),
-    player.jump_timeout
-  {
-    Ok(_), True, 0.0 -> {
-      #(Player(..player, jump_timeout: 0.1), Vec3(0.0, jumping_speed, 0.0))
+    )
+    |> result.is_ok()
+
+  let is_airborne = !on_ground
+
+  case on_ground, input.is_action_pressed(input_state, bindings, Jump), player.jump_timeout {
+    True, True, 0.0 -> {
+      #(
+        Player(..player, jump_timeout: 0.1, is_airborne: True),
+        Vec3(0.0, jumping_speed, 0.0),
+        True,
+      )
     }
-    _, _, _ -> #(player, vec3f.zero)
+    _, _, _ -> #(Player(..player, is_airborne:), vec3f.zero, is_airborne)
   }
 }
 
-pub fn take_damage(player: Player, damage: Float) -> Player {
-  let new_health = player.current_health -. damage
-  let capped_health = case new_health <. 0.0 {
-    True -> 0.0
-    False -> new_health
+/// Take damage with perk modifications
+/// Returns tuple of (updated_player, reflected_damage)
+pub fn take_damage(player: Player, damage: Float) -> #(Player, Float) {
+  // Apply damage taken modifiers from perks
+  let #(modified_damage, reflected_damage) =
+    list.fold(player.perks, #(damage, 0.0), fn(acc, perk_value) {
+      let #(current_damage, current_reflect) = acc
+      case perk_value {
+        // Glass Cannon: take more damage
+        perk.GlassCannon(_damage_mult, damage_taken_mult) -> #(
+          current_damage *. damage_taken_mult,
+          current_reflect,
+        )
+        // Mirror: reflect damage
+        perk.Mirror(reflect_percent) -> #(
+          current_damage,
+          current_reflect +. current_damage *. reflect_percent,
+        )
+        _ -> acc
+      }
+    })
+
+  let new_health = player.current_health -. modified_damage
+
+  // Check if Za Warudo should activate (prevent lethal damage once)
+  let #(final_health, updated_perks) = case new_health <=. 0.0 {
+    True -> {
+      // Check if player has Za Warudo
+      let has_za_warudo =
+        list.any(player.perks, fn(p) {
+          case p {
+            perk.ZaWarudo -> True
+            _ -> False
+          }
+        })
+
+      case has_za_warudo {
+        True -> {
+          // Remove Za Warudo from perks and survive with 1 HP
+          let remaining_perks =
+            list.filter(player.perks, fn(p) {
+              case p {
+                perk.ZaWarudo -> False
+                _ -> True
+              }
+            })
+          #(1.0, remaining_perks)
+        }
+        False -> #(0.0, player.perks)
+      }
+    }
+    False -> #(new_health, player.perks)
   }
 
-  Player(..player, current_health: capped_health, time_since_taking_damage: 0.0)
+  #(
+    Player(
+      ..player,
+      current_health: final_health,
+      time_since_taking_damage: 0.0,
+      perks: updated_perks,
+    ),
+    reflected_damage,
+  )
+}
+
+/// Apply on-kill effects (BloodThirst, etc.)
+pub fn on_enemy_killed(player: Player) -> Player {
+  let heal_amount =
+    list.fold(player.perks, 0.0, fn(acc, perk_value) {
+      case perk_value {
+        perk.BloodThirst(hp_per_kill) -> acc +. hp_per_kill
+        _ -> acc
+      }
+    })
+
+  case heal_amount >. 0.0 {
+    True -> {
+      let new_health =
+        float.min(player.max_health, player.current_health +. heal_amount)
+      Player(..player, current_health: new_health)
+    }
+    False -> player
+  }
+}
+
+/// Calculate effective cast delay with TurboSkates bonus
+pub fn get_effective_cast_delay(player: Player) -> Float {
+  let base_delay = player.wand.cast_delay
+
+  // Apply TurboSkates: movement speed reduces cast delay
+  let cast_speed_bonus =
+    list.fold(player.perks, 0.0, fn(acc, perk_value) {
+      case perk_value {
+        perk.TurboSkates(bonus_per_speed) -> {
+          // Each point of speed gives a cast speed bonus
+          acc +. player.speed *. bonus_per_speed
+        }
+        _ -> acc
+      }
+    })
+
+  // Cast speed bonus reduces the delay (higher bonus = lower delay)
+  // Bonus of 0.5 (50%) means delay is multiplied by 0.5
+  let multiplier = 1.0 /. { 1.0 +. cast_speed_bonus }
+  base_delay *. multiplier
 }
 
 pub fn update(
@@ -475,9 +599,10 @@ pub fn update(
     player.auto_cast.time_since_last_cast +. delta_time /. 1000.0
 
   // Clear recharging flag when reload completes
+  let effective_cast_delay = get_effective_cast_delay(player)
   let is_reload_complete =
     player.auto_cast.is_recharging
-    && updated_time_since_last_cast >=. player.wand.cast_delay
+    && updated_time_since_last_cast >=. effective_cast_delay
 
   let updated_recharging = case is_reload_complete {
     True -> False
@@ -587,7 +712,16 @@ pub fn update(
     False -> 0.0
   }
 
-  let player = Player(..player, time_since_taking_damage:, jump_timeout:)
+  // Increment time standing still (will be reset in handle_input if moving)
+  let time_standing_still = player.time_standing_still +. delta_time /. 1000.0
+
+  let player =
+    Player(
+      ..player,
+      time_since_taking_damage:,
+      jump_timeout:,
+      time_standing_still:,
+    )
 
   let player = case time_since_taking_damage >=. player.passive_heal_delay {
     True -> {
@@ -645,7 +779,8 @@ fn cast_spell(
 ) -> #(Player, Result(wand.CastResult, Nil), Int) {
   // Timer is already updated in update() function, just check it here
   let time_since_last_cast = player.auto_cast.time_since_last_cast
-  case time_since_last_cast >=. player.wand.cast_delay {
+  let effective_cast_delay = get_effective_cast_delay(player)
+  case time_since_last_cast >=. effective_cast_delay {
     True -> {
       let normalized_direction =
         Vec3(
@@ -825,72 +960,214 @@ fn apply_loot(player: Player, loot_type: loot.LootType) -> Player {
   }
 }
 
+/// Apply all damage-modifying perks
+/// Returns tuple of (final_damage, is_critical, self_damage, heal_amount)
+/// enemy_hp_percent is optional - only used for Execute perk
+pub fn apply_damage_perks(
+  player: Player,
+  base_damage: Float,
+  enemy_hp_percent: option.Option(Float),
+) -> #(Float, Bool, Float, Float) {
+  let #(damage, is_crit, self_damage, heal_amount) =
+    list.fold(
+      player.perks,
+      #(base_damage, False, 0.0, 0.0),
+      fn(acc, perk_value) {
+        let #(current_damage, already_crit, current_self_damage, current_heal) =
+          acc
+
+        case perk_value {
+          // Big Bonk: chance for massive crit
+          perk.BigBonk(crit_chance, crit_multiplier) -> {
+            let roll = float.random()
+            case roll <. crit_chance {
+              True -> #(
+                current_damage *. crit_multiplier,
+                True,
+                current_self_damage,
+                current_heal,
+              )
+              False -> acc
+            }
+          }
+
+          // Idle Juice: more damage while standing still
+          perk.IdleJuice(max_bonus, time_to_max) -> {
+            let idle_progress =
+              float.min(1.0, player.time_standing_still /. time_to_max)
+            let bonus_multiplier = 1.0 +. max_bonus *. idle_progress
+            #(
+              current_damage *. bonus_multiplier,
+              already_crit,
+              current_self_damage,
+              current_heal,
+            )
+          }
+
+          // Scarf: more damage while airborne
+          perk.Scarf(multiplier) -> {
+            case player.is_airborne {
+              True -> #(
+                current_damage *. multiplier,
+                already_crit,
+                current_self_damage,
+                current_heal,
+              )
+              False -> acc
+            }
+          }
+
+          // Speed Boi: more damage when below HP threshold
+          perk.SpeedBoi(threshold, multiplier) -> {
+            let hp_percent = player.current_health /. player.max_health
+            case hp_percent <. threshold {
+              True -> #(
+                current_damage *. multiplier,
+                already_crit,
+                current_self_damage,
+                current_heal,
+              )
+              False -> acc
+            }
+          }
+
+          // Berserker's Rage: more damage based on missing HP
+          perk.BerserkersRage(max_bonus) -> {
+            let missing_hp = 1.0 -. player.current_health /. player.max_health
+            let bonus_multiplier = 1.0 +. max_bonus *. missing_hp
+            #(
+              current_damage *. bonus_multiplier,
+              already_crit,
+              current_self_damage,
+              current_heal,
+            )
+          }
+
+          // Kevin's Punch: chance to take damage when hitting enemies
+          perk.KevinsPunch(chance, damage_percent) -> {
+            let roll = float.random()
+            case roll <. chance {
+              True -> {
+                let kevin_damage = player.max_health *. damage_percent
+                #(
+                  current_damage,
+                  already_crit,
+                  current_self_damage +. kevin_damage,
+                  current_heal,
+                )
+              }
+              False -> acc
+            }
+          }
+
+          // Vampirism: heal % of damage dealt
+          perk.Vampirism(lifesteal_percent) -> {
+            let heal = current_damage *. lifesteal_percent
+            #(current_damage, already_crit, current_self_damage, current_heal +. heal)
+          }
+
+          // Beefy Ring: more damage per 100 max HP
+          perk.BeefyRing(damage_per_100_hp) -> {
+            let hp_bonus = player.max_health /. 100.0 *. damage_per_100_hp
+            let bonus_multiplier = 1.0 +. hp_bonus
+            #(
+              current_damage *. bonus_multiplier,
+              already_crit,
+              current_self_damage,
+              current_heal,
+            )
+          }
+
+          // Execute: bonus damage to low HP enemies
+          perk.Execute(threshold, multiplier) -> {
+            case enemy_hp_percent {
+              option.Some(hp_percent) if hp_percent <. threshold -> #(
+                current_damage *. multiplier,
+                already_crit,
+                current_self_damage,
+                current_heal,
+              )
+              _ -> acc
+            }
+          }
+
+          // Glass Cannon: more damage, more damage taken
+          perk.GlassCannon(damage_mult, _damage_taken_mult) -> {
+            #(
+              current_damage *. damage_mult,
+              already_crit,
+              current_self_damage,
+              current_heal,
+            )
+          }
+
+          // Fragile Strength: double damage
+          perk.FragileStrength -> {
+            #(
+              current_damage *. 2.0,
+              already_crit,
+              current_self_damage,
+              current_heal,
+            )
+          }
+
+          _ -> acc
+        }
+      },
+    )
+
+  #(damage, is_crit, self_damage, heal_amount)
+}
+
+/// Check if Big Bonk should trigger and return modified damage and whether it crit
+/// Returns tuple of (final_damage, is_critical)
+/// DEPRECATED: Use apply_damage_perks instead
+pub fn apply_big_bonk(player: Player, base_damage: Float) -> #(Float, Bool) {
+  let #(damage, is_crit, _self_damage, _heal) =
+    apply_damage_perks(player, base_damage, option.None)
+  #(damage, is_crit)
+}
+
 /// Apply a perk to the player
 pub fn apply_perk(player: Player, perk_value: perk.Perk) -> Player {
   case perk_value {
-    perk.HealthBoost(multiplier) -> {
-      let new_max_health = player.max_health *. multiplier
-      let health_ratio = player.current_health /. player.max_health
-      let new_current_health = new_max_health *. health_ratio
+    // Perks that affect max HP immediately
+    perk.GlassCannon(_damage_mult, _damage_taken_mult) -> {
+      // Note: damage_mult is stored in perks list for damage calculation
+      // damage_taken_mult will be applied when taking damage
+      Player(..player, perks: [perk_value, ..player.perks])
+    }
+
+    perk.FragileStrength -> {
+      // Double damage, half max HP
+      let new_max_health = player.max_health /. 2.0
+      let new_current_health = float.min(player.current_health, new_max_health)
       Player(
         ..player,
         max_health: new_max_health,
         current_health: new_current_health,
+        perks: [perk_value, ..player.perks],
       )
     }
 
-    perk.SpeedBoost(multiplier) -> {
-      Player(..player, speed: player.speed *. multiplier)
+    perk.TurboSkates(_) -> {
+      // Affects cast speed based on movement speed
+      // Applied dynamically during casting
+      Player(..player, perks: [perk_value, ..player.perks])
     }
 
-    perk.ManaRegenBoost(multiplier) -> {
-      let new_wand =
-        wand.Wand(
-          ..player.wand,
-          mana_recharge_rate: player.wand.mana_recharge_rate *. multiplier,
-        )
-      Player(..player, wand: new_wand)
-    }
-
-    perk.MaxManaBoost(multiplier) -> {
-      let new_wand =
-        wand.Wand(..player.wand, max_mana: player.wand.max_mana *. multiplier)
-      Player(..player, wand: new_wand)
-    }
-
-    perk.CastSpeedBoost(multiplier) -> {
-      let new_wand =
-        wand.Wand(
-          ..player.wand,
-          cast_delay: player.wand.cast_delay *. multiplier,
-        )
-      Player(..player, wand: new_wand)
-    }
-
-    perk.RechargeSpeedBoost(multiplier) -> {
-      let new_wand =
-        wand.Wand(
-          ..player.wand,
-          recharge_time: player.wand.recharge_time *. multiplier,
-        )
-      Player(..player, wand: new_wand)
-    }
-
-    perk.PassiveHealBoost(multiplier) -> {
-      Player(
-        ..player,
-        passive_heal_rate: player.passive_heal_rate *. multiplier,
-      )
-    }
-
-    perk.QuickHeal(delay_reduction) -> {
-      let new_delay =
-        float.max(0.5, player.passive_heal_delay -. delay_reduction)
-      Player(..player, passive_heal_delay: new_delay)
-    }
-
-    // DamageBoost and ProjectileSpeedBoost would need to be applied at cast time
-    // or stored as player stats - for now, we'll leave them unimplemented here
-    perk.DamageBoost(_) | perk.ProjectileSpeedBoost(_) -> player
+    // Passive perks stored in perks list and applied during damage calculation or other events
+    perk.BigBonk(..)
+    | perk.IdleJuice(..)
+    | perk.Scarf(_)
+    | perk.KevinsPunch(..)
+    | perk.SpeedBoi(..)
+    | perk.BerserkersRage(_)
+    | perk.ZaWarudo
+    | perk.Vampirism(_)
+    | perk.BeefyRing(_)
+    | perk.Execute(..)
+    | perk.Mirror(_)
+    | perk.BloodThirst(_) -> Player(..player, perks: [perk_value, ..player.perks])
   }
 }
