@@ -9,12 +9,14 @@ pub fn generate_spell_rewards(
   let assert Ok(fireball_visuals) = dict.get(visuals, spell.Fireball)
   let assert Ok(spark_visuals) = dict.get(visuals, spell.Spark)
   let assert Ok(lightning_bolt_visuals) = dict.get(visuals, spell.LightningBolt)
+  let assert Ok(orbiting_spell_visuals) = dict.get(visuals, spell.OrbitingSpell)
 
   // Define a pool of possible spells to choose from
   let possible_spells = [
     spell.fireball(fireball_visuals),
     spell.lightning(lightning_bolt_visuals),
     spell.spark(spark_visuals),
+    spell.orbiting_spell(orbiting_spell_visuals),
     spell.double_spell(),
     spell.add_mana(),
     spell.add_damage(),

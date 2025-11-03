@@ -99,6 +99,7 @@ pub fn handle_tick(
       model.enemies,
       scaled_delta,
       game_state.ProjectileDamagedEnemy,
+      model.player.position,
     )
 
   // Update existing explosions and add new ones
@@ -182,6 +183,7 @@ pub fn handle_tick(
       scaled_delta,
       game_state.PlayerDied,
       model.next_projectile_id,
+      updated_projectiles,
     )
 
   // Add newly cast projectiles

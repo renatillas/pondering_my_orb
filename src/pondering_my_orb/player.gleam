@@ -468,6 +468,7 @@ pub fn update(
   delta_time: Float,
   player_died_msg: msg,
   next_projectile_id: Int,
+  existing_projectiles: List(spell.Projectile),
 ) -> #(Player, List(spell.Projectile), List(Int), Effect(msg), Int) {
   // Update timer every frame
   let updated_time_since_last_cast =
@@ -499,6 +500,7 @@ pub fn update(
       _,
       delta_time /. 1000.0,
       next_projectile_id,
+      existing_projectiles,
     ))
     |> result.unwrap(#(
       player_with_updated_timer,
@@ -638,6 +640,7 @@ fn cast_spell(
   nearest_enemy: Enemy(id),
   _delta_time: Float,
   next_projectile_id: Int,
+  existing_projectiles: List(spell.Projectile),
 ) -> #(Player, Result(wand.CastResult, Nil), Int) {
   // Timer is already updated in update() function, just check it here
   let time_since_last_cast = player.auto_cast.time_since_last_cast
@@ -668,6 +671,8 @@ fn cast_spell(
           normalized_direction,
           next_projectile_id,
           option.Some(nearest_enemy.position),
+          option.Some(player.position),
+          existing_projectiles,
         )
 
       // Increment projectile ID based on number of projectiles created

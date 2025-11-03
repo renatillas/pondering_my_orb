@@ -216,7 +216,6 @@ fn handle_assets_loaded(
         )),
       ),
     )
-
   let updated_player =
     player.Player(..model.player, wand: updated_wand)
     |> player.set_spritesheets(
