@@ -17,6 +17,8 @@ pub fn generate_spell_rewards(
     spell.spark(spark_visuals),
     spell.double_spell(),
     spell.add_mana(),
+    spell.add_damage(),
+    spell.piercing(),
   ]
 
   // Shuffle and take 3 random spells

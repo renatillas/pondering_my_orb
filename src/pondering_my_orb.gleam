@@ -112,10 +112,20 @@ fn update(
       damage,
       _knockback_direction,
       spell_effects,
-    ) -> handle_projectile_damaged_enemy(model, enemy_id, damage, spell_effects, ctx)
-    game_state.EnemyKilled(enemy_id) -> handle_enemy_killed(model, enemy_id, physics_world)
-    game_state.PlayerLeveledUp(_new_level) -> handle_player_leveled_up(model, physics_world)
-    game_state.UIMessage(ui_msg) -> handle_ui_message(model, ui_msg, physics_world, ctx)
+    ) ->
+      handle_projectile_damaged_enemy(
+        model,
+        enemy_id,
+        damage,
+        spell_effects,
+        ctx,
+      )
+    game_state.EnemyKilled(enemy_id) ->
+      handle_enemy_killed(model, enemy_id, physics_world)
+    game_state.PlayerLeveledUp(_new_level) ->
+      handle_player_leveled_up(model, physics_world)
+    game_state.UIMessage(ui_msg) ->
+      handle_ui_message(model, ui_msg, physics_world, ctx)
   }
 }
 
@@ -139,7 +149,11 @@ fn handle_game_started(
       tiramisu_ui.dispatch_to_lustre(ui.GamePhaseChanged(ui.LoadingScreen)),
     ])
 
-  #(game_state.Model(..model, game_phase: LoadingScreen), effects, ctx.physics_world)
+  #(
+    game_state.Model(..model, game_phase: LoadingScreen),
+    effects,
+    ctx.physics_world,
+  )
 }
 
 /// Handle player death
@@ -285,10 +299,11 @@ fn handle_enemy_spawned(
   physics_world: physics.PhysicsWorld(Id),
 ) -> #(Model, Effect(Msg), Option(_)) {
   // Don't spawn enemies when showing spell rewards or paused
-  use <- bool.guard(
-    model.showing_spell_rewards || model.is_paused,
-    return: #(model, effect.none(), Some(physics_world)),
-  )
+  use <- bool.guard(model.showing_spell_rewards || model.is_paused, return: #(
+    model,
+    effect.none(),
+    Some(physics_world),
+  ))
 
   let spawn_config =
     enemy_spawner.SpawnConfig(
@@ -579,11 +594,18 @@ fn handle_ui_message(
     }
     ui.GameResumed -> {
       io.println("=== GAME RESUMED ===")
-      #(game_state.Model(..model, is_paused: False), effect.none(), ctx.physics_world)
+      #(
+        game_state.Model(..model, is_paused: False),
+        effect.none(),
+        ctx.physics_world,
+      )
     }
     ui.UpdateCameraDistance(distance) -> {
       #(
-        game_state.Model(..model, camera: camera.Camera(..model.camera, distance:)),
+        game_state.Model(
+          ..model,
+          camera: camera.Camera(..model.camera, distance:),
+        ),
         effect.none(),
         ctx.physics_world,
       )
@@ -644,6 +666,86 @@ fn handle_ui_message(
       // User finished selecting wand, unfreeze game
       #(
         game_state.Model(..model, showing_wand_selection: False),
+        effect.none(),
+        ctx.physics_world,
+      )
+    }
+    // Debug menu handlers
+    ui.DebugMenuOpened -> {
+      io.println("=== DEBUG MENU OPENED ===")
+      #(
+        game_state.Model(..model, is_paused: True, is_debug_menu_open: True),
+        effect.batch([
+          effect.exit_pointer_lock(),
+          tiramisu_ui.dispatch_to_lustre(ui.ToggleDebugMenu),
+          tiramisu_ui.dispatch_to_lustre(ui.SetPaused(True)),
+        ]),
+        ctx.physics_world,
+      )
+    }
+    ui.DebugMenuClosed -> {
+      io.println("=== DEBUG MENU CLOSED ===")
+      #(
+        game_state.Model(..model, is_paused: False, is_debug_menu_open: False),
+        effect.batch([
+          tiramisu_ui.dispatch_to_lustre(ui.ToggleDebugMenu),
+          tiramisu_ui.dispatch_to_lustre(ui.SetPaused(False)),
+          effect.request_pointer_lock(
+            on_success: game_state.PointerLocked,
+            on_error: game_state.PointerLockFailed,
+          ),
+        ]),
+        ctx.physics_world,
+      )
+    }
+    ui.DebugAddSpellToBag(spell) -> {
+      let updated_spell_bag = spell_bag.add_spell(model.player.spell_bag, spell)
+      let updated_player =
+        player.Player(..model.player, spell_bag: updated_spell_bag)
+      #(
+        game_state.Model(..model, player: updated_player),
+        effect.none(),
+        ctx.physics_world,
+      )
+    }
+    ui.DebugUpdateWandStat(stat_update) -> {
+      let updated_wand = case stat_update {
+        ui.SetMaxMana(value) -> wand.Wand(..model.player.wand, max_mana: value)
+        ui.SetManaRechargeRate(value) ->
+          wand.Wand(..model.player.wand, mana_recharge_rate: value)
+        ui.SetCastDelay(value) ->
+          wand.Wand(..model.player.wand, cast_delay: value)
+        ui.SetRechargeTime(value) ->
+          wand.Wand(..model.player.wand, recharge_time: value)
+        ui.SetSpread(value) -> wand.Wand(..model.player.wand, spread: value)
+        ui.SetCapacity(new_capacity) -> {
+          // Resize wand slots array
+          let current_slots = model.player.wand.slots
+          let current_capacity = iv.length(current_slots)
+
+          let new_slots = case new_capacity > current_capacity {
+            True -> {
+              // Add empty slots
+              let slots_to_add = new_capacity - current_capacity
+              list.range(0, slots_to_add - 1)
+              |> list.fold(current_slots, fn(acc, _) {
+                iv.append(acc, option.None)
+              })
+            }
+            False -> {
+              // Remove slots from the end, moving spells back to bag if needed
+              iv.to_list(current_slots)
+              |> list.take(new_capacity)
+              |> iv.from_list
+            }
+          }
+
+          wand.Wand(..model.player.wand, slots: new_slots)
+        }
+      }
+      let updated_player = player.Player(..model.player, wand: updated_wand)
+      #(
+        game_state.Model(..model, player: updated_player),
         effect.none(),
         ctx.physics_world,
       )

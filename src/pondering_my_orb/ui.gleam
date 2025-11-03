@@ -63,6 +63,8 @@ pub type Model(tiramisu_msg) {
     // Wand selection
     pending_wand: option.Option(wand.Wand),
     showing_wand_selection: Bool,
+    // Debug menu
+    is_debug_menu_open: Bool,
   )
 }
 
@@ -92,7 +94,22 @@ pub type Msg {
   LootPickedUp(loot.LootType)
   AcceptWand
   RejectWand
+  // Debug menu
+  ToggleDebugMenu
+  AddSpellToBag(spell.Spell)
+  UpdateWandStat(WandStatUpdate)
+  // Pause state synchronization
+  SetPaused(Bool)
   NoOp
+}
+
+pub type WandStatUpdate {
+  SetMaxMana(Float)
+  SetManaRechargeRate(Float)
+  SetCastDelay(Float)
+  SetRechargeTime(Float)
+  SetSpread(Float)
+  SetCapacity(Int)
 }
 
 pub type UiToGameMsg {
@@ -110,6 +127,11 @@ pub type UiToGameMsg {
   ApplyLoot(loot.LootType)
   CloseLootUI
   WandSelectionComplete
+  // Debug menu
+  DebugMenuOpened
+  DebugMenuClosed
+  DebugAddSpellToBag(spell.Spell)
+  DebugUpdateWandStat(WandStatUpdate)
 }
 
 pub type GameState {
@@ -179,6 +201,7 @@ pub fn init(wrapper) -> #(Model(tiramisu_msg), effect.Effect(Msg)) {
       wand_spread: 0.0,
       pending_wand: option.None,
       showing_wand_selection: False,
+      is_debug_menu_open: False,
     ),
     effect.batch([
       tiramisu_ui.register_lustre(),
@@ -252,6 +275,9 @@ pub fn update(
           wand_recharge_time: state.wand_recharge_time,
           wand_capacity: state.wand_capacity,
           wand_spread: state.wand_spread,
+          // Preserve UI-only states
+          is_paused: model.is_paused,
+          is_debug_menu_open: model.is_debug_menu_open,
         ),
         effect.none(),
       )
@@ -284,7 +310,9 @@ pub fn update(
           let new_slots = reorder_array(model.wand_slots, from_index, to_index)
           #(
             Model(..model, wand_slots: new_slots, drag_state: new_drag_state),
-            effect.none(),
+            tiramisu_ui.dispatch_to_tiramisu(
+              model.wrapper(UpdatePlayerInventory(new_slots, model.spell_bag)),
+            ),
           )
         }
         option.Some(ensaimada.CrossContainer(
@@ -334,7 +362,9 @@ pub fn update(
                       spell_bag: new_bag,
                       drag_state: new_drag_state,
                     ),
-                    effect.none(),
+                    tiramisu_ui.dispatch_to_tiramisu(
+                      model.wrapper(UpdatePlayerInventory(new_slots, new_bag)),
+                    ),
                   )
                 }
                 Error(_) -> #(
@@ -398,7 +428,9 @@ pub fn update(
                       spell_bag: new_bag,
                       drag_state: new_drag_state,
                     ),
-                    effect.none(),
+                    tiramisu_ui.dispatch_to_tiramisu(
+                      model.wrapper(UpdatePlayerInventory(new_slots, new_bag)),
+                    ),
                   )
                 }
                 _ -> #(
@@ -575,10 +607,12 @@ pub fn update(
               tiramisu_ui.dispatch_to_tiramisu(
                 model.wrapper(ApplyLoot(loot.WandLoot(new_wand))),
               ),
-              tiramisu_ui.dispatch_to_tiramisu(
-                model.wrapper(WandSelectionComplete),
-              ),
-              effect.from(fn(_) { pointer_lock_request.request_pointer_lock_sync() }),
+              tiramisu_ui.dispatch_to_tiramisu(model.wrapper(
+                WandSelectionComplete,
+              )),
+              effect.from(fn(_) {
+                pointer_lock_request.request_pointer_lock_sync()
+              }),
             ]),
           )
         }
@@ -595,6 +629,39 @@ pub fn update(
         ]),
       )
     }
+    // Debug menu
+    ToggleDebugMenu -> {
+      // Just toggle the UI state, don't send back to game (game already knows)
+      // When closing the debug menu, also ensure we're not in resuming state
+      #(
+        Model(
+          ..model,
+          is_debug_menu_open: !model.is_debug_menu_open,
+          resuming: case model.is_debug_menu_open {
+            True -> False
+            False -> model.resuming
+          },
+        ),
+        effect.none(),
+      )
+    }
+    AddSpellToBag(spell) -> #(
+      model,
+      tiramisu_ui.dispatch_to_tiramisu(model.wrapper(DebugAddSpellToBag(spell))),
+    )
+    UpdateWandStat(stat_update) -> #(
+      model,
+      tiramisu_ui.dispatch_to_tiramisu(
+        model.wrapper(DebugUpdateWandStat(stat_update)),
+      ),
+    )
+    SetPaused(is_paused) -> #(
+      Model(..model, is_paused: is_paused, resuming: case is_paused {
+        False -> False
+        True -> model.resuming
+      }),
+      effect.none(),
+    )
     NoOp -> #(model, effect.none())
   }
 }
@@ -820,59 +887,6 @@ fn view_playing(model: Model(tiramisu_msg)) -> element.Element(Msg) {
               },
             ]),
           ],
-          // Wand stats section (only when paused)
-          case model.is_paused || model.resuming {
-            True -> [
-              html.div(
-                [
-                  attribute.class(
-                    "mt-4 pt-4 border-t-2 border-amber-500/50 pointer-events-auto",
-                  ),
-                ],
-                [
-                  html.div([attribute.class("flex items-center gap-2 mb-3")], [
-                    html.span([attribute.class("text-amber-300 text-sm")], [
-                      html.text("⚡"),
-                    ]),
-                    html.span(
-                      [attribute.class("text-amber-300 font-bold text-sm")],
-                      [
-                        html.text("WAND STATS"),
-                      ],
-                    ),
-                  ]),
-                  html.div([attribute.class("space-y-1")], [
-                    view_wand_stat_compact(
-                      "Cast Delay",
-                      model.wand_cast_delay,
-                      "s",
-                    ),
-                    view_wand_stat_compact(
-                      "Recharge",
-                      model.wand_recharge_time,
-                      "s",
-                    ),
-                    view_wand_stat_compact("Max Mana", model.wand_max_mana, ""),
-                    view_wand_stat_compact(
-                      "Recharge",
-                      model.wand_mana_recharge_rate,
-                      "/s",
-                    ),
-                    html.div([attribute.class("flex justify-between text-xs")], [
-                      html.span([attribute.class("text-blue-200")], [
-                        html.text("Capacity:"),
-                      ]),
-                      html.span([attribute.class("text-white font-bold")], [
-                        html.text(int.to_string(model.wand_capacity)),
-                      ]),
-                    ]),
-                    view_wand_stat_compact("Spread", model.wand_spread, "°"),
-                  ]),
-                ],
-              ),
-            ]
-            False -> []
-          },
         ]),
       ),
       // XP bar at bottom of screen
@@ -927,22 +941,28 @@ fn view_playing(model: Model(tiramisu_msg)) -> element.Element(Msg) {
         option.Some(rewards) -> view_spell_rewards_modal(model, rewards)
         option.None -> html.div([], [])
       },
-      // Pause menu - show when paused or resuming (but not during level-up or wand selection)
+      // Pause menu - show when paused or resuming (but not during level-up, wand selection, or debug menu)
       case
         model.is_paused,
         model.resuming,
         model.spell_rewards,
-        model.showing_wand_selection
+        model.showing_wand_selection,
+        model.is_debug_menu_open
       {
-        True, _, option.None, False | _, True, option.None, False ->
+        True, _, option.None, False, False | _, True, option.None, False, False ->
           view_pause_menu(model)
-        _, _, _, _ -> html.div([], [])
+        _, _, _, _, _ -> html.div([], [])
       },
       // Wand selection modal
       case model.showing_wand_selection, model.pending_wand {
         True, option.Some(new_wand) ->
           view_wand_selection_modal(model, new_wand)
         _, _ -> html.div([], [])
+      },
+      // Debug menu
+      case model.is_debug_menu_open {
+        True -> view_debug_menu(model)
+        False -> html.div([], [])
       },
     ],
   )
@@ -1543,6 +1563,273 @@ fn view_spell_reward_card(reward_spell: spell.Spell) -> element.Element(Msg) {
       ),
     ],
   )
+}
+
+fn view_debug_menu(model: Model(tiramisu_msg)) -> element.Element(Msg) {
+  html.div(
+    [
+      attribute.class(
+        "fixed inset-0 bg-black/70 flex items-center justify-center pointer-events-auto z-[1000]",
+      ),
+    ],
+    [
+      html.div(
+        [
+          attribute.class(
+            "bg-gradient-to-br from-purple-900 to-indigo-900 p-8 rounded-xl shadow-2xl border-4 border-amber-400 max-w-6xl max-h-[90vh] overflow-y-auto",
+          ),
+        ],
+        [
+          // Title
+          html.div([attribute.class("flex justify-between items-center mb-6")], [
+            html.h2([attribute.class("text-3xl font-bold text-amber-400")], [
+              html.text("DEBUG MENU"),
+            ]),
+            html.div([attribute.class("text-gray-300 text-sm")], [
+              html.text("Press M to close"),
+            ]),
+          ]),
+          // Three column layout
+          html.div([attribute.class("grid grid-cols-3 gap-6")], [
+            // Left column - Add Spells & Spell Bag
+            html.div([], [
+              html.h3(
+                [attribute.class("text-xl font-bold text-amber-300 mb-4")],
+                [html.text("Add Spells to Bag")],
+              ),
+              html.div([attribute.class("space-y-2 mb-6")], [
+                debug_spell_button("Spark", spell.Spark),
+                debug_spell_button("Fireball", spell.Fireball),
+                debug_spell_button("Lightning Bolt", spell.LightningBolt),
+                debug_spell_button("Double Spell", spell.DoubleSpell),
+                debug_spell_button("Add Mana", spell.AddMana),
+                debug_spell_button("Add Damage", spell.AddDamage),
+                debug_spell_button("Piercing", spell.Piercing),
+              ]),
+              // Wand Slots
+              html.div(
+                [
+                  attribute.class("mt-6 pt-6 border-t-2 border-amber-500/50"),
+                ],
+                [
+                  html.div([attribute.class("flex items-center gap-2 mb-3")], [
+                    html.span([attribute.class("text-amber-400 text-sm")], [
+                      html.text("⚡"),
+                    ]),
+                    html.span(
+                      [attribute.class("text-amber-300 font-bold text-sm")],
+                      [html.text("WAND SLOTS")],
+                    ),
+                  ]),
+                  render_wand_slots(
+                    model.wand_slots,
+                    model.drag_state,
+                    model.casting_spell_indices,
+                  ),
+                ],
+              ),
+              // Spell Bag
+              html.div(
+                [
+                  attribute.class("mt-6 pt-6 border-t-2 border-purple-500/50"),
+                ],
+                [
+                  html.div([attribute.class("flex items-center gap-2 mb-3")], [
+                    html.span([attribute.class("text-purple-400 text-sm")], [
+                      html.text("🎒"),
+                    ]),
+                    html.span(
+                      [attribute.class("text-purple-300 font-bold text-sm")],
+                      [html.text("SPELL BAG")],
+                    ),
+                  ]),
+                  render_spell_bag(model.spell_bag, model.drag_state),
+                ],
+              ),
+            ]),
+            // Middle column - Current Wand Stats (Read-only)
+            html.div([], [
+              html.h3(
+                [attribute.class("text-xl font-bold text-amber-300 mb-4")],
+                [html.text("Current Wand Stats")],
+              ),
+              html.div(
+                [attribute.class("space-y-3 bg-purple-950/40 p-4 rounded-lg")],
+                [
+                  view_wand_stat_compact(
+                    "Cast Delay",
+                    model.wand_cast_delay,
+                    "s",
+                  ),
+                  view_wand_stat_compact(
+                    "Recharge Time",
+                    model.wand_recharge_time,
+                    "s",
+                  ),
+                  view_wand_stat_compact("Max Mana", model.wand_max_mana, ""),
+                  view_wand_stat_compact(
+                    "Mana Recharge",
+                    model.wand_mana_recharge_rate,
+                    "/s",
+                  ),
+                  html.div([attribute.class("flex justify-between text-sm")], [
+                    html.span([attribute.class("text-blue-200")], [
+                      html.text("Capacity:"),
+                    ]),
+                    html.span([attribute.class("text-white font-bold")], [
+                      html.text(int.to_string(model.wand_capacity)),
+                    ]),
+                  ]),
+                  view_wand_stat_compact("Spread", model.wand_spread, "°"),
+                ],
+              ),
+            ]),
+            // Right column - Wand Stat Sliders (Editable)
+            html.div([], [
+              html.h3(
+                [attribute.class("text-xl font-bold text-amber-300 mb-4")],
+                [html.text("Edit Wand Stats")],
+              ),
+              html.div([attribute.class("space-y-4")], [
+                wand_stat_slider(
+                  "Max Mana",
+                  model.wand_max_mana,
+                  0.0,
+                  1000.0,
+                  fn(val) { UpdateWandStat(SetMaxMana(val)) },
+                ),
+                wand_stat_slider(
+                  "Mana Recharge Rate",
+                  model.wand_mana_recharge_rate,
+                  0.0,
+                  1000.0,
+                  fn(val) { UpdateWandStat(SetManaRechargeRate(val)) },
+                ),
+                wand_stat_slider(
+                  "Cast Delay",
+                  model.wand_cast_delay,
+                  0.0,
+                  1.0,
+                  fn(val) { UpdateWandStat(SetCastDelay(val)) },
+                ),
+                wand_stat_slider(
+                  "Recharge Time",
+                  model.wand_recharge_time,
+                  0.0,
+                  5.0,
+                  fn(val) { UpdateWandStat(SetRechargeTime(val)) },
+                ),
+                wand_stat_slider(
+                  "Spread",
+                  model.wand_spread,
+                  0.0,
+                  50.0,
+                  fn(val) { UpdateWandStat(SetSpread(val)) },
+                ),
+                wand_capacity_slider(
+                  "Capacity (Spell Slots)",
+                  model.wand_capacity,
+                  1,
+                  10,
+                  fn(val) { UpdateWandStat(SetCapacity(val)) },
+                ),
+              ]),
+            ]),
+          ]),
+        ],
+      ),
+    ],
+  )
+}
+
+fn debug_spell_button(name: String, spell_id: spell.Id) -> element.Element(Msg) {
+  html.button(
+    [
+      attribute.class(
+        "w-full px-4 py-2 bg-purple-700 hover:bg-purple-600 text-white rounded-lg transition-colors cursor-pointer",
+      ),
+      event.on_click(AddSpellToBag(create_spell_for_debug(spell_id))),
+    ],
+    [html.text(name)],
+  )
+}
+
+fn create_spell_for_debug(spell_id: spell.Id) -> spell.Spell {
+  // Create a mock spell visual for debug purposes
+  let mock_visuals =
+    spell.SpellVisuals(
+      projectile_spritesheet: spell.mock_spritesheet(),
+      projectile_animation: spell.mock_animation(),
+      hit_spritesheet: spell.mock_spritesheet(),
+      hit_animation: spell.mock_animation(),
+    )
+
+  case spell_id {
+    spell.Spark -> spell.spark(mock_visuals)
+    spell.Fireball -> spell.fireball(mock_visuals)
+    spell.LightningBolt -> spell.lightning(mock_visuals)
+    spell.DoubleSpell -> spell.double_spell()
+    spell.AddMana -> spell.add_mana()
+    spell.AddDamage -> spell.add_damage()
+    spell.Piercing -> spell.piercing()
+    _ -> spell.spark(mock_visuals)
+  }
+}
+
+fn wand_stat_slider(
+  label: String,
+  current_value: Float,
+  min: Float,
+  max: Float,
+  on_change: fn(Float) -> Msg,
+) -> element.Element(Msg) {
+  html.div([], [
+    html.label([attribute.class("block text-gray-300 text-sm mb-1")], [
+      html.text(label <> ": " <> float_to_string_rounded(current_value)),
+    ]),
+    html.input([
+      attribute.type_("range"),
+      attribute.attribute("min", float.to_string(min)),
+      attribute.attribute("max", float.to_string(max)),
+      attribute.attribute("step", "0.01"),
+      attribute.attribute("value", float.to_string(current_value)),
+      attribute.class("w-full cursor-pointer"),
+      event.on_input(fn(value) {
+        case float.parse(value) {
+          Ok(val) -> on_change(val)
+          Error(_) -> NoOp
+        }
+      }),
+    ]),
+  ])
+}
+
+fn wand_capacity_slider(
+  label: String,
+  current_value: Int,
+  min: Int,
+  max: Int,
+  on_change: fn(Int) -> Msg,
+) -> element.Element(Msg) {
+  html.div([], [
+    html.label([attribute.class("block text-gray-300 text-sm mb-1")], [
+      html.text(label <> ": " <> int.to_string(current_value)),
+    ]),
+    html.input([
+      attribute.type_("range"),
+      attribute.attribute("min", int.to_string(min)),
+      attribute.attribute("max", int.to_string(max)),
+      attribute.attribute("step", "1"),
+      attribute.attribute("value", int.to_string(current_value)),
+      attribute.class("w-full cursor-pointer"),
+      event.on_input(fn(value) {
+        case int.parse(value) {
+          Ok(val) -> on_change(val)
+          Error(_) -> NoOp
+        }
+      }),
+    ]),
+  ])
 }
 
 fn view_game_over_screen(model: Model(tiramisu_msg)) -> element.Element(Msg) {

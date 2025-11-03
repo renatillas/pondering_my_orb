@@ -69,6 +69,8 @@ pub type Model {
     showing_wand_selection: Bool,
     // Pause state
     is_paused: Bool,
+    // Debug menu
+    is_debug_menu_open: Bool,
     // Score
     score: score.Score,
   )
@@ -132,6 +134,7 @@ pub fn init_model() -> Model {
     showing_spell_rewards: False,
     showing_wand_selection: False,
     is_paused: False,
+    is_debug_menu_open: False,
     score: score.init(),
     visuals: dict.new(),
   )
