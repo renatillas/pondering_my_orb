@@ -33,6 +33,7 @@ pub type Id {
   AddMana
   AddDamage
   OrbitingSpell
+  RapidFire
 }
 
 pub type Spell {
@@ -410,7 +411,7 @@ pub fn orbiting_spell(visuals: SpellVisuals) -> Spell {
 
 pub fn rapid_fire() -> Spell {
   ModifierSpell(
-    id: AddDamage,
+    id: RapidFire,
     kind: Modifier(
       ..default_modifier("Rapid Fire", "spell_icons/rapid_fire.png"),
       cast_delay_addition: -17.0,

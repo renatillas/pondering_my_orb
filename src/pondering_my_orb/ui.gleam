@@ -1605,6 +1605,8 @@ fn view_debug_menu(model: Model(tiramisu_msg)) -> element.Element(Msg) {
                 debug_spell_button("Add Mana", spell.AddMana),
                 debug_spell_button("Add Damage", spell.AddDamage),
                 debug_spell_button("Piercing", spell.Piercing),
+                debug_spell_button("Rapid Fire", spell.RapidFire),
+                debug_spell_button("Orbitin Shards", spell.OrbitingSpell),
               ]),
               // Wand Slots
               html.div(

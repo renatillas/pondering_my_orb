@@ -698,16 +698,28 @@ fn handle_ui_message(
       )
     }
     ui.DebugAddSpellToBag(id) -> {
-      let assert Ok(visuals) = dict.get(model.visuals, id)
       let spell = case id {
         spell.AddDamage -> spell.add_damage()
         spell.AddMana -> spell.add_mana()
         spell.DoubleSpell -> spell.double_spell()
-        spell.Fireball -> spell.fireball(visuals)
-        spell.LightningBolt -> spell.lightning(visuals)
-        spell.OrbitingSpell -> spell.orbiting_spell(visuals)
+        spell.Fireball -> {
+          let assert Ok(visuals) = dict.get(echo model.visuals, id)
+          spell.fireball(visuals)
+        }
+        spell.LightningBolt -> {
+          let assert Ok(visuals) = dict.get(echo model.visuals, id)
+          spell.lightning(visuals)
+        }
+        spell.OrbitingSpell -> {
+          let assert Ok(visuals) = dict.get(echo model.visuals, id)
+          spell.orbiting_spell(visuals)
+        }
         spell.Piercing -> spell.piercing()
-        spell.Spark -> spell.spark(visuals)
+        spell.Spark -> {
+          let assert Ok(visuals) = dict.get(echo model.visuals, id)
+          spell.spark(visuals)
+        }
+        spell.RapidFire -> spell.rapid_fire()
       }
       let updated_spell_bag = spell_bag.add_spell(model.player.spell_bag, spell)
       let updated_player =
