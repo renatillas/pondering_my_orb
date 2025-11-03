@@ -48,7 +48,14 @@ pub fn double_spell_casts_two_spells_test() {
     )
 
   let #(result, _updated_wand) =
-    wand.cast(test_wand, 0, Vec3(0.0, 0.0, 0.0), Vec3(1.0, 0.0, 0.0), 0, option.None)
+    wand.cast(
+      test_wand,
+      0,
+      Vec3(0.0, 0.0, 0.0),
+      Vec3(1.0, 0.0, 0.0),
+      0,
+      option.None,
+    )
 
   case result {
     wand.CastSuccess(
@@ -98,7 +105,14 @@ pub fn double_spell_with_one_spell_test() {
     )
 
   let #(result, _updated_wand) =
-    wand.cast(test_wand, 0, Vec3(0.0, 0.0, 0.0), Vec3(1.0, 0.0, 0.0), 0, option.None)
+    wand.cast(
+      test_wand,
+      0,
+      Vec3(0.0, 0.0, 0.0),
+      Vec3(1.0, 0.0, 0.0),
+      0,
+      option.None,
+    )
 
   case result {
     wand.CastSuccess(
@@ -147,7 +161,14 @@ pub fn double_spell_wrapping_test() {
     )
 
   let #(result, _updated_wand) =
-    wand.cast(test_wand, 2, Vec3(0.0, 0.0, 0.0), Vec3(1.0, 0.0, 0.0), 0, option.None)
+    wand.cast(
+      test_wand,
+      2,
+      Vec3(0.0, 0.0, 0.0),
+      Vec3(1.0, 0.0, 0.0),
+      0,
+      option.None,
+    )
 
   case result {
     wand.CastSuccess(
@@ -210,7 +231,14 @@ pub fn multiple_double_spells_test() {
     )
 
   let #(result, _updated_wand) =
-    wand.cast(test_wand, 0, Vec3(0.0, 0.0, 0.0), Vec3(1.0, 0.0, 0.0), 0, option.None)
+    wand.cast(
+      test_wand,
+      0,
+      Vec3(0.0, 0.0, 0.0),
+      Vec3(1.0, 0.0, 0.0),
+      0,
+      option.None,
+    )
 
   case result {
     wand.CastSuccess(
@@ -262,7 +290,14 @@ pub fn double_spell_with_empty_slot_test() {
     )
 
   let #(result, _updated_wand) =
-    wand.cast(test_wand, 0, Vec3(0.0, 0.0, 0.0), Vec3(1.0, 0.0, 0.0), 0, option.None)
+    wand.cast(
+      test_wand,
+      0,
+      Vec3(0.0, 0.0, 0.0),
+      Vec3(1.0, 0.0, 0.0),
+      0,
+      option.None,
+    )
 
   case result {
     wand.CastSuccess(
@@ -311,7 +346,14 @@ pub fn double_spell_with_modifier_test() {
     )
 
   let #(result, _updated_wand) =
-    wand.cast(test_wand, 0, Vec3(0.0, 0.0, 0.0), Vec3(1.0, 0.0, 0.0), 0, option.None)
+    wand.cast(
+      test_wand,
+      0,
+      Vec3(0.0, 0.0, 0.0),
+      Vec3(1.0, 0.0, 0.0),
+      0,
+      option.None,
+    )
 
   case result {
     wand.CastSuccess(
@@ -369,7 +411,14 @@ pub fn double_spell_wrapping_partial_test() {
     )
 
   let #(result, _updated_wand) =
-    wand.cast(test_wand, 2, Vec3(0.0, 0.0, 0.0), Vec3(1.0, 0.0, 0.0), 0, option.None)
+    wand.cast(
+      test_wand,
+      2,
+      Vec3(0.0, 0.0, 0.0),
+      Vec3(1.0, 0.0, 0.0),
+      0,
+      option.None,
+    )
 
   case result {
     wand.CastSuccess(projectiles: projectiles, did_wrap: did_wrap, ..) -> {
