@@ -206,8 +206,8 @@ fn handle_assets_loaded(
     wand.set_spell(
       model.player.wand,
       0,
-      spell.spark(
-        dict.get(bundle.spell_visuals, spell.Spark)
+      spell.orbiting_spell(
+        dict.get(bundle.spell_visuals, spell.OrbitingSpell)
         |> result.unwrap(spell.SpellVisuals(
           projectile_spritesheet: spell.mock_spritesheet(),
           projectile_animation: spell.mock_animation(),
