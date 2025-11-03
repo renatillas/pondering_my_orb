@@ -45,6 +45,36 @@ pub type CastResult {
   WandEmpty
 }
 
+/// Immutable context for a cast operation
+type CastContext {
+  CastContext(
+    position: Vec3(Float),
+    direction: Vec3(Float),
+    target_position: option.Option(Vec3(Float)),
+    player_center: option.Option(Vec3(Float)),
+    existing_projectiles: List(spell.Projectile),
+    projectile_starting_index: Int,
+  )
+}
+
+/// Internal state that evolves during a cast operation
+type CastState {
+  CastState(
+    current_index: Int,
+    remaining_draw: Int,
+    accumulated_modifiers: iv.Array(spell.ModifierSpell),
+    projectiles: List(spell.Projectile),
+    casting_indices: List(Int),
+    total_mana_used: Float,
+    total_cast_delay_addition: Float,
+    total_recharge_time_addition: Float,
+    projectile_id: Int,
+    wrapped_during_cast: Bool,
+    original_start_index: Int,
+    spells_per_cast: Int,
+  )
+}
+
 /// Create a new wand
 pub fn new(
   name name: String,
@@ -133,32 +163,45 @@ pub fn cast(
   case start_index >= iv.length(wand.slots) {
     True -> #(WandEmpty, wand)
     False -> {
-      // Start with the wand's spells_per_cast as initial draw
-      process_with_draw(
-        wand,
-        start_index,
-        wand.spells_per_cast,
-        iv.new(),
-        [],
-        [],
-        0.0,
-        0.0,
-        0.0,
-        position,
-        direction,
-        projectile_starting_index,
-        target_position,
-        player_center,
-        existing_projectiles,
-        False,
-        start_index,
-      )
+      let context =
+        CastContext(
+          position:,
+          direction:,
+          target_position:,
+          player_center:,
+          existing_projectiles:,
+          projectile_starting_index:,
+        )
+
+      let initial_state =
+        CastState(
+          current_index: start_index,
+          remaining_draw: wand.spells_per_cast,
+          accumulated_modifiers: iv.new(),
+          projectiles: [],
+          casting_indices: [],
+          total_mana_used: 0.0,
+          total_cast_delay_addition: 0.0,
+          total_recharge_time_addition: 0.0,
+          projectile_id: projectile_starting_index,
+          wrapped_during_cast: False,
+          original_start_index: start_index,
+          spells_per_cast: wand.spells_per_cast,
+        )
+
+      process_with_draw(wand, initial_state, context)
     }
   }
 }
 
 /// Maximum number of orbiting projectiles allowed at once
 const max_orbiting_projectiles = 8
+
+/// Default orbit radius for orbiting projectiles
+const orbit_radius = 3.0
+
+/// Threshold for checking if direction is aligned with world up vector
+const direction_alignment_threshold = 0.99
 
 /// Count existing orbiting projectiles
 fn count_orbiting_projectiles(projectiles: List(spell.Projectile)) -> Int {
@@ -172,228 +215,205 @@ fn count_orbiting_projectiles(projectiles: List(spell.Projectile)) -> Int {
   |> list.length
 }
 
+/// Create a success result from the current cast state
+fn create_success_result(
+  wand: Wand,
+  state: CastState,
+  wrapped_flag: Bool,
+) -> #(CastResult, Wand) {
+  let new_mana = wand.current_mana -. state.total_mana_used
+  let updated_wand = Wand(..wand, current_mana: new_mana)
+
+  let wand_length = iv.length(wand.slots)
+  let next_index = state.current_index % wand_length
+  let has_spells_ahead = has_any_spell_from(wand.slots, next_index)
+
+  let did_wrap = wrapped_flag || !has_spells_ahead
+
+  #(
+    CastSuccess(
+      projectiles: state.projectiles,
+      remaining_mana: new_mana,
+      next_cast_index: next_index,
+      casting_indices: state.casting_indices,
+      did_wrap:,
+      total_cast_delay_addition: state.total_cast_delay_addition,
+      total_recharge_time_addition: state.total_recharge_time_addition,
+    ),
+    updated_wand,
+  )
+}
+
+/// Process an empty slot (continue without consuming draw)
+fn process_empty_slot(
+  wand: Wand,
+  state: CastState,
+  wrapped_index: Int,
+  wrapped_flag: Bool,
+  context: CastContext,
+) -> #(CastResult, Wand) {
+  let next_state =
+    CastState(
+      ..state,
+      current_index: state.current_index + 1,
+      casting_indices: [wrapped_index, ..state.casting_indices],
+      wrapped_during_cast: wrapped_flag,
+    )
+  process_with_draw(wand, next_state, context)
+}
+
+/// Process a modifier spell (accumulate without consuming draw)
+fn process_modifier_spell(
+  wand: Wand,
+  state: CastState,
+  modifier: spell.ModifierSpell,
+  wrapped_index: Int,
+  wrapped_flag: Bool,
+  context: CastContext,
+) -> #(CastResult, Wand) {
+  let new_modifiers = iv.prepend(state.accumulated_modifiers, modifier)
+  let next_state =
+    CastState(
+      ..state,
+      current_index: state.current_index + 1,
+      accumulated_modifiers: new_modifiers,
+      casting_indices: [wrapped_index, ..state.casting_indices],
+      wrapped_during_cast: wrapped_flag,
+    )
+  process_with_draw(wand, next_state, context)
+}
+
+/// Process a multicast spell
+fn process_multicast_spell(
+  wand: Wand,
+  state: CastState,
+  multicast: spell.MulticastSpell,
+  wrapped_index: Int,
+  wrapped_flag: Bool,
+  context: CastContext,
+) -> #(CastResult, Wand) {
+  let new_draw = state.remaining_draw - 1 + multicast.draw_add
+  let new_mana_used = state.total_mana_used +. multicast.mana_cost
+
+  case wand.current_mana >=. new_mana_used {
+    True -> {
+      let next_state =
+        CastState(
+          ..state,
+          current_index: state.current_index + 1,
+          remaining_draw: new_draw,
+          casting_indices: [wrapped_index, ..state.casting_indices],
+          total_mana_used: new_mana_used,
+          wrapped_during_cast: wrapped_flag,
+        )
+      process_with_draw(wand, next_state, context)
+    }
+    False -> #(
+      NotEnoughMana(required: new_mana_used, available: wand.current_mana),
+      wand,
+    )
+  }
+}
+
+/// Process the next spell in the wand
+fn process_next_spell(
+  wand: Wand,
+  state: CastState,
+  context: CastContext,
+  wand_length: Int,
+) -> #(CastResult, Wand) {
+  let wrapped_index = state.current_index % wand_length
+  let is_wrapping = state.current_index >= wand_length
+  let wrapped_flag = state.wrapped_during_cast || is_wrapping
+
+  // Check if we've completed a full cycle
+  let completed_cycle =
+    wrapped_flag && wrapped_index >= state.original_start_index
+
+  case completed_cycle {
+    True ->
+      case state.projectiles {
+        [] -> #(NoSpellToCast, wand)
+        _ -> create_success_result(wand, state, wrapped_flag)
+      }
+
+    False ->
+      process_spell_at_index(wand, state, wrapped_index, wrapped_flag, context)
+  }
+}
+
+/// Process the spell at the current index
+fn process_spell_at_index(
+  wand: Wand,
+  state: CastState,
+  wrapped_index: Int,
+  wrapped_flag: Bool,
+  context: CastContext,
+) -> #(CastResult, Wand) {
+  case iv.get(wand.slots, wrapped_index) {
+    Error(_) -> #(WandEmpty, wand)
+    Ok(None) ->
+      process_empty_slot(wand, state, wrapped_index, wrapped_flag, context)
+    Ok(Some(current_spell)) ->
+      case current_spell {
+        spell.ModifierSpell(_, modifier) ->
+          process_modifier_spell(
+            wand,
+            state,
+            modifier,
+            wrapped_index,
+            wrapped_flag,
+            context,
+          )
+
+        spell.MulticastSpell(_, multicast) ->
+          process_multicast_spell(
+            wand,
+            state,
+            multicast,
+            wrapped_index,
+            wrapped_flag,
+            context,
+          )
+
+        spell.DamageSpell(id, damaging) ->
+          process_damage_spell(
+            wand,
+            id,
+            damaging,
+            wrapped_index,
+            wrapped_flag,
+            state,
+            context,
+          )
+      }
+  }
+}
+
 /// Process spells with the draw system
 /// Continues processing spells until draw is exhausted, with wrapping support
 fn process_with_draw(
   wand: Wand,
-  current_index: Int,
-  remaining_draw: Int,
-  accumulated_modifiers: iv.Array(spell.ModifierSpell),
-  projectiles: List(spell.Projectile),
-  casting_indices: List(Int),
-  total_mana_used: Float,
-  total_cast_delay_addition: Float,
-  total_recharge_time_addition: Float,
-  position: Vec3(Float),
-  direction: Vec3(Float),
-  projectile_id: Int,
-  target_position: option.Option(Vec3(Float)),
-  player_center: option.Option(Vec3(Float)),
-  existing_projectiles: List(spell.Projectile),
-  wrapped_during_cast: Bool,
-  original_start_index: Int,
+  state: CastState,
+  context: CastContext,
 ) -> #(CastResult, Wand) {
   let wand_length = iv.length(wand.slots)
 
   // Check if wand is empty
   case wand_length {
     0 -> #(WandEmpty, wand)
-    _ -> {
-      // Check if we're out of draw
-      case remaining_draw <= 0 {
-        True -> {
-          // End of cast cycle
-          case projectiles {
+    _ ->
+      case state.remaining_draw <= 0 {
+        // Draw exhausted - end the cast
+        True ->
+          case state.projectiles {
             [] -> #(NoSpellToCast, wand)
-            _ -> {
-              let new_mana = wand.current_mana -. total_mana_used
-              let updated_wand = Wand(..wand, current_mana: new_mana)
-
-              let next_index = current_index % wand_length
-              let has_spells_ahead = has_any_spell_from(wand.slots, next_index)
-
-              // Wrap if we actually wrapped during the cast OR no spells remain ahead
-              let did_wrap = wrapped_during_cast || !has_spells_ahead
-
-              #(
-                CastSuccess(
-                  projectiles:,
-                  remaining_mana: new_mana,
-                  next_cast_index: next_index,
-                  casting_indices:,
-                  did_wrap:,
-                  total_cast_delay_addition:,
-                  total_recharge_time_addition:,
-                ),
-                updated_wand,
-              )
-            }
+            _ -> create_success_result(wand, state, state.wrapped_during_cast)
           }
-        }
-        False -> {
-          // Wrap index if we've gone past the end
-          let wrapped_index = current_index % wand_length
-          // Track if we wrapped around (processing spells from beginning after passing end)
-          let is_wrapping = current_index >= wand_length
-          let wrapped_flag = wrapped_during_cast || is_wrapping
 
-          // Stop if we've wrapped back to or past the original start (completed full cycle)
-          // This prevents infinite loops when draw remains but all spells processed
-          let completed_cycle =
-            wrapped_flag && wrapped_index >= original_start_index
-          case completed_cycle {
-            True -> {
-              // End cast - we've processed all available spells
-              case projectiles {
-                [] -> #(NoSpellToCast, wand)
-                _ -> {
-                  let new_mana = wand.current_mana -. total_mana_used
-                  let updated_wand = Wand(..wand, current_mana: new_mana)
-                  let next_index = wrapped_index
-                  let has_spells_ahead =
-                    has_any_spell_from(wand.slots, next_index)
-                  let did_wrap = wrapped_flag || !has_spells_ahead
-
-                  #(
-                    CastSuccess(
-                      projectiles:,
-                      remaining_mana: new_mana,
-                      next_cast_index: next_index,
-                      casting_indices:,
-                      did_wrap:,
-                      total_cast_delay_addition:,
-                      total_recharge_time_addition:,
-                    ),
-                    updated_wand,
-                  )
-                }
-              }
-            }
-            False -> {
-              // Continue processing
-              // Get current spell slot
-              case iv.get(wand.slots, wrapped_index) {
-                Error(_) -> #(WandEmpty, wand)
-                Ok(None) -> {
-                  // Empty slot, skip but don't consume draw (like modifiers)
-                  // This allows multicasts to continue past empty slots
-                  process_with_draw(
-                    wand,
-                    current_index + 1,
-                    remaining_draw,
-                    accumulated_modifiers,
-                    projectiles,
-                    [wrapped_index, ..casting_indices],
-                    total_mana_used,
-                    total_cast_delay_addition,
-                    total_recharge_time_addition,
-                    position,
-                    direction,
-                    projectile_id,
-                    target_position,
-                    player_center,
-                    existing_projectiles,
-                    wrapped_flag,
-                    original_start_index,
-                  )
-                }
-                Ok(Some(current_spell)) -> {
-                  // Process the spell based on type
-                  case current_spell {
-                    spell.ModifierSpell(_, mod) -> {
-                      // Modifiers: accumulate but DON'T consume draw (they draw the next spell automatically)
-                      // Modifier mana cost is included in the modified spell's total cost, not charged separately
-                      let new_modifiers = iv.prepend(accumulated_modifiers, mod)
-
-                      process_with_draw(
-                        wand,
-                        current_index + 1,
-                        remaining_draw,
-                        new_modifiers,
-                        projectiles,
-                        [wrapped_index, ..casting_indices],
-                        total_mana_used,
-                        total_cast_delay_addition,
-                        total_recharge_time_addition,
-                        position,
-                        direction,
-                        projectile_id,
-                        target_position,
-                        player_center,
-                        existing_projectiles,
-                        wrapped_flag,
-                        original_start_index,
-                      )
-                    }
-
-                    spell.MulticastSpell(_, multicast) -> {
-                      // Multicast: consume 1 draw, add draw_add, process next spells
-                      let new_draw = remaining_draw - 1 + multicast.draw_add
-                      let new_mana_used = total_mana_used +. multicast.mana_cost
-
-                      // Check mana
-                      case wand.current_mana >=. new_mana_used {
-                        True ->
-                          process_with_draw(
-                            wand,
-                            current_index + 1,
-                            new_draw,
-                            accumulated_modifiers,
-                            projectiles,
-                            [wrapped_index, ..casting_indices],
-                            new_mana_used,
-                            total_cast_delay_addition,
-                            total_recharge_time_addition,
-                            position,
-                            direction,
-                            projectile_id,
-                            target_position,
-                            player_center,
-                            existing_projectiles,
-                            wrapped_flag,
-                            original_start_index,
-                          )
-                        False -> #(
-                          NotEnoughMana(
-                            required: new_mana_used,
-                            available: wand.current_mana,
-                          ),
-                          wand,
-                        )
-                      }
-                    }
-
-                    spell.DamageSpell(id, damaging) ->
-                      process_damage_spell(
-                        wand,
-                        id,
-                        damaging,
-                        current_index,
-                        wrapped_index,
-                        remaining_draw,
-                        accumulated_modifiers,
-                        projectiles,
-                        casting_indices,
-                        total_mana_used,
-                        total_cast_delay_addition,
-                        total_recharge_time_addition,
-                        position,
-                        direction,
-                        projectile_id,
-                        target_position,
-                        player_center,
-                        existing_projectiles,
-                        wrapped_flag,
-                        original_start_index,
-                      )
-                  }
-                }
-              }
-            }
-          }
-        }
+        // Continue processing spells
+        False -> process_next_spell(wand, state, context, wand_length)
       }
-    }
   }
 }
 
@@ -402,60 +422,43 @@ fn process_damage_spell(
   wand: Wand,
   id: spell.Id,
   damaging: spell.DamageSpell,
-  current_index: Int,
   wrapped_index: Int,
-  remaining_draw: Int,
-  accumulated_modifiers: iv.Array(spell.ModifierSpell),
-  projectiles: List(spell.Projectile),
-  casting_indices: List(Int),
-  total_mana_used: Float,
-  total_cast_delay_addition: Float,
-  total_recharge_time_addition: Float,
-  position: Vec3(Float),
-  direction: Vec3(Float),
-  projectile_id: Int,
-  target_position: option.Option(Vec3(Float)),
-  player_center: option.Option(Vec3(Float)),
-  existing_projectiles: List(spell.Projectile),
-  wrapped_during_cast: Bool,
-  original_start_index: Int,
+  wrapped_flag: Bool,
+  state: CastState,
+  context: CastContext,
 ) -> #(CastResult, Wand) {
   // Check if orbiting spell at limit - skip if so
-  case id, is_orbiting_at_limit(existing_projectiles, projectiles) {
+  case
+    id,
+    is_orbiting_at_limit(context.existing_projectiles, state.projectiles)
+  {
     spell.OrbitingSpell, True -> {
       // Only clear modifiers if we're done with multicast spells
-      let new_accumulated_modifiers = case remaining_draw - 1 >= wand.spells_per_cast {
-        True -> accumulated_modifiers
+      let new_accumulated_modifiers = case
+        state.remaining_draw - 1 >= state.spells_per_cast
+      {
+        True -> state.accumulated_modifiers
         False -> iv.new()
       }
 
-      process_with_draw(
-        wand,
-        current_index + 1,
-        remaining_draw - 1,
-        new_accumulated_modifiers,
-        projectiles,
-        casting_indices,
-        total_mana_used,
-        total_cast_delay_addition,
-        total_recharge_time_addition,
-        position,
-        direction,
-        projectile_id,
-        target_position,
-        player_center,
-        existing_projectiles,
-        wrapped_during_cast,
-        original_start_index,
-      )
+      let next_state =
+        CastState(
+          ..state,
+          current_index: state.current_index + 1,
+          remaining_draw: state.remaining_draw - 1,
+          accumulated_modifiers: new_accumulated_modifiers,
+          wrapped_during_cast: wrapped_flag,
+        )
+      process_with_draw(wand, next_state, context)
     }
     _, _ -> {
-      let modified = spell.apply_modifiers(id, damaging, accumulated_modifiers)
-      let new_mana_used = total_mana_used +. modified.total_mana_cost
+      let modified =
+        spell.apply_modifiers(id, damaging, state.accumulated_modifiers)
+      let new_mana_used = state.total_mana_used +. modified.total_mana_cost
       let new_cast_delay =
-        total_cast_delay_addition +. modified.final_cast_delay
+        state.total_cast_delay_addition +. modified.final_cast_delay
       let new_recharge_time =
-        total_recharge_time_addition +. modified.final_recharge_time
+        state.total_recharge_time_addition +. modified.final_recharge_time
 
       // Check mana availability
       case wand.current_mana <. new_mana_used {
@@ -465,26 +468,29 @@ fn process_damage_spell(
         )
         False -> {
           let spread_direction =
-            apply_spread(direction, wand.spread +. modified.final_spread)
+            apply_spread(
+              context.direction,
+              wand.spread +. modified.final_spread,
+            )
 
           let projectile_type =
             create_projectile_type(
               id,
               damaging,
-              target_position,
-              player_center,
-              position,
+              context.target_position,
+              context.player_center,
+              context.position,
               modified.final_speed,
-              existing_projectiles,
-              projectiles,
+              context.existing_projectiles,
+              state.projectiles,
             )
 
           let projectile_position =
-            calculate_projectile_position(projectile_type, position)
+            calculate_projectile_position(projectile_type, context.position)
 
           let projectile =
             spell.Projectile(
-              id: projectile_id,
+              id: state.projectile_id,
               spell: modified,
               position: projectile_position,
               direction: spread_direction,
@@ -495,31 +501,29 @@ fn process_damage_spell(
             )
 
           // Only clear modifiers if we're done with multicast spells
-          // Keep modifiers if remaining_draw - 1 >= spells_per_cast (still in multicast)
-          let new_accumulated_modifiers = case remaining_draw - 1 >= wand.spells_per_cast {
-            True -> accumulated_modifiers
+          let new_accumulated_modifiers = case
+            state.remaining_draw - 1 >= state.spells_per_cast
+          {
+            True -> state.accumulated_modifiers
             False -> iv.new()
           }
 
-          process_with_draw(
-            wand,
-            current_index + 1,
-            remaining_draw - 1,
-            new_accumulated_modifiers,
-            [projectile, ..projectiles],
-            [wrapped_index, ..casting_indices],
-            new_mana_used,
-            new_cast_delay,
-            new_recharge_time,
-            position,
-            direction,
-            projectile_id + 1,
-            target_position,
-            player_center,
-            existing_projectiles,
-            wrapped_during_cast,
-            original_start_index,
-          )
+          let next_state =
+            CastState(
+              ..state,
+              current_index: state.current_index + 1,
+              remaining_draw: state.remaining_draw - 1,
+              accumulated_modifiers: new_accumulated_modifiers,
+              projectiles: [projectile, ..state.projectiles],
+              casting_indices: [wrapped_index, ..state.casting_indices],
+              total_mana_used: new_mana_used,
+              total_cast_delay_addition: new_cast_delay,
+              total_recharge_time_addition: new_recharge_time,
+              projectile_id: state.projectile_id + 1,
+              wrapped_during_cast: wrapped_flag,
+            )
+
+          process_with_draw(wand, next_state, context)
         }
       }
     }
@@ -571,7 +575,6 @@ fn create_orbiting_projectile_type(
   current_projectiles: List(spell.Projectile),
 ) -> spell.ProjectileType {
   let center = option.unwrap(player_center, cast_position)
-  let orbit_radius = 3.0
 
   let total_count =
     count_orbiting_projectiles(existing_projectiles)
@@ -677,62 +680,68 @@ fn check_slots_from(
   }
 }
 
+/// Get perpendicular basis vectors for the given direction
+/// Returns #(right, up) vectors perpendicular to the direction
+fn get_perpendicular_basis(
+  direction: Vec3(Float),
+) -> #(Vec3(Float), Vec3(Float)) {
+  let world_up = Vec3(0.0, 1.0, 0.0)
+
+  // Use alternative up vector if direction is too aligned with world up
+  let up_vector = case
+    float.absolute_value(vec3f.dot(direction, world_up))
+    >. direction_alignment_threshold
+  {
+    True -> Vec3(1.0, 0.0, 0.0)
+    False -> world_up
+  }
+
+  let right = vec3f.cross(direction, up_vector) |> vec3f.normalize()
+  let up = vec3f.cross(right, direction) |> vec3f.normalize()
+
+  #(right, up)
+}
+
+/// Rotate a vector around an axis by an angle
+fn rotate_vector(
+  vector: Vec3(Float),
+  axis: Vec3(Float),
+  angle: Float,
+) -> Vec3(Float) {
+  let cos_angle = maths.cos(angle)
+  let sin_angle = maths.sin(angle)
+
+  Vec3(
+    vector.x *. cos_angle +. axis.x *. sin_angle,
+    vector.y *. cos_angle +. axis.y *. sin_angle,
+    vector.z *. cos_angle +. axis.z *. sin_angle,
+  )
+  |> vec3f.normalize()
+}
+
+/// Generate a random value between -1 and 1
+fn random_spread_factor() -> Float {
+  float.random() *. 2.0 -. 1.0
+}
+
 /// Apply spread (inaccuracy) to a direction vector
 /// spread_degrees: the maximum deviation in degrees (e.g., 5.0 means ±5 degrees)
 fn apply_spread(direction: Vec3(Float), spread_degrees: Float) -> Vec3(Float) {
   case spread_degrees {
     0.0 -> direction
     _ -> {
-      // Convert spread from degrees to radians
       let spread_radians = spread_degrees *. maths.pi() /. 180.0
 
-      // Generate random angles within the spread cone
-      // Random value between -spread and +spread
-      let horizontal_angle = { float.random() *. 2.0 -. 1.0 } *. spread_radians
-      let vertical_angle = { float.random() *. 2.0 -. 1.0 } *. spread_radians
+      let horizontal_angle = random_spread_factor() *. spread_radians
+      let vertical_angle = random_spread_factor() *. spread_radians
 
-      // Get perpendicular vectors to the direction
-      // Use world up vector to find a perpendicular
-      let world_up = Vec3(0.0, 1.0, 0.0)
+      let #(right, up) = get_perpendicular_basis(direction)
 
-      // Check if direction is too aligned with world up
-      let up_vector = case
-        float.absolute_value(vec3f.dot(direction, world_up)) >. 0.99
-      {
-        True -> Vec3(1.0, 0.0, 0.0)
-        False -> world_up
-      }
+      // Apply vertical rotation first
+      let after_vertical = rotate_vector(direction, up, vertical_angle)
 
-      // Calculate right vector (perpendicular to direction and up)
-      let right = vec3f.cross(direction, up_vector) |> vec3f.normalize()
-
-      // Calculate true up vector (perpendicular to direction and right)
-      let up = vec3f.cross(right, direction) |> vec3f.normalize()
-
-      // Apply rotations
-      // Rotate around right axis (vertical spread)
-      let cos_v = maths.cos(vertical_angle)
-      let sin_v = maths.sin(vertical_angle)
-      let after_vertical =
-        Vec3(
-          direction.x *. cos_v +. up.x *. sin_v,
-          direction.y *. cos_v +. up.y *. sin_v,
-          direction.z *. cos_v +. up.z *. sin_v,
-        )
-        |> vec3f.normalize()
-
-      // Rotate around original direction axis (horizontal spread)
-      let cos_h = maths.cos(horizontal_angle)
-      let sin_h = maths.sin(horizontal_angle)
-      let final_direction =
-        Vec3(
-          after_vertical.x *. cos_h +. right.x *. sin_h,
-          after_vertical.y *. cos_h +. right.y *. sin_h,
-          after_vertical.z *. cos_h +. right.z *. sin_h,
-        )
-        |> vec3f.normalize()
-
-      final_direction
+      // Then apply horizontal rotation
+      rotate_vector(after_vertical, right, horizontal_angle)
     }
   }
 }
