@@ -440,6 +440,7 @@ pub fn add_mana() -> Spell {
     kind: Modifier(
       ..default_modifier("Add Mana", "spell_icons/mana.png"),
       mana_cost: -30.0,
+      cast_delay_addition: 0.17,
     ),
   )
 }
