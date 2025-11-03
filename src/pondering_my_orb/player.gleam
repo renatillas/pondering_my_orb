@@ -5,6 +5,8 @@ import gleam/result
 import gleam_community/maths
 import pondering_my_orb/enemy.{type Enemy}
 import pondering_my_orb/id
+import pondering_my_orb/loot
+import pondering_my_orb/perk
 import pondering_my_orb/spell
 import pondering_my_orb/spell_bag
 import pondering_my_orb/wand
@@ -780,5 +782,109 @@ pub fn add_xp(player: Player, xp: Int) -> #(Player, Bool) {
       )
     }
     False -> #(Player(..player, current_xp: new_xp), False)
+  }
+}
+
+/// Try to pick up loot drops near the player
+/// Returns updated player and list of picked up loot IDs
+pub fn pickup_loot(
+  player: Player,
+  loot_drops: List(loot.LootDrop),
+  pickup_range: Float,
+) -> #(Player, List(id.Id)) {
+  list.fold(loot_drops, #(player, []), fn(acc, loot_drop) {
+    let #(current_player, picked_up) = acc
+
+    case loot.can_pickup(loot_drop, current_player.position, pickup_range) {
+      True -> {
+        let updated_player = apply_loot(current_player, loot_drop.loot_type)
+        #(updated_player, [loot_drop.id, ..picked_up])
+      }
+      False -> acc
+    }
+  })
+}
+
+/// Apply loot to player
+fn apply_loot(player: Player, loot_type: loot.LootType) -> Player {
+  case loot_type {
+    loot.WandLoot(new_wand) -> {
+      // Replace current wand
+      Player(..player, wand: new_wand)
+    }
+    loot.PerkLoot(perk_value) -> {
+      // Apply perk to player
+      apply_perk(player, perk_value)
+    }
+  }
+}
+
+/// Apply a perk to the player
+pub fn apply_perk(player: Player, perk_value: perk.Perk) -> Player {
+  case perk_value {
+    perk.HealthBoost(multiplier) -> {
+      let new_max_health = player.max_health *. multiplier
+      let health_ratio = player.current_health /. player.max_health
+      let new_current_health = new_max_health *. health_ratio
+      Player(
+        ..player,
+        max_health: new_max_health,
+        current_health: new_current_health,
+      )
+    }
+
+    perk.SpeedBoost(multiplier) -> {
+      Player(..player, speed: player.speed *. multiplier)
+    }
+
+    perk.ManaRegenBoost(multiplier) -> {
+      let new_wand =
+        wand.Wand(
+          ..player.wand,
+          mana_recharge_rate: player.wand.mana_recharge_rate *. multiplier,
+        )
+      Player(..player, wand: new_wand)
+    }
+
+    perk.MaxManaBoost(multiplier) -> {
+      let new_wand =
+        wand.Wand(..player.wand, max_mana: player.wand.max_mana *. multiplier)
+      Player(..player, wand: new_wand)
+    }
+
+    perk.CastSpeedBoost(multiplier) -> {
+      let new_wand =
+        wand.Wand(
+          ..player.wand,
+          cast_delay: player.wand.cast_delay *. multiplier,
+        )
+      Player(..player, wand: new_wand)
+    }
+
+    perk.RechargeSpeedBoost(multiplier) -> {
+      let new_wand =
+        wand.Wand(
+          ..player.wand,
+          recharge_time: player.wand.recharge_time *. multiplier,
+        )
+      Player(..player, wand: new_wand)
+    }
+
+    perk.PassiveHealBoost(multiplier) -> {
+      Player(
+        ..player,
+        passive_heal_rate: player.passive_heal_rate *. multiplier,
+      )
+    }
+
+    perk.QuickHeal(delay_reduction) -> {
+      let new_delay =
+        float.max(0.5, player.passive_heal_delay -. delay_reduction)
+      Player(..player, passive_heal_delay: new_delay)
+    }
+
+    // DamageBoost and ProjectileSpeedBoost would need to be applied at cast time
+    // or stored as player stats - for now, we'll leave them unimplemented here
+    perk.DamageBoost(_) | perk.ProjectileSpeedBoost(_) -> player
   }
 }

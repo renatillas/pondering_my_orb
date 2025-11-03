@@ -15,6 +15,8 @@ pub type Id {
   Projectile(layer: Layer, id: Int)
   Explosion(layer: Layer, id: Int)
   XPShard(layer: Layer, id: Int)
+  LootDrop(layer: Layer, id: Int)
+  DamageNumber(layer: Layer, id: Int)
 }
 
 pub type Layer {
@@ -82,6 +84,14 @@ pub fn explosion(id: Int) -> Id {
 
 pub fn xp_shard(id: Int) -> Id {
   XPShard(layer: MiscelaniaLayer, id: id)
+}
+
+pub fn loot_drop(id: Int) -> Id {
+  LootDrop(layer: MiscelaniaLayer, id: id)
+}
+
+pub fn damage_number(id: Int) -> Id {
+  DamageNumber(layer: MiscelaniaLayer, id: id)
 }
 
 pub fn scene() -> Id {
