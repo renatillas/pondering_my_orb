@@ -28,6 +28,7 @@ import pondering_my_orb/score
 import pondering_my_orb/spell
 import pondering_my_orb/spell_bag
 import pondering_my_orb/ui
+import pondering_my_orb/ui/model as ui_model
 import pondering_my_orb/wand
 import pondering_my_orb/xp_shard
 import tiramisu
@@ -844,15 +845,17 @@ fn handle_ui_message(
     }
     ui.DebugUpdateWandStat(stat_update) -> {
       let updated_wand = case stat_update {
-        ui.SetMaxMana(value) -> wand.Wand(..model.player.wand, max_mana: value)
-        ui.SetManaRechargeRate(value) ->
+        ui_model.SetMaxMana(value) ->
+          wand.Wand(..model.player.wand, max_mana: value)
+        ui_model.SetManaRechargeRate(value) ->
           wand.Wand(..model.player.wand, mana_recharge_rate: value)
-        ui.SetCastDelay(value) ->
+        ui_model.SetCastDelay(value) ->
           wand.Wand(..model.player.wand, cast_delay: value)
-        ui.SetRechargeTime(value) ->
+        ui_model.SetRechargeTime(value) ->
           wand.Wand(..model.player.wand, recharge_time: value)
-        ui.SetSpread(value) -> wand.Wand(..model.player.wand, spread: value)
-        ui.SetCapacity(new_capacity) -> {
+        ui_model.SetSpread(value) ->
+          wand.Wand(..model.player.wand, spread: value)
+        ui_model.SetCapacity(new_capacity) -> {
           // Resize wand slots array
           let current_slots = model.player.wand.slots
           let current_capacity = iv.length(current_slots)
