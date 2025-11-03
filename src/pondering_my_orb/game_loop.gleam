@@ -92,20 +92,6 @@ pub fn handle_tick(
       scaled_delta,
     )
 
-  // Update projectiles and create explosions on collision
-  let #(updated_projectiles, projectile_hits, spell_effect) =
-    spell.update(
-      model.projectiles,
-      model.enemies,
-      scaled_delta,
-      game_state.ProjectileDamagedEnemy,
-      model.player.position,
-    )
-
-  // Update existing explosions and add new ones
-  let all_hits = list.append(model.projectile_hits, projectile_hits)
-  let updated_hits = spell.update_projectile_hits(all_hits, scaled_delta)
-
   // Update physics (if game is not paused)
   let physics_world = case model.showing_spell_rewards, model.is_paused {
     False, False -> {
@@ -115,7 +101,6 @@ pub fn handle_tick(
         player.velocity,
         impulse,
         enemies,
-        projectile_hits,
         model.pending_player_knockback,
       )
       |> physics_manager.step_physics(player.quaternion_rotation, scaled_delta)
@@ -128,8 +113,21 @@ pub fn handle_tick(
     physics_manager.get_player_position(physics_world, model.player.position)
 
   let enemies = list.map(enemies, enemy.after_physics_update(_, physics_world))
-
   let nearest_enemy = player.nearest_enemy_position(player, enemies)
+
+  // Update projectiles and create explosions on collision
+  let #(updated_projectiles, projectile_hits, spell_effect) =
+    spell.update(
+      model.projectiles,
+      model.enemies,
+      scaled_delta,
+      game_state.ProjectileDamagedEnemy,
+      player_position,
+    )
+
+  // Update existing explosions and add new ones
+  let all_hits = list.append(model.projectile_hits, projectile_hits)
+  let updated_hits = spell.update_projectile_hits(all_hits, scaled_delta)
 
   // Update XP shards with animation
   let updated_xp_shards = case model.xp_animation {
