@@ -701,6 +701,7 @@ fn handle_ui_message(
       let spell = case id {
         spell.AddDamage -> spell.add_damage()
         spell.AddMana -> spell.add_mana()
+        spell.AddTrigger -> spell.add_trigger()
         spell.DoubleSpell -> spell.double_spell()
         spell.Fireball -> {
           let assert Ok(visuals) = dict.get(echo model.visuals, id)
@@ -718,6 +719,10 @@ fn handle_ui_message(
         spell.Spark -> {
           let assert Ok(visuals) = dict.get(echo model.visuals, id)
           spell.spark(visuals)
+        }
+        spell.SparkWithTrigger -> {
+          let assert Ok(visuals) = dict.get(echo model.visuals, id)
+          spell.spark_with_trigger(visuals)
         }
         spell.RapidFire -> spell.rapid_fire()
       }

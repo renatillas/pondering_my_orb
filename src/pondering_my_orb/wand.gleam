@@ -417,6 +417,84 @@ fn process_with_draw(
   }
 }
 
+/// Check if any modifier in the array has adds_trigger set to True
+fn has_trigger_modifier(modifiers: iv.Array(spell.ModifierSpell)) -> Bool {
+  iv.fold(modifiers, False, fn(acc, mod) { acc || mod.adds_trigger })
+}
+
+/// Collect all indices between start and end (inclusive)
+/// Handles wrapping around wand length
+fn collect_indices_between(
+  start_index: Int,
+  end_index: Int,
+  wand_length: Int,
+) -> List(Int) {
+  collect_indices_loop(start_index, end_index, wand_length, [])
+}
+
+fn collect_indices_loop(
+  current: Int,
+  end: Int,
+  wand_length: Int,
+  acc: List(Int),
+) -> List(Int) {
+  case current > end {
+    True -> list.reverse(acc)
+    False -> {
+      let wrapped_index = current % wand_length
+      collect_indices_loop(current + 1, end, wand_length, [wrapped_index, ..acc])
+    }
+  }
+}
+
+/// Find the next damage spell in the wand starting from the given index
+/// Returns Option(#(spell.Id, spell.DamageSpell, Int)) with the spell and the index where it was found
+/// Only searches forward from start_index, does not wrap back to find spells before it
+fn find_next_damage_spell(
+  slots: iv.Array(Option(Spell)),
+  start_index: Int,
+) -> option.Option(#(spell.Id, spell.DamageSpell, Int)) {
+  let length = iv.length(slots)
+  find_next_damage_spell_loop(slots, start_index, start_index, length, 0)
+}
+
+fn find_next_damage_spell_loop(
+  slots: iv.Array(Option(Spell)),
+  current_index: Int,
+  original_start: Int,
+  length: Int,
+  iterations: Int,
+) -> option.Option(#(spell.Id, spell.DamageSpell, Int)) {
+  // Prevent infinite loops - max one full cycle
+  case iterations >= length {
+    True -> option.None
+    False -> {
+      let wrapped_index = current_index % length
+      // Don't return spells at or before the original start during wrapping
+      let is_wrapped = current_index >= length
+      let would_go_backwards = is_wrapped && wrapped_index <= original_start
+
+      case would_go_backwards {
+        True -> option.None
+        False -> {
+          case iv.get(slots, wrapped_index) {
+            Ok(Some(spell.DamageSpell(id, damage_spell))) ->
+              option.Some(#(id, damage_spell, current_index))
+            Ok(Some(_)) | Ok(None) | Error(_) ->
+              find_next_damage_spell_loop(
+                slots,
+                current_index + 1,
+                original_start,
+                length,
+                iterations + 1,
+              )
+          }
+        }
+      }
+    }
+  }
+}
+
 /// Process a damage spell (handles both orbiting and standard projectiles)
 fn process_damage_spell(
   wand: Wand,
@@ -488,6 +566,27 @@ fn process_damage_spell(
           let projectile_position =
             calculate_projectile_position(projectile_type, context.position)
 
+          // Check if this spell needs a trigger payload
+          let needs_trigger =
+            damaging.has_trigger
+            || has_trigger_modifier(state.accumulated_modifiers)
+
+          let #(trigger_payload, payload_info) = case needs_trigger {
+            True -> {
+              // Look ahead for the next damage spell to use as payload
+              case find_next_damage_spell(wand.slots, state.current_index + 1) {
+                option.Some(#(payload_id, payload_spell, payload_index)) -> {
+                  // Apply modifiers to the payload (with empty modifiers for now)
+                  let payload_modified =
+                    spell.apply_modifiers(payload_id, payload_spell, iv.new())
+                  #(option.Some(payload_modified), option.Some(payload_index))
+                }
+                option.None -> #(option.None, option.None)
+              }
+            }
+            False -> #(option.None, option.None)
+          }
+
           let projectile =
             spell.Projectile(
               id: state.projectile_id,
@@ -498,6 +597,7 @@ fn process_damage_spell(
               animation_state: spritesheet.initial_state("projectile"),
               visuals: damaging.visuals,
               projectile_type: projectile_type,
+              trigger_payload: trigger_payload,
             )
 
           // Only clear modifiers if we're done with multicast spells
@@ -508,14 +608,38 @@ fn process_damage_spell(
             False -> iv.new()
           }
 
+          // If we consumed a payload spell, advance index past it and track all consumed slots
+          let #(next_index, updated_casting_indices) = case payload_info {
+            option.Some(payload_index) -> {
+              // Collect all indices from current+1 to payload_index (inclusive)
+              let wand_length = iv.length(wand.slots)
+              let indices_to_add =
+                collect_indices_between(
+                  state.current_index + 1,
+                  payload_index,
+                  wand_length,
+                )
+              let all_indices =
+                list.append(indices_to_add, [
+                  wrapped_index,
+                  ..state.casting_indices
+                ])
+              #(payload_index + 1, all_indices)
+            }
+            option.None -> #(state.current_index + 1, [
+              wrapped_index,
+              ..state.casting_indices
+            ])
+          }
+
           let next_state =
             CastState(
               ..state,
-              current_index: state.current_index + 1,
+              current_index: next_index,
               remaining_draw: state.remaining_draw - 1,
               accumulated_modifiers: new_accumulated_modifiers,
               projectiles: [projectile, ..state.projectiles],
-              casting_indices: [wrapped_index, ..state.casting_indices],
+              casting_indices: updated_casting_indices,
               total_mana_used: new_mana_used,
               total_cast_delay_addition: new_cast_delay,
               total_recharge_time_addition: new_recharge_time,
