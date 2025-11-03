@@ -697,7 +697,18 @@ fn handle_ui_message(
         ctx.physics_world,
       )
     }
-    ui.DebugAddSpellToBag(spell) -> {
+    ui.DebugAddSpellToBag(id) -> {
+      let assert Ok(visuals) = dict.get(model.visuals, id)
+      let spell = case id {
+        spell.AddDamage -> spell.add_damage()
+        spell.AddMana -> spell.add_mana()
+        spell.DoubleSpell -> spell.double_spell()
+        spell.Fireball -> spell.fireball(visuals)
+        spell.LightningBolt -> spell.lightning(visuals)
+        spell.OrbitingSpell -> spell.orbiting_spell(visuals)
+        spell.Piercing -> spell.piercing()
+        spell.Spark -> spell.spark(visuals)
+      }
       let updated_spell_bag = spell_bag.add_spell(model.player.spell_bag, spell)
       let updated_player =
         player.Player(..model.player, spell_bag: updated_spell_bag)

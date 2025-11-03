@@ -96,7 +96,7 @@ pub type Msg {
   RejectWand
   // Debug menu
   ToggleDebugMenu
-  AddSpellToBag(spell.Spell)
+  AddSpellToBag(spell.Id)
   UpdateWandStat(WandStatUpdate)
   // Pause state synchronization
   SetPaused(Bool)
@@ -130,7 +130,7 @@ pub type UiToGameMsg {
   // Debug menu
   DebugMenuOpened
   DebugMenuClosed
-  DebugAddSpellToBag(spell.Spell)
+  DebugAddSpellToBag(spell.Id)
   DebugUpdateWandStat(WandStatUpdate)
 }
 
@@ -1748,32 +1748,10 @@ fn debug_spell_button(name: String, spell_id: spell.Id) -> element.Element(Msg) 
       attribute.class(
         "w-full px-4 py-2 bg-purple-700 hover:bg-purple-600 text-white rounded-lg transition-colors cursor-pointer",
       ),
-      event.on_click(AddSpellToBag(create_spell_for_debug(spell_id))),
+      event.on_click(AddSpellToBag(spell_id)),
     ],
     [html.text(name)],
   )
-}
-
-fn create_spell_for_debug(spell_id: spell.Id) -> spell.Spell {
-  // Create a mock spell visual for debug purposes
-  let mock_visuals =
-    spell.SpellVisuals(
-      projectile_spritesheet: spell.mock_spritesheet(),
-      projectile_animation: spell.mock_animation(),
-      hit_spritesheet: spell.mock_spritesheet(),
-      hit_animation: spell.mock_animation(),
-    )
-
-  case spell_id {
-    spell.Spark -> spell.spark(mock_visuals)
-    spell.Fireball -> spell.fireball(mock_visuals)
-    spell.LightningBolt -> spell.lightning(mock_visuals)
-    spell.DoubleSpell -> spell.double_spell()
-    spell.AddMana -> spell.add_mana()
-    spell.AddDamage -> spell.add_damage()
-    spell.Piercing -> spell.piercing()
-    _ -> spell.spark(mock_visuals)
-  }
 }
 
 fn wand_stat_slider(
