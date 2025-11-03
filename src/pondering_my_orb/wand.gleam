@@ -212,7 +212,8 @@ fn process_with_draw(
 
           // Stop if we've wrapped back to or past the original start (completed full cycle)
           // This prevents infinite loops when draw remains but all spells processed
-          let completed_cycle = wrapped_flag && wrapped_index >= original_start_index
+          let completed_cycle =
+            wrapped_flag && wrapped_index >= original_start_index
           case completed_cycle {
             True -> {
               // End cast - we've processed all available spells
@@ -222,7 +223,8 @@ fn process_with_draw(
                   let new_mana = wand.current_mana -. total_mana_used
                   let updated_wand = Wand(..wand, current_mana: new_mana)
                   let next_index = wrapped_index
-                  let has_spells_ahead = has_any_spell_from(wand.slots, next_index)
+                  let has_spells_ahead =
+                    has_any_spell_from(wand.slots, next_index)
                   let did_wrap = wrapped_flag || !has_spells_ahead
 
                   #(
@@ -243,40 +245,15 @@ fn process_with_draw(
               // Continue processing
               // Get current spell slot
               case iv.get(wand.slots, wrapped_index) {
-            Error(_) -> #(WandEmpty, wand)
-            Ok(None) -> {
-              // Empty slot, skip but don't consume draw (like modifiers)
-              // This allows multicasts to continue past empty slots
-              process_with_draw(
-                wand,
-                current_index + 1,
-                remaining_draw,
-                accumulated_modifiers,
-                projectiles,
-                [wrapped_index, ..casting_indices],
-                total_mana_used,
-                total_cast_delay_addition,
-                position,
-                direction,
-                projectile_id,
-                target_position,
-                wrapped_flag,
-                original_start_index,
-              )
-            }
-            Ok(Some(current_spell)) -> {
-              // Process the spell based on type
-              case current_spell {
-                spell.ModifierSpell(_, mod) -> {
-                  // Modifiers: accumulate but DON'T consume draw (they draw the next spell automatically)
-                  // Modifier mana cost is included in the modified spell's total cost, not charged separately
-                  let new_modifiers = iv.prepend(accumulated_modifiers, mod)
-
+                Error(_) -> #(WandEmpty, wand)
+                Ok(None) -> {
+                  // Empty slot, skip but don't consume draw (like modifiers)
+                  // This allows multicasts to continue past empty slots
                   process_with_draw(
                     wand,
                     current_index + 1,
                     remaining_draw,
-                    new_modifiers,
+                    accumulated_modifiers,
                     projectiles,
                     [wrapped_index, ..casting_indices],
                     total_mana_used,
@@ -289,23 +266,22 @@ fn process_with_draw(
                     original_start_index,
                   )
                 }
+                Ok(Some(current_spell)) -> {
+                  // Process the spell based on type
+                  case current_spell {
+                    spell.ModifierSpell(_, mod) -> {
+                      // Modifiers: accumulate but DON'T consume draw (they draw the next spell automatically)
+                      // Modifier mana cost is included in the modified spell's total cost, not charged separately
+                      let new_modifiers = iv.prepend(accumulated_modifiers, mod)
 
-                spell.MulticastSpell(_, multicast) -> {
-                  // Multicast: consume 1 draw, add draw_add, process next spells
-                  let new_draw = remaining_draw - 1 + multicast.draw_add
-                  let new_mana_used = total_mana_used +. multicast.mana_cost
-
-                  // Check mana
-                  case wand.current_mana >=. new_mana_used {
-                    True ->
                       process_with_draw(
                         wand,
                         current_index + 1,
-                        new_draw,
-                        accumulated_modifiers,
+                        remaining_draw,
+                        new_modifiers,
                         projectiles,
                         [wrapped_index, ..casting_indices],
-                        new_mana_used,
+                        total_mana_used,
                         total_cast_delay_addition,
                         position,
                         direction,
@@ -314,87 +290,118 @@ fn process_with_draw(
                         wrapped_flag,
                         original_start_index,
                       )
-                    False -> #(
-                      NotEnoughMana(
-                        required: new_mana_used,
-                        available: wand.current_mana,
-                      ),
-                      wand,
-                    )
-                  }
-                }
-
-                spell.DamageSpell(id, damaging) -> {
-                  // Damage spell: create projectile, consume 1 draw
-                  let modified =
-                    spell.apply_modifiers(id, damaging, accumulated_modifiers)
-                  let new_mana_used =
-                    total_mana_used +. modified.total_mana_cost
-
-                  // Accumulate cast delay from this spell
-                  let new_cast_delay_addition =
-                    total_cast_delay_addition +. modified.final_cast_delay
-
-                  // Check mana
-                  case wand.current_mana >=. new_mana_used {
-                    True -> {
-                      // Apply spread to direction (combine wand spread and spell spread)
-                      let total_spread = wand.spread +. modified.final_spread
-                      let spread_direction =
-                        apply_spread(direction, total_spread)
-
-                      // Determine projectile type based on spell
-                      let projectile_type = case
-                        damaging.is_beam,
-                        target_position
-                      {
-                        True, option.Some(target) -> spell.Beam(target)
-                        _, _ -> spell.Standard
-                      }
-
-                      let projectile =
-                        spell.Projectile(
-                          id: projectile_id,
-                          spell: modified,
-                          position: position,
-                          direction: spread_direction,
-                          time_alive: 0.0,
-                          animation_state: spritesheet.initial_state(
-                            "projectile",
-                          ),
-                          visuals: damaging.visuals,
-                          projectile_type: projectile_type,
-                        )
-
-                      process_with_draw(
-                        wand,
-                        current_index + 1,
-                        remaining_draw - 1,
-                        accumulated_modifiers,
-                        [projectile, ..projectiles],
-                        [wrapped_index, ..casting_indices],
-                        new_mana_used,
-                        new_cast_delay_addition,
-                        position,
-                        direction,
-                        projectile_id + 1,
-                        target_position,
-                        wrapped_flag,
-                        original_start_index,
-                      )
                     }
-                    False -> #(
-                      NotEnoughMana(
-                        required: new_mana_used,
-                        available: wand.current_mana,
-                      ),
-                      wand,
-                    )
+
+                    spell.MulticastSpell(_, multicast) -> {
+                      // Multicast: consume 1 draw, add draw_add, process next spells
+                      let new_draw = remaining_draw - 1 + multicast.draw_add
+                      let new_mana_used = total_mana_used +. multicast.mana_cost
+
+                      // Check mana
+                      case wand.current_mana >=. new_mana_used {
+                        True ->
+                          process_with_draw(
+                            wand,
+                            current_index + 1,
+                            new_draw,
+                            accumulated_modifiers,
+                            projectiles,
+                            [wrapped_index, ..casting_indices],
+                            new_mana_used,
+                            total_cast_delay_addition,
+                            position,
+                            direction,
+                            projectile_id,
+                            target_position,
+                            wrapped_flag,
+                            original_start_index,
+                          )
+                        False -> #(
+                          NotEnoughMana(
+                            required: new_mana_used,
+                            available: wand.current_mana,
+                          ),
+                          wand,
+                        )
+                      }
+                    }
+
+                    spell.DamageSpell(id, damaging) -> {
+                      // Damage spell: create projectile, consume 1 draw
+                      let modified =
+                        spell.apply_modifiers(
+                          id,
+                          damaging,
+                          accumulated_modifiers,
+                        )
+                      let new_mana_used =
+                        total_mana_used +. modified.total_mana_cost
+
+                      // Accumulate cast delay from this spell
+                      let new_cast_delay_addition =
+                        total_cast_delay_addition +. modified.final_cast_delay
+
+                      // Check mana
+                      case wand.current_mana >=. new_mana_used {
+                        True -> {
+                          // Apply spread to direction (combine wand spread and spell spread)
+                          let total_spread =
+                            wand.spread +. modified.final_spread
+                          let spread_direction =
+                            apply_spread(direction, total_spread)
+
+                          // Determine projectile type based on spell
+                          let projectile_type = case
+                            damaging.is_beam,
+                            target_position
+                          {
+                            True, option.Some(target) -> spell.Beam(target)
+                            _, _ -> spell.Standard
+                          }
+
+                          let projectile =
+                            spell.Projectile(
+                              id: projectile_id,
+                              spell: modified,
+                              position: position,
+                              direction: spread_direction,
+                              time_alive: 0.0,
+                              animation_state: spritesheet.initial_state(
+                                "projectile",
+                              ),
+                              visuals: damaging.visuals,
+                              projectile_type: projectile_type,
+                            )
+
+                          process_with_draw(
+                            wand,
+                            current_index + 1,
+                            remaining_draw - 1,
+                            accumulated_modifiers,
+                            [projectile, ..projectiles],
+                            [wrapped_index, ..casting_indices],
+                            new_mana_used,
+                            new_cast_delay_addition,
+                            position,
+                            direction,
+                            projectile_id + 1,
+                            target_position,
+                            wrapped_flag,
+                            original_start_index,
+                          )
+                        }
+                        False -> #(
+                          NotEnoughMana(
+                            required: new_mana_used,
+                            available: wand.current_mana,
+                          ),
+                          wand,
+                        )
+                      }
+                    }
                   }
                 }
               }
-            }
-          }
             }
           }
         }

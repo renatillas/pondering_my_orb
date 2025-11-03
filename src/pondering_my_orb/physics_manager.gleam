@@ -37,7 +37,8 @@ fn apply_player_knockback(
   pending_knockback: Option(Vec3(Float)),
 ) -> physics.PhysicsWorld(id.Id) {
   case pending_knockback {
-    Some(knockback) -> physics.apply_impulse(physics_world, id.player(), knockback)
+    Some(knockback) ->
+      physics.apply_impulse(physics_world, id.player(), knockback)
     None -> physics_world
   }
 }
@@ -87,7 +88,9 @@ fn update_player_rotation(
   physics_world: physics.PhysicsWorld(id.Id),
   player_quaternion: transform.Quaternion,
 ) -> physics.PhysicsWorld(id.Id) {
-  let player_transform = case physics.get_transform(physics_world, id.player()) {
+  let player_transform = case
+    physics.get_transform(physics_world, id.player())
+  {
     Ok(current_transform) -> {
       // Keep physics position, but use player's input rotation
       current_transform

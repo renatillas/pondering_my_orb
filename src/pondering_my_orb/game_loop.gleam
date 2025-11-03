@@ -1,4 +1,5 @@
 import gleam/bool
+import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -19,6 +20,7 @@ import pondering_my_orb/ui
 import pondering_my_orb/xp_shard
 import tiramisu
 import tiramisu/effect.{type Effect}
+import tiramisu/input
 import tiramisu/physics
 import tiramisu/ui as tiramisu_ui
 import vec/vec3.{type Vec3, Vec3}
@@ -56,9 +58,39 @@ pub fn handle_tick(
   let #(player, impulse, camera_pitch, input_effects) =
     handle_player_input(model, physics_world, ctx)
 
+  // Check for debug menu toggle (M key)
+  let debug_menu_effect = case
+    input.is_key_just_pressed(ctx.input, input.KeyM)
+  {
+    True -> {
+      io.println(
+        "M key pressed! Debug menu open: "
+        <> case model.is_debug_menu_open {
+          True -> "true"
+          False -> "false"
+        },
+      )
+      effect.from(fn(dispatch) {
+        dispatch(
+          game_state.UIMessage(case model.is_debug_menu_open {
+            True -> ui.DebugMenuClosed
+            False -> ui.DebugMenuOpened
+          }),
+        )
+      })
+    }
+    False -> effect.none()
+  }
+
   // Update all enemies
   let #(enemies, enemy_effects) =
-    update_enemies(model.enemies, player.position, model.camera.position, physics_world, scaled_delta)
+    update_enemies(
+      model.enemies,
+      player.position,
+      model.camera.position,
+      physics_world,
+      scaled_delta,
+    )
 
   // Update projectiles and create explosions on collision
   let #(updated_projectiles, projectile_hits, spell_effect) =
@@ -123,7 +155,11 @@ pub fn handle_tick(
 
   // Check for loot pickups and send toast to UI
   let #(remaining_loot, loot_pickup_effects) =
-    collision_handler.collect_loot(updated_loot_drops, player_with_xp.position, ui.LootPickedUp)
+    collision_handler.collect_loot(
+      updated_loot_drops,
+      player_with_xp.position,
+      ui.LootPickedUp,
+    )
 
   let player = player_with_xp
 
@@ -133,7 +169,13 @@ pub fn handle_tick(
     |> list.filter(fn(num) { !damage_number.is_expired(num) })
 
   // Update player (casting, health, etc.)
-  let #(player, new_projectiles, casting_spell_indices, death_effect, next_projectile_id) =
+  let #(
+    player,
+    new_projectiles,
+    casting_spell_indices,
+    death_effect,
+    next_projectile_id,
+  ) =
     player.update(
       player,
       nearest_enemy,
@@ -149,7 +191,8 @@ pub fn handle_tick(
   let new_score = score.update(player, model.score, scaled_delta)
 
   // Create UI effect with current game state
-  let ui_effect = create_ui_update_effect(player, new_score, casting_spell_indices)
+  let ui_effect =
+    create_ui_update_effect(player, new_score, casting_spell_indices)
 
   // Dispatch level-up message if player leveled up
   let level_up_effect = case leveled_up {
@@ -189,6 +232,7 @@ pub fn handle_tick(
       level_up_effect,
       interval_decrease_effect,
       effect.batch(loot_pickup_effects),
+      debug_menu_effect,
     ])
 
   #(
@@ -214,7 +258,11 @@ pub fn handle_tick(
 
 /// Calculate time scale based on pause states
 fn calculate_time_scale(model: Model) -> Float {
-  case model.showing_spell_rewards, model.showing_wand_selection, model.is_paused {
+  case
+    model.showing_spell_rewards,
+    model.showing_wand_selection,
+    model.is_paused
+  {
     True, _, _ -> 0.0
     _, True, _ -> 0.0
     _, _, True -> 0.0

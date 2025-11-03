@@ -31,7 +31,9 @@ pub fn collect_loot(
       case loot.can_pickup(loot_drop, player_position, 2.0) {
         True -> {
           let new_effect =
-            tiramisu_ui.dispatch_to_lustre(ui_msg_constructor(loot_drop.loot_type))
+            tiramisu_ui.dispatch_to_lustre(ui_msg_constructor(
+              loot_drop.loot_type,
+            ))
           #([loot_drop.id, ..ids], [new_effect, ..effects])
         }
         False -> acc

@@ -388,6 +388,7 @@ pub fn piercing() -> Spell {
     id: Piercing,
     kind: Modifier(
       ..default_modifier("Piercing", "spell_icons/piercing.png"),
+      mana_cost: 130.0,
       added_effects: [PiercingShot],
     ),
   )
