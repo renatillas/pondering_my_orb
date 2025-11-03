@@ -136,6 +136,27 @@ pub fn load_assets(cache: asset.AssetCache) -> AssetBundle {
       loop: spritesheet.Once,
     )
 
+  // Load spark texture and create spritesheet
+  let assert Ok(orbiting_shard_texture) =
+    asset.get_texture(cache, "spell_projectiles/orbiting_shard.png")
+  let assert Ok(orbiting_shard_spritesheet) =
+    spritesheet.from_grid(orbiting_shard_texture, columns: 1, rows: 1)
+  let orbiting_shard_animation =
+    spritesheet.animation(
+      name: "shard",
+      frames: list.range(1, 45),
+      frame_duration: 50.0,
+      loop: spritesheet.Repeat,
+    )
+
+  let spark_explosion_animation =
+    spritesheet.animation(
+      name: "explosion",
+      frames: list.range(1, 44),
+      frame_duration: 40.0,
+      loop: spritesheet.Once,
+    )
+
   // Create spell visuals for fireball
   let fireball_visuals =
     spell.SpellVisuals(
@@ -143,6 +164,14 @@ pub fn load_assets(cache: asset.AssetCache) -> AssetBundle {
       projectile_animation: fireball_animation,
       hit_spritesheet: explosion_spritesheet,
       hit_animation: explosion_animation,
+    )
+
+  let orbiting_shard_visuals =
+    spell.SpellVisuals(
+      projectile_spritesheet: orbiting_shard_spritesheet,
+      projectile_animation: orbiting_shard_animation,
+      hit_spritesheet: spark_explosion_spritesheet,
+      hit_animation: spark_explosion_animation,
     )
 
   let spark_visuals =
@@ -292,7 +321,7 @@ pub fn load_assets(cache: asset.AssetCache) -> AssetBundle {
     |> dict.insert(spell.Fireball, fireball_visuals)
     |> dict.insert(spell.Spark, spark_visuals)
     |> dict.insert(spell.LightningBolt, lightning_bolt_visuals)
-    |> dict.insert(spell.OrbitingSpell, spark_visuals)
+    |> dict.insert(spell.OrbitingSpell, orbiting_shard_visuals)
 
   AssetBundle(
     ground: ground,
@@ -336,6 +365,7 @@ pub fn get_asset_list() -> List(asset.AssetType) {
     asset.TextureAsset("player/mago_idle.png"),
     asset.TextureAsset("player/mago_attacking.png"),
     asset.TextureAsset("spell_projectiles/lightning_bolt.png"),
+    asset.TextureAsset("spell_projectiles/orbiting_shard.png"),
     // Enemy sprites
     asset.TextureAsset("enemy_1.png"),
     asset.TextureAsset("enemy_2.png"),

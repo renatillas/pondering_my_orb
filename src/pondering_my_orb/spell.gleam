@@ -30,10 +30,10 @@ pub type Id {
   Spark
   Piercing
   DoubleSpell
-  TripleSpell
   AddMana
   AddDamage
   OrbitingSpell
+  RapidFire
 }
 
 pub type Spell {
@@ -109,6 +109,8 @@ pub type ModifierSpell {
     projectile_lifetime_addition: Float,
     cast_delay_multiplier: Float,
     cast_delay_addition: Float,
+    recharge_multiplier: Float,
+    recharge_addition: Float,
     critical_chance_multiplier: Float,
     critical_chance_addition: Float,
     spread_multiplier: Float,
@@ -132,6 +134,8 @@ pub fn default_modifier(name: String, ui_sprite: String) {
     projectile_lifetime_addition: 0.0,
     cast_delay_multiplier: 1.0,
     cast_delay_addition: 0.0,
+    recharge_multiplier: 1.0,
+    recharge_addition: 0.0,
     critical_chance_multiplier: 1.0,
     critical_chance_addition: 0.0,
     spread_multiplier: 1.0,
@@ -179,6 +183,7 @@ pub type ModifiedSpell {
     final_size: Float,
     final_lifetime: Float,
     final_cast_delay: Float,
+    final_recharge_time: Float,
     final_critical_chance: Float,
     final_spread: Float,
     total_mana_cost: Float,
@@ -202,7 +207,16 @@ pub fn apply_modifiers(
   let modified_base_spell = Damage(..base_spell, on_hit_effects: final_effects)
 
   // Fold over all modifiers to calculate final values
-  let #(damage, speed, size, lifetime, cast_delay, crit_chance, spread) =
+  let #(
+    damage,
+    speed,
+    size,
+    lifetime,
+    cast_delay,
+    recharge_time,
+    crit_chance,
+    spread,
+  ) =
     iv.fold(
       modifiers,
       #(
@@ -211,18 +225,28 @@ pub fn apply_modifiers(
         base_spell.projectile_size,
         base_spell.projectile_lifetime,
         base_spell.cast_delay_addition,
+        0.0,
         base_spell.critical_chance,
         base_spell.spread,
       ),
       fn(acc, mod) {
-        let #(damage, speed, size, lifetime, cast_delay, crit_chance, spread) =
-          acc
+        let #(
+          damage,
+          speed,
+          size,
+          lifetime,
+          cast_delay,
+          recharge_time,
+          crit_chance,
+          spread,
+        ) = acc
         #(
           damage +. mod.damage_addition,
           speed +. mod.projectile_speed_addition,
           size +. mod.projectile_size_addition,
           lifetime +. mod.projectile_lifetime_addition,
           cast_delay +. mod.cast_delay_addition,
+          recharge_time +. mod.recharge_addition,
           crit_chance +. mod.critical_chance_addition,
           spread +. mod.spread_addition,
         )
@@ -234,6 +258,7 @@ pub fn apply_modifiers(
     final_size,
     final_lifetime,
     final_cast_delay,
+    final_recharge_time,
     final_critical_chance,
     final_spread,
     total_mana_cost,
@@ -246,6 +271,7 @@ pub fn apply_modifiers(
         size,
         lifetime,
         cast_delay,
+        recharge_time,
         crit_chance,
         spread,
         base_spell.mana_cost,
@@ -257,6 +283,7 @@ pub fn apply_modifiers(
           size,
           lifetime,
           cast_delay,
+          recharge_time,
           crit_chance,
           spread,
           mana_cost,
@@ -267,6 +294,7 @@ pub fn apply_modifiers(
           size *. mod.projectile_size_multiplier,
           lifetime *. mod.projectile_lifetime_multiplier,
           cast_delay *. mod.cast_delay_multiplier,
+          recharge_time *. mod.recharge_multiplier,
           crit_chance *. mod.critical_chance_multiplier,
           spread *. mod.spread_multiplier,
           mana_cost +. mod.mana_cost,
@@ -281,6 +309,7 @@ pub fn apply_modifiers(
     final_size:,
     final_lifetime:,
     final_cast_delay:,
+    final_recharge_time:,
     final_critical_chance:,
     final_spread:,
     total_mana_cost:,
@@ -376,6 +405,17 @@ pub fn orbiting_spell(visuals: SpellVisuals) -> Spell {
       ui_sprite: "spell_icons/orbiting_shards.png",
       on_hit_effects: [],
       is_beam: False,
+    ),
+  )
+}
+
+pub fn rapid_fire() -> Spell {
+  ModifierSpell(
+    id: RapidFire,
+    kind: Modifier(
+      ..default_modifier("Rapid Fire", "spell_icons/rapid_fire.png"),
+      cast_delay_addition: -17.0,
+      recharge_addition: -0.33,
     ),
   )
 }

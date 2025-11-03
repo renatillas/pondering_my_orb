@@ -35,6 +35,7 @@ pub type CastResult {
     casting_indices: List(Int),
     did_wrap: Bool,
     total_cast_delay_addition: Float,
+    total_recharge_time_addition: Float,
   )
   /// Not enough mana to cast
   NotEnoughMana(required: Float, available: Float)
@@ -142,6 +143,7 @@ pub fn cast(
         [],
         0.0,
         0.0,
+        0.0,
         position,
         direction,
         projectile_starting_index,
@@ -181,6 +183,7 @@ fn process_with_draw(
   casting_indices: List(Int),
   total_mana_used: Float,
   total_cast_delay_addition: Float,
+  total_recharge_time_addition: Float,
   position: Vec3(Float),
   direction: Vec3(Float),
   projectile_id: Int,
@@ -220,6 +223,7 @@ fn process_with_draw(
                   casting_indices:,
                   did_wrap:,
                   total_cast_delay_addition:,
+                  total_recharge_time_addition:,
                 ),
                 updated_wand,
               )
@@ -258,6 +262,7 @@ fn process_with_draw(
                       casting_indices:,
                       did_wrap:,
                       total_cast_delay_addition:,
+                      total_recharge_time_addition:,
                     ),
                     updated_wand,
                   )
@@ -281,6 +286,7 @@ fn process_with_draw(
                     [wrapped_index, ..casting_indices],
                     total_mana_used,
                     total_cast_delay_addition,
+                    total_recharge_time_addition,
                     position,
                     direction,
                     projectile_id,
@@ -308,6 +314,7 @@ fn process_with_draw(
                         [wrapped_index, ..casting_indices],
                         total_mana_used,
                         total_cast_delay_addition,
+                        total_recharge_time_addition,
                         position,
                         direction,
                         projectile_id,
@@ -336,6 +343,7 @@ fn process_with_draw(
                             [wrapped_index, ..casting_indices],
                             new_mana_used,
                             total_cast_delay_addition,
+                            total_recharge_time_addition,
                             position,
                             direction,
                             projectile_id,
@@ -368,6 +376,7 @@ fn process_with_draw(
                         casting_indices,
                         total_mana_used,
                         total_cast_delay_addition,
+                        total_recharge_time_addition,
                         position,
                         direction,
                         projectile_id,
@@ -401,6 +410,7 @@ fn process_damage_spell(
   casting_indices: List(Int),
   total_mana_used: Float,
   total_cast_delay_addition: Float,
+  total_recharge_time_addition: Float,
   position: Vec3(Float),
   direction: Vec3(Float),
   projectile_id: Int,
@@ -412,16 +422,23 @@ fn process_damage_spell(
 ) -> #(CastResult, Wand) {
   // Check if orbiting spell at limit - skip if so
   case id, is_orbiting_at_limit(existing_projectiles, projectiles) {
-    spell.OrbitingSpell, True ->
+    spell.OrbitingSpell, True -> {
+      // Only clear modifiers if we're done with multicast spells
+      let new_accumulated_modifiers = case remaining_draw - 1 >= wand.spells_per_cast {
+        True -> accumulated_modifiers
+        False -> iv.new()
+      }
+
       process_with_draw(
         wand,
         current_index + 1,
         remaining_draw - 1,
-        iv.new(),
+        new_accumulated_modifiers,
         projectiles,
         casting_indices,
         total_mana_used,
         total_cast_delay_addition,
+        total_recharge_time_addition,
         position,
         direction,
         projectile_id,
@@ -431,11 +448,14 @@ fn process_damage_spell(
         wrapped_during_cast,
         original_start_index,
       )
+    }
     _, _ -> {
       let modified = spell.apply_modifiers(id, damaging, accumulated_modifiers)
       let new_mana_used = total_mana_used +. modified.total_mana_cost
       let new_cast_delay =
         total_cast_delay_addition +. modified.final_cast_delay
+      let new_recharge_time =
+        total_recharge_time_addition +. modified.final_recharge_time
 
       // Check mana availability
       case wand.current_mana <. new_mana_used {
@@ -474,15 +494,23 @@ fn process_damage_spell(
               projectile_type: projectile_type,
             )
 
+          // Only clear modifiers if we're done with multicast spells
+          // Keep modifiers if remaining_draw - 1 >= spells_per_cast (still in multicast)
+          let new_accumulated_modifiers = case remaining_draw - 1 >= wand.spells_per_cast {
+            True -> accumulated_modifiers
+            False -> iv.new()
+          }
+
           process_with_draw(
             wand,
             current_index + 1,
             remaining_draw - 1,
-            iv.new(),
+            new_accumulated_modifiers,
             [projectile, ..projectiles],
             [wrapped_index, ..casting_indices],
             new_mana_used,
             new_cast_delay,
+            new_recharge_time,
             position,
             direction,
             projectile_id + 1,

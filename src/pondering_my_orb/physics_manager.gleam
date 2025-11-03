@@ -4,11 +4,9 @@ import gleam/result
 import pondering_my_orb/enemy.{type Enemy}
 import pondering_my_orb/id
 import pondering_my_orb/player.{type Player}
-import pondering_my_orb/spell
 import tiramisu/physics
 import tiramisu/transform
-import vec/vec3.{type Vec3, Vec3}
-import vec/vec3f
+import vec/vec3.{type Vec3}
 
 /// Updates the physics world with player, enemies, and projectile knockback
 pub fn update_physics(
@@ -17,7 +15,6 @@ pub fn update_physics(
   player_velocity: Vec3(Float),
   player_impulse: Vec3(Float),
   enemies: List(Enemy(id.Id)),
-  projectile_hits: List(spell.ProjectileHit(id.Id)),
   pending_player_knockback: Option(Vec3(Float)),
 ) -> physics.PhysicsWorld(id.Id) {
   physics_world
@@ -27,8 +24,6 @@ pub fn update_physics(
   |> apply_player_knockback(pending_player_knockback)
   // Set velocities for all enemies
   |> apply_enemy_velocities(enemies)
-  // Apply projectile knockback to enemies
-  |> apply_projectile_knockback(projectile_hits)
 }
 
 /// Applies knockback to the player if pending
@@ -50,24 +45,6 @@ fn apply_enemy_velocities(
 ) -> physics.PhysicsWorld(id.Id) {
   list.fold(over: enemies, from: physics_world, with: fn(acc, enemy) {
     physics.set_velocity(acc, enemy.id, enemy.velocity)
-  })
-}
-
-/// Applies knockback to enemies from projectile hits
-fn apply_projectile_knockback(
-  physics_world: physics.PhysicsWorld(id.Id),
-  projectile_hits: List(spell.ProjectileHit(id.Id)),
-) -> physics.PhysicsWorld(id.Id) {
-  list.fold(over: projectile_hits, from: physics_world, with: fn(pw, hit) {
-    let knockback_force = 80.0
-    let Vec3(horizontal_x, _, horizontal_z) =
-      Vec3(hit.direction.x, 0.0, hit.direction.z)
-      |> vec3f.normalize()
-      |> vec3f.scale(knockback_force)
-
-    let total_knockback = Vec3(horizontal_x, 1.0, horizontal_z)
-
-    physics.apply_impulse(pw, hit.enemy_id, total_knockback)
   })
 }
 

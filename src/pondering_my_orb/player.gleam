@@ -516,16 +516,17 @@ pub fn update(
       casting_indices:,
       did_wrap:,
       total_cast_delay_addition:,
+      total_recharge_time_addition:,
     )) -> {
       // Determine timing based on whether wand wrapped
       let #(timer, index, recharging) = case did_wrap {
         True -> {
           // Wand wrapped: enter reload, reset to slot 0
-          // Total reload time is the max of (cast_delay + spell delays) or recharge_time
+          // Total reload time is the max of (cast_delay + spell delays) or (recharge_time + spell recharge additions)
           let total_reload_time =
             float.max(
               player.wand.cast_delay +. total_cast_delay_addition,
-              player.wand.recharge_time,
+              player.wand.recharge_time +. total_recharge_time_addition,
             )
           // Timer needs to count from negative value up to cast_delay
           // to achieve the total reload time
