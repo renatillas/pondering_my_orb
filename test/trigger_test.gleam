@@ -376,7 +376,7 @@ pub fn trigger_with_intermediate_modifiers_test() {
 
   // Wand: [Spark with Trigger, Add Damage, Fireball]
   // Expected: Spark should consume both Add Damage and Fireball
-  // Add Damage and Fireball should NOT be cast separately
+  // Add Damage should modify the Fireball payload
   let slots =
     iv.new()
     |> iv.append(option.Some(spell.spark_with_trigger(visuals)))
@@ -423,7 +423,72 @@ pub fn trigger_with_intermediate_modifiers_test() {
 
       // Verify the projectile has a trigger payload
       let assert [projectile] = projectiles
-      assert option.is_some(projectile.trigger_payload)
+      case projectile.trigger_payload {
+        option.Some(payload) -> {
+          // Fireball base damage is 5.0, Add Damage adds 10.0
+          // So payload should have 15.0 damage
+          assert payload.final_damage == 15.0
+        }
+        option.None -> panic as "Expected trigger payload"
+      }
+    }
+    _ -> panic as "Expected CastSuccess"
+  }
+}
+
+/// Test: Multiple modifiers applied to payload
+pub fn trigger_multiple_payload_modifiers_test() {
+  let visuals = test_visuals()
+
+  // Wand: [Spark with Trigger, Add Mana, Add Damage, Fireball]
+  // Expected: Both modifiers should affect the Fireball payload
+  let slots =
+    iv.new()
+    |> iv.append(option.Some(spell.spark_with_trigger(visuals)))
+    |> iv.append(option.Some(spell.add_mana()))
+    |> iv.append(option.Some(spell.add_damage()))
+    |> iv.append(option.Some(spell.fireball(visuals)))
+
+  let test_wand =
+    wand.Wand(
+      name: "Test Wand",
+      slots:,
+      max_mana: 100.0,
+      current_mana: 100.0,
+      mana_recharge_rate: 30.0,
+      cast_delay: 0.2,
+      recharge_time: 0.5,
+      spells_per_cast: 1,
+      spread: 0.0,
+    )
+
+  let #(result, _updated_wand) =
+    wand.cast(
+      test_wand,
+      0,
+      Vec3(0.0, 0.0, 0.0),
+      Vec3(1.0, 0.0, 0.0),
+      0,
+      option.None,
+      option.None,
+      [],
+    )
+
+  case result {
+    wand.CastSuccess(projectiles: projectiles, ..) -> {
+      assert list.length(projectiles) == 1
+
+      let assert [projectile] = projectiles
+      case projectile.trigger_payload {
+        option.Some(payload) -> {
+          // Fireball: base damage 5.0 + Add Damage 10.0 = 15.0
+          assert payload.final_damage == 15.0
+
+          // Fireball: base mana 15.0 + Add Mana -30.0 = -15.0
+          assert payload.total_mana_cost == -15.0
+        }
+        option.None -> panic as "Expected trigger payload"
+      }
     }
     _ -> panic as "Expected CastSuccess"
   }

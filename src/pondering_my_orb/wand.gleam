@@ -447,6 +447,37 @@ fn collect_indices_loop(
   }
 }
 
+/// Collect modifiers between start and end index (exclusive of end)
+/// Used to apply modifiers to trigger payloads
+fn collect_modifiers_between(
+  slots: iv.Array(Option(Spell)),
+  start_index: Int,
+  end_index: Int,
+  wand_length: Int,
+) -> iv.Array(spell.ModifierSpell) {
+  collect_modifiers_loop(slots, start_index, end_index, wand_length, iv.new())
+}
+
+fn collect_modifiers_loop(
+  slots: iv.Array(Option(Spell)),
+  current: Int,
+  end: Int,
+  wand_length: Int,
+  acc: iv.Array(spell.ModifierSpell),
+) -> iv.Array(spell.ModifierSpell) {
+  case current >= end {
+    True -> acc
+    False -> {
+      let wrapped_index = current % wand_length
+      let new_acc = case iv.get(slots, wrapped_index) {
+        Ok(Some(spell.ModifierSpell(_, modifier))) -> iv.append(acc, modifier)
+        _ -> acc
+      }
+      collect_modifiers_loop(slots, current + 1, end, wand_length, new_acc)
+    }
+  }
+}
+
 /// Find the next damage spell in the wand starting from the given index
 /// Returns Option(#(spell.Id, spell.DamageSpell, Int)) with the spell and the index where it was found
 /// Only searches forward from start_index, does not wrap back to find spells before it
@@ -576,9 +607,23 @@ fn process_damage_spell(
               // Look ahead for the next damage spell to use as payload
               case find_next_damage_spell(wand.slots, state.current_index + 1) {
                 option.Some(#(payload_id, payload_spell, payload_index)) -> {
-                  // Apply modifiers to the payload (with empty modifiers for now)
+                  // Collect modifiers between trigger and payload
+                  let wand_length = iv.length(wand.slots)
+                  let payload_modifiers =
+                    collect_modifiers_between(
+                      wand.slots,
+                      state.current_index + 1,
+                      payload_index,
+                      wand_length,
+                    )
+
+                  // Apply collected modifiers to the payload
                   let payload_modified =
-                    spell.apply_modifiers(payload_id, payload_spell, iv.new())
+                    spell.apply_modifiers(
+                      payload_id,
+                      payload_spell,
+                      payload_modifiers,
+                    )
                   #(option.Some(payload_modified), option.Some(payload_index))
                 }
                 option.None -> #(option.None, option.None)
