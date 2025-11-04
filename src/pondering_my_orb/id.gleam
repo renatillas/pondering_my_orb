@@ -17,6 +17,7 @@ pub type Id {
   XPShard(layer: Layer, id: Int)
   LootDrop(layer: Layer, id: Int)
   DamageNumber(layer: Layer, id: Int)
+  Chest(layer: Layer, id: Int)
 }
 
 pub type Layer {
@@ -92,6 +93,10 @@ pub fn loot_drop(id: Int) -> Id {
 
 pub fn damage_number(id: Int) -> Id {
   DamageNumber(layer: MiscelaniaLayer, id: id)
+}
+
+pub fn chest(id: Int) -> Id {
+  Chest(layer: MapLayer, id: id)
 }
 
 pub fn scene() -> Id {

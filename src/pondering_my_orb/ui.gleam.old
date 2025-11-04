@@ -12,7 +12,7 @@ import lustre/attribute
 import lustre/effect
 import lustre/element
 import lustre/element/html
-import plinth/javascript/global
+import lustre/event
 import pondering_my_orb/loot
 import pondering_my_orb/perk
 import pondering_my_orb/pointer_lock
@@ -20,31 +20,18 @@ import pondering_my_orb/pointer_lock_request
 import pondering_my_orb/score
 import pondering_my_orb/spell
 import pondering_my_orb/spell_bag
+import plinth/javascript/global
 import pondering_my_orb/ui/components/perk_slot_machine
 import pondering_my_orb/ui/debug_menu
 import pondering_my_orb/ui/game_over
 import pondering_my_orb/ui/loading_screen
-import pondering_my_orb/ui/model
+import pondering_my_orb/ui/model as slot_machine_model
 import pondering_my_orb/ui/pause_menu
 import pondering_my_orb/ui/spell_rewards
 import pondering_my_orb/ui/start_screen
 import pondering_my_orb/ui/wand_selection
 import pondering_my_orb/wand
 import tiramisu/ui as tiramisu_ui
-
-// ============================================================================
-// TYPES
-// ============================================================================
-
-// Re-export types from ui/model for external modules
-pub type WandStatUpdate =
-  model.WandStatUpdate
-
-pub type SlotMachineState =
-  model.SlotMachineState
-
-pub type AnimationPhase =
-  model.AnimationPhase
 
 pub type Model(tiramisu_msg) {
   Model(
@@ -88,7 +75,7 @@ pub type Model(tiramisu_msg) {
     // Debug menu
     is_debug_menu_open: Bool,
     // Perk slot machine
-    perk_slot_machine: option.Option(model.SlotMachineState),
+    perk_slot_machine: option.Option(slot_machine_model.SlotMachineState),
   )
 }
 
@@ -121,7 +108,7 @@ pub type Msg {
   // Debug menu
   ToggleDebugMenu
   AddSpellToBag(spell.Id)
-  UpdateWandStat(model.WandStatUpdate)
+  UpdateWandStat(WandStatUpdate)
   // Pause state synchronization
   SetPaused(Bool)
   // Perk slot machine
@@ -129,6 +116,15 @@ pub type Msg {
   UpdateSlotMachineAnimation(Float)
   ClosePerkSlotMachine
   NoOp
+}
+
+pub type WandStatUpdate {
+  SetMaxMana(Float)
+  SetManaRechargeRate(Float)
+  SetCastDelay(Float)
+  SetRechargeTime(Float)
+  SetSpread(Float)
+  SetCapacity(Int)
 }
 
 pub type UiToGameMsg {
@@ -150,7 +146,7 @@ pub type UiToGameMsg {
   DebugMenuOpened
   DebugMenuClosed
   DebugAddSpellToBag(spell.Id)
-  DebugUpdateWandStat(model.WandStatUpdate)
+  DebugUpdateWandStat(WandStatUpdate)
   // Perk slot machine
   PerkSlotMachineStarted
   PerkSlotMachineComplete(perk.Perk)
@@ -175,6 +171,7 @@ pub type GameState {
     time_since_last_cast: Float,
     current_spell_index: Int,
     is_recharging: Bool,
+    // Wand stats
     wand_max_mana: Float,
     wand_mana_recharge_rate: Float,
     wand_cast_delay: Float,
@@ -183,10 +180,6 @@ pub type GameState {
     wand_spread: Float,
   )
 }
-
-// ============================================================================
-// INIT
-// ============================================================================
 
 pub fn init(wrapper) -> #(Model(tiramisu_msg), effect.Effect(Msg)) {
   #(
@@ -241,10 +234,6 @@ pub fn init(wrapper) -> #(Model(tiramisu_msg), effect.Effect(Msg)) {
     ]),
   )
 }
-
-// ============================================================================
-// UPDATE
-// ============================================================================
 
 pub fn update(
   model: Model(tiramisu_msg),
@@ -520,6 +509,7 @@ pub fn update(
     ResumeGame -> {
       io.println("=== UI: Resume Requested - Requesting Pointer Lock ===")
       // Set resuming flag but keep paused until pointer lock is acquired
+      // Set up automatic retry every 500ms
       #(
         Model(..model, resuming: True, resume_retry_count: 0),
         effect.batch([
@@ -680,11 +670,9 @@ pub fn update(
         effect.none(),
       )
     }
-    AddSpellToBag(spell_id) -> #(
+    AddSpellToBag(spell) -> #(
       model,
-      tiramisu_ui.dispatch_to_tiramisu(
-        model.wrapper(DebugAddSpellToBag(spell_id)),
-      ),
+      tiramisu_ui.dispatch_to_tiramisu(model.wrapper(DebugAddSpellToBag(spell))),
     )
     UpdateWandStat(stat_update) -> #(
       model,
@@ -700,9 +688,7 @@ pub fn update(
       effect.none(),
     )
     StartPerkSlotMachine(selected_perk) -> {
-      io.println(
-        "UI: StartPerkSlotMachine - " <> perk.get_info(selected_perk).name,
-      )
+      io.println("UI: StartPerkSlotMachine - " <> perk.get_info(selected_perk).name)
       // Generate 3 random perks for display
       let reel1 = perk.random()
       let reel2 = perk.random()
@@ -711,12 +697,12 @@ pub fn update(
       #(
         Model(
           ..model,
-          perk_slot_machine: option.Some(model.SlotMachineState(
+          perk_slot_machine: option.Some(slot_machine_model.SlotMachineState(
             selected_perk:,
             reel1:,
             reel2:,
             reel3:,
-            animation_phase: model.Spinning,
+            animation_phase: slot_machine_model.Spinning,
             time_elapsed: 0.0,
           )),
         ),
@@ -735,16 +721,16 @@ pub fn update(
 
           // Update animation phase based on time
           let new_phase = case new_time {
-            t if t <. 2.0 -> model.Spinning
-            t if t <. 2.5 -> model.StoppingLeft
-            t if t <. 3.0 -> model.StoppingMiddle
-            t if t <. 3.5 -> model.StoppingRight
+            t if t <. 2.0 -> slot_machine_model.Spinning
+            t if t <. 2.5 -> slot_machine_model.StoppingLeft
+            t if t <. 3.0 -> slot_machine_model.StoppingMiddle
+            t if t <. 3.5 -> slot_machine_model.StoppingRight
             _ -> {
               case state.animation_phase {
-                model.Stopped -> model.Stopped
+                slot_machine_model.Stopped -> slot_machine_model.Stopped
                 _ -> {
                   io.println("UI: Animation reached STOPPED state")
-                  model.Stopped
+                  slot_machine_model.Stopped
                 }
               }
             }
@@ -752,7 +738,7 @@ pub fn update(
 
           // Randomize reels during spinning phase
           let #(new_reel1, new_reel2, new_reel3) = case new_phase {
-            model.Spinning ->
+            slot_machine_model.Spinning ->
               // Change reels every 100ms
               case float.modulo(new_time *. 1000.0, 100.0) {
                 Ok(mod) if mod <. delta_time -> #(
@@ -766,7 +752,7 @@ pub fn update(
           }
 
           let next_effect = case new_phase {
-            model.Stopped -> effect.none()
+            slot_machine_model.Stopped -> effect.none()
             _ -> schedule_slot_machine_tick()
           }
 
@@ -774,7 +760,7 @@ pub fn update(
             Model(
               ..model,
               perk_slot_machine: option.Some(
-                model.SlotMachineState(
+                slot_machine_model.SlotMachineState(
                   ..state,
                   time_elapsed: new_time,
                   animation_phase: new_phase,
@@ -834,32 +820,32 @@ fn reorder_array(
 /// Schedule a slot machine animation tick (16ms ~= 60fps)
 fn schedule_slot_machine_tick() -> effect.Effect(Msg) {
   effect.from(fn(dispatch) {
-    global.set_timeout(16, fn() { dispatch(UpdateSlotMachineAnimation(16.0)) })
+    global.set_timeout(16, fn() {
+      dispatch(UpdateSlotMachineAnimation(16.0))
+    })
     Nil
   })
 }
 
-// ============================================================================
-// VIEW
-// ============================================================================
-
 pub fn view(model: Model(tiramisu_msg)) -> element.Element(Msg) {
   case model.game_phase {
-    StartScreen ->
-      element.map(start_screen.view(), fn(msg) {
-        case msg {
-          start_screen.StartButtonClicked -> StartButtonClicked
-        }
-      })
-    LoadingScreen -> loading_screen.view()
+    StartScreen -> view_start_screen()
+    LoadingScreen -> view_loading_screen()
     Playing -> view_playing(model)
-    GameOver ->
-      element.map(game_over.view(model.score), fn(msg) {
-        case msg {
-          game_over.RestartButtonClicked -> RestartButtonClicked
-        }
-      })
+    GameOver -> view_game_over_screen(model)
   }
+}
+
+fn view_start_screen() -> element.Element(Msg) {
+  element.map(start_screen.view(), fn(msg) {
+    case msg {
+      start_screen.StartButtonClicked -> StartButtonClicked
+    }
+  })
+}
+
+fn view_loading_screen() -> element.Element(Msg) {
+  loading_screen.view()
 }
 
 fn view_playing(model: Model(tiramisu_msg)) -> element.Element(Msg) {
@@ -869,127 +855,180 @@ fn view_playing(model: Model(tiramisu_msg)) -> element.Element(Msg) {
         "fixed top-0 left-0 w-full h-full pointer-events-none select-none font-mono",
       ),
     ],
-    list.flatten([
-      [view_hud(model)],
-      // Modals and overlays
-      case model.spell_rewards {
-        option.Some(rewards) ->
-          case rewards {
-            [] -> []
-            _ -> [view_spell_rewards_modal(model, rewards)]
-          }
-        option.None -> []
-      },
-      case model.showing_wand_selection, model.pending_wand {
-        True, option.Some(new_wand) -> [
-          view_wand_selection_modal(model, new_wand),
-        ]
-        _, _ -> []
-      },
-      case model.is_paused {
-        True -> [view_pause_menu_modal(model)]
-        False -> []
-      },
-      case model.is_debug_menu_open {
-        True -> [view_debug_menu_modal(model)]
-        False -> []
-      },
-      case model.perk_slot_machine {
-        option.Some(state) -> [
-          perk_slot_machine.view(state, ClosePerkSlotMachine),
-        ]
-        option.None -> []
-      },
-    ]),
-  )
-}
-
-fn view_hud(model: Model(tiramisu_msg)) -> element.Element(Msg) {
-  html.div(
     [
-      attribute.class(
-        "absolute top-4 left-4 p-4 bg-gradient-to-br from-purple-900/90 to-indigo-900/90 border-4 border-amber-400 rounded-lg shadow-2xl",
-      ),
-      attribute.style("image-rendering", "pixelated"),
-      attribute.style("backdrop-filter", "blur(4px)"),
-      attribute.style("z-index", "350"),
-    ],
-    [
-      // Health section
-      html.div([attribute.class("mb-4")], [
-        html.div([attribute.class("text-gray-300 text-sm mb-1")], [
-          html.text(
-            float_to_string_rounded(model.player_health)
-            <> " / "
-            <> float_to_string_rounded(model.player_max_health),
+      // Top left corner - Player stats (always visible, never blurred)
+      html.div(
+        [
+          attribute.class(
+            "absolute top-4 left-4 p-4 bg-gradient-to-br from-purple-900/90 to-indigo-900/90 border-4 border-amber-400 rounded-lg shadow-2xl",
           ),
-        ]),
-        render_pixel_bar(
-          current: model.player_health,
-          max: model.player_max_health,
-          color_class: health_color_class(
-            model.player_health,
-            model.player_max_health,
-          ),
-          bg_class: "bg-red-950",
-        ),
-      ]),
-      // Mana section
-      html.div([attribute.class("mb-4")], [
-        html.div([attribute.class("text-gray-300 text-sm mb-1")], [
-          html.text(
-            float_to_string_rounded(model.player_mana)
-            <> " / "
-            <> float_to_string_rounded(model.player_max_mana),
-          ),
-        ]),
-        render_pixel_bar(
-          current: model.player_mana,
-          max: model.player_max_mana,
-          color_class: "bg-blue-500",
-          bg_class: "bg-blue-950",
-        ),
-      ]),
-      // Wand section
-      html.div([], [
-        render_cast_delay_bar(
-          model.time_since_last_cast,
-          model.cast_delay,
-          model.recharge_time,
-          model.current_spell_index,
-          iv.length(model.wand_slots),
-          model.is_recharging,
-        ),
-        render_wand_slots(
-          model.wand_slots,
-          model.drag_state,
-          model.casting_spell_indices,
-        ),
-      ]),
-      // Score section
-      html.div([attribute.class("mb-4")], [
-        html.div([attribute.class("text-gray-300 text-sm m-1")], [
-          html.text(float_to_string_rounded(model.score.total_score)),
-        ]),
-        // Streak display
-        case model.score.current_multiplier >. 1.0 {
-          True ->
-            html.div([attribute.class("text-orange-400 text-xs")], [
-              html.text(
-                "STREAK: "
-                <> float.to_string(float.to_precision(
-                  model.score.current_multiplier,
-                  2,
-                ))
-                <> "x",
+          attribute.style("image-rendering", "pixelated"),
+          attribute.style("backdrop-filter", "blur(4px)"),
+          attribute.style("z-index", "350"),
+        ],
+        list.flatten([
+          [
+            // Health section
+            html.div([attribute.class("mb-4")], [
+              html.div([attribute.class("text-gray-300 text-sm mb-1")], [
+                html.text(
+                  float_to_string_rounded(model.player_health)
+                  <> " / "
+                  <> float_to_string_rounded(model.player_max_health),
+                ),
+              ]),
+              render_pixel_bar(
+                current: model.player_health,
+                max: model.player_max_health,
+                color_class: health_color_class(
+                  model.player_health,
+                  model.player_max_health,
+                ),
+                bg_class: "bg-red-950",
               ),
-            ])
-          False ->
-            html.div([attribute.class("text-gray-500 text-xs")], [
-              html.text("No streak"),
-            ])
-        },
-      ]),
+            ]),
+            // Mana section
+            html.div([attribute.class("mb-4")], [
+              html.div([attribute.class("text-gray-300 text-sm mb-1")], [
+                html.text(
+                  float_to_string_rounded(model.player_mana)
+                  <> " / "
+                  <> float_to_string_rounded(model.player_max_mana),
+                ),
+              ]),
+              render_pixel_bar(
+                current: model.player_mana,
+                max: model.player_max_mana,
+                color_class: "bg-blue-500",
+                bg_class: "bg-blue-950",
+              ),
+            ]),
+            // Wand section
+            html.div([], [
+              // Cast delay bar
+              render_cast_delay_bar(
+                model.time_since_last_cast,
+                model.cast_delay,
+                model.recharge_time,
+                model.current_spell_index,
+                iv.length(model.wand_slots),
+                model.is_recharging,
+              ),
+              render_wand_slots(
+                model.wand_slots,
+                model.drag_state,
+                model.casting_spell_indices,
+              ),
+            ]),
+            html.div([attribute.class("mb-4")], [
+              html.div([attribute.class("text-gray-300 text-sm m-1")], [
+                html.text(float_to_string_rounded(model.score.total_score)),
+              ]),
+              // Streak display
+              case model.score.current_multiplier >. 1.0 {
+                True ->
+                  html.div([attribute.class("text-orange-400 text-xs")], [
+                    html.text(
+                      "STREAK: "
+                      <> float.to_string(float.to_precision(
+                        model.score.current_multiplier,
+                        2,
+                      ))
+                      <> "x",
+                    ),
+                  ])
+                False ->
+                  html.div([attribute.class("text-gray-500 text-xs")], [
+                    html.text("No streak"),
+                  ])
+              },
+            ]),
+          ],
+        ]),
+      ),
+      // XP bar at bottom of screen
+      html.div(
+        [
+          attribute.class(
+            "absolute bottom-0 left-0 w-full p-4 bg-gradient-to-t from-black/80 to-transparent pointer-events-none",
+          ),
+          attribute.style("z-index", "150"),
+        ],
+        [
+          html.div(
+            [
+              attribute.class("max-w-screen-lg mx-auto flex items-center gap-4"),
+            ],
+            [
+              // Level indicator
+              html.div(
+                [
+                  attribute.class(
+                    "px-4 py-2 bg-gradient-to-br from-amber-600 to-orange-600 border-2 border-amber-400 rounded-lg shadow-lg",
+                  ),
+                  attribute.style("image-rendering", "pixelated"),
+                ],
+                [
+                  html.div([attribute.class("text-white font-bold text-xl")], [
+                    html.text("LV " <> int.to_string(model.player_level)),
+                  ]),
+                ],
+              ),
+              // XP bar
+              html.div([attribute.class("flex-1")], [
+                html.div([attribute.class("text-amber-300 text-sm mb-1")], [
+                  html.text(
+                    int.to_string(model.player_xp)
+                    <> " / "
+                    <> int.to_string(model.player_xp_to_next_level)
+                    <> " XP",
+                  ),
+                ]),
+                render_xp_bar(
+                  current: int.to_float(model.player_xp),
+                  max: int.to_float(model.player_xp_to_next_level),
+                ),
+              ]),
+            ],
+          ),
+        ],
+      ),
+      // Spell rewards modal - only show when rewards are available
+      case model.spell_rewards {
+        option.Some(rewards) -> view_spell_rewards_modal(model, rewards)
+        option.None -> html.div([], [])
+      },
+      // Pause menu - show when paused or resuming (but not during level-up, wand selection, perk selection, or debug menu)
+      case
+        model.is_paused,
+        model.resuming,
+        model.spell_rewards,
+        model.showing_wand_selection,
+        model.is_debug_menu_open,
+        model.perk_slot_machine
+      {
+        True, _, option.None, False, False, option.None
+        | _, True, option.None, False, False, option.None ->
+          view_pause_menu(model)
+        _, _, _, _, _, _ -> html.div([], [])
+      },
+      // Wand selection modal
+      case model.showing_wand_selection, model.pending_wand {
+        True, option.Some(new_wand) ->
+          view_wand_selection_modal(model, new_wand)
+        _, _ -> html.div([], [])
+      },
+      // Debug menu
+      case model.is_debug_menu_open {
+        True -> view_debug_menu(model)
+        False -> html.div([], [])
+      },
+      // Perk slot machine modal
+      case model.perk_slot_machine {
+        option.Some(state) ->
+          perk_slot_machine.view(state, ClosePerkSlotMachine)
+        option.None -> html.div([], [])
+      },
     ],
   )
 }
@@ -998,44 +1037,15 @@ fn view_spell_rewards_modal(
   model: Model(tiramisu_msg),
   rewards: List(spell.Spell),
 ) -> element.Element(Msg) {
-  let inventory_section =
-    html.div([], [
-      // Wand section
-      html.div([], [
-        html.div([attribute.class("flex items-center gap-2 mb-3")], [
-          html.span([attribute.class("text-amber-400 text-2xl")], [
-            html.text("⚡"),
-          ]),
-          html.span([attribute.class("text-white font-bold text-xl")], [
-            html.text("WAND SLOTS"),
-          ]),
-        ]),
-        render_wand_slots(
-          model.wand_slots,
-          model.drag_state,
-          model.casting_spell_indices,
-        ),
-      ]),
-      // Spell bag section
-      html.div([attribute.class("mt-6")], [
-        html.div([attribute.class("flex items-center gap-2 mb-3")], [
-          html.span([attribute.class("text-purple-400 text-2xl")], [
-            html.text("🎒"),
-          ]),
-          html.span([attribute.class("text-white font-bold text-xl")], [
-            html.text("SPELL BAG"),
-          ]),
-        ]),
-        render_spell_bag(model.spell_bag, model.drag_state),
-      ]),
-    ])
-
-  element.map(spell_rewards.view(rewards, inventory_section), fn(msg) {
-    case msg {
-      spell_rewards.SpellRewardClicked(spell) -> SpellRewardClicked(spell)
-      spell_rewards.DoneWithLevelUp -> DoneWithLevelUp
-    }
-  })
+  element.map(
+    spell_rewards.view(rewards, view_inventory_section(model)),
+    fn(msg) {
+      case msg {
+        spell_rewards.SpellRewardClicked(spell) -> SpellRewardClicked(spell)
+        spell_rewards.DoneWithLevelUp -> DoneWithLevelUp
+      }
+    },
+  )
 }
 
 fn view_wand_selection_modal(
@@ -1062,7 +1072,7 @@ fn view_wand_selection_modal(
   )
 }
 
-fn view_pause_menu_modal(model: Model(tiramisu_msg)) -> element.Element(Msg) {
+fn view_pause_menu(model: Model(tiramisu_msg)) -> element.Element(Msg) {
   element.map(
     pause_menu.view(
       model.is_settings_open,
@@ -1081,39 +1091,152 @@ fn view_pause_menu_modal(model: Model(tiramisu_msg)) -> element.Element(Msg) {
   )
 }
 
-fn view_debug_menu_modal(model: Model(tiramisu_msg)) -> element.Element(Msg) {
-  let inventory_section =
-    html.div([], [
-      // Wand Slots
-      html.div([attribute.class("mt-6 pt-6 border-t-2 border-amber-500/50")], [
-        html.div([attribute.class("flex items-center gap-2 mb-3")], [
-          html.span([attribute.class("text-amber-400 text-sm")], [
-            html.text("⚡"),
-          ]),
-          html.span([attribute.class("text-amber-300 font-bold text-sm")], [
-            html.text("WAND SLOTS"),
-          ]),
-        ]),
-        render_wand_slots(
-          model.wand_slots,
-          model.drag_state,
-          model.casting_spell_indices,
-        ),
-      ]),
-      // Spell Bag
-      html.div([attribute.class("mt-6 pt-6 border-t-2 border-purple-500/50")], [
-        html.div([attribute.class("flex items-center gap-2 mb-3")], [
-          html.span([attribute.class("text-purple-400 text-sm")], [
-            html.text("🎒"),
-          ]),
-          html.span([attribute.class("text-purple-300 font-bold text-sm")], [
-            html.text("SPELL BAG"),
-          ]),
-        ]),
-        render_spell_bag(model.spell_bag, model.drag_state),
-      ]),
-    ])
+fn view_wand_stat_compact(
+  label: String,
+  value: Float,
+  unit: String,
+) -> element.Element(Msg) {
+  html.div([attribute.class("flex justify-between")], [
+    html.span([attribute.class("text-gray-300")], [html.text(label <> ":")]),
+    html.span([attribute.class("font-bold")], [
+      html.text(float.to_string(float.to_precision(value, 2)) <> " " <> unit),
+    ]),
+  ])
+}
 
+fn view_spell_reward_card(reward_spell: spell.Spell) -> element.Element(Msg) {
+  let #(name, sprite_path, description, type_label, type_color) = case
+    reward_spell
+  {
+    spell.DamageSpell(_, dmg_spell) -> #(
+      dmg_spell.name,
+      dmg_spell.ui_sprite,
+      "Damage: "
+        <> float.to_string(float.to_precision(dmg_spell.damage, 1))
+        <> " | Speed: "
+        <> float.to_string(float.to_precision(dmg_spell.projectile_speed, 1)),
+      "DAMAGE",
+      "bg-red-600 border-red-400",
+    )
+    spell.ModifierSpell(_, mod_spell) -> {
+      let effects =
+        [
+          case mod_spell.damage_multiplier {
+            m if m != 1.0 ->
+              option.Some("DMG x" <> float.to_string(float.to_precision(m, 2)))
+            _ -> option.None
+          },
+          case mod_spell.damage_addition {
+            a if a != 0.0 ->
+              option.Some("DMG +" <> float.to_string(float.to_precision(a, 1)))
+            _ -> option.None
+          },
+          case mod_spell.projectile_speed_multiplier {
+            m if m != 1.0 ->
+              option.Some("SPD x" <> float.to_string(float.to_precision(m, 2)))
+            _ -> option.None
+          },
+          case mod_spell.projectile_size_multiplier {
+            m if m != 1.0 ->
+              option.Some("SIZE x" <> float.to_string(float.to_precision(m, 2)))
+            _ -> option.None
+          },
+          case mod_spell.projectile_lifetime_multiplier {
+            m if m != 1.0 ->
+              option.Some("LIFE x" <> float.to_string(float.to_precision(m, 2)))
+            _ -> option.None
+          },
+        ]
+        |> list.filter_map(fn(opt) {
+          case opt {
+            option.Some(s) -> Ok(s)
+            option.None -> Error(Nil)
+          }
+        })
+
+      let description = case effects {
+        [] -> "No effects"
+        _ ->
+          list.fold(effects, "", fn(acc, effect) {
+            case acc {
+              "" -> effect
+              _ -> acc <> " | " <> effect
+            }
+          })
+      }
+
+      #(
+        mod_spell.name,
+        mod_spell.ui_sprite,
+        description,
+        "MODIFIER",
+        "bg-green-600 border-green-400",
+      )
+    }
+    spell.MulticastSpell(_, multicast_spell) -> {
+      let description = case multicast_spell.spell_count {
+        spell.Fixed(n) -> "Casts " <> int.to_string(n) <> " spells at once"
+        spell.AllRemaining -> "Casts all remaining spells"
+      }
+      #(
+        multicast_spell.name,
+        multicast_spell.ui_sprite,
+        description,
+        "MULTICAST",
+        "bg-purple-600 border-purple-400",
+      )
+    }
+  }
+
+  let tooltip_text = spell_tooltip(reward_spell)
+
+  html.button(
+    [
+      attribute.class(
+        "flex flex-col items-center p-6 bg-gray-900/80 border-4 rounded-lg hover:scale-105 hover:bg-gray-800/80 transform transition-all duration-200 cursor-pointer min-w-[200px]",
+      ),
+      attribute.class(type_color),
+      attribute.attribute("title", tooltip_text),
+      event.on_click(SpellRewardClicked(reward_spell)),
+    ],
+    [
+      // Type label
+      html.div(
+        [
+          attribute.class(
+            "text-xs font-bold text-white px-2 py-1 rounded mb-2 " <> type_color,
+          ),
+        ],
+        [html.text(type_label)],
+      ),
+      // Sprite image
+      html.div(
+        [attribute.class("w-16 h-16 mb-3 flex items-center justify-center")],
+        [
+          html.img([
+            attribute.src(sprite_path),
+            attribute.class("w-full h-full object-contain"),
+            attribute.style("image-rendering", "pixelated"),
+          ]),
+        ],
+      ),
+      // Name
+      html.div(
+        [attribute.class("text-xl font-bold text-white mb-2 text-center")],
+        [
+          html.text(name),
+        ],
+      ),
+      // Description
+      html.div(
+        [attribute.class("text-sm text-gray-300 text-center leading-tight")],
+        [html.text(description)],
+      ),
+    ],
+  )
+}
+
+fn view_debug_menu(model: Model(tiramisu_msg)) -> element.Element(Msg) {
   element.map(
     debug_menu.view(
       model.wand_max_mana,
@@ -1122,21 +1245,25 @@ fn view_debug_menu_modal(model: Model(tiramisu_msg)) -> element.Element(Msg) {
       model.wand_recharge_time,
       model.wand_capacity,
       model.wand_spread,
-      inventory_section,
+      view_inventory_section(model),
     ),
     fn(msg) {
       case msg {
         debug_menu.AddSpellToBag(spell_id) -> AddSpellToBag(spell_id)
-        debug_menu.UpdateWandStat(stat_update) -> UpdateWandStat(stat_update)
+        debug_menu.UpdateWandStat(update) -> UpdateWandStat(update)
         debug_menu.NoOp -> NoOp
       }
     },
   )
 }
 
-// ============================================================================
-// HELPER RENDERING FUNCTIONS
-// ============================================================================
+fn view_game_over_screen(model: Model(tiramisu_msg)) -> element.Element(Msg) {
+  element.map(game_over.view(model.score), fn(msg) {
+    case msg {
+      game_over.RestartButtonClicked -> RestartButtonClicked
+    }
+  })
+}
 
 fn render_pixel_bar(
   current current: Float,
@@ -1159,17 +1286,23 @@ fn render_pixel_bar(
       attribute.style("image-rendering", "pixelated"),
     ],
     [
+      // Filled portion
       html.div(
         [
-          attribute.class(color_class <> " h-full transition-all duration-300"),
+          attribute.class(color_class <> " h-full"),
           attribute.style("width", float.to_string(percentage) <> "%"),
         ],
         [],
       ),
+      // Pixel effect overlay
       html.div(
         [
-          attribute.class("absolute inset-0 opacity-20 pointer-events-none"),
-          attribute.style("box-shadow", "inset 0 2px 4px rgba(0,0,0,0.5)"),
+          attribute.class("absolute inset-0 opacity-30"),
+          attribute.style(
+            "background",
+            "repeating-linear-gradient(0deg, transparent, transparent 1px, rgba(255,255,255,0.1) 1px, rgba(255,255,255,0.1) 2px)",
+          ),
+          attribute.style("background-size", "2px 2px"),
         ],
         [],
       ),
@@ -1178,73 +1311,84 @@ fn render_pixel_bar(
 }
 
 fn health_color_class(current: Float, max: Float) -> String {
+  let percentage = current /. max *. 100.0
+  case percentage {
+    p if p >=. 75.0 -> "bg-green-500"
+    p if p >=. 50.0 -> "bg-lime-500"
+    p if p >=. 25.0 -> "bg-orange-500"
+    _ -> "bg-red-500"
+  }
+}
+
+fn render_xp_bar(current current: Float, max max: Float) -> element.Element(Msg) {
   let percentage = case max >. 0.0 {
     True -> { current /. max } *. 100.0
     False -> 0.0
   }
 
-  case percentage {
-    p if p >. 60.0 -> "bg-green-500"
-    p if p >. 30.0 -> "bg-yellow-500"
-    _ -> "bg-red-500"
-  }
+  html.div(
+    [
+      attribute.class(
+        "w-full h-8 bg-gradient-to-r from-purple-950 to-indigo-950 border-2 border-amber-600 relative overflow-hidden",
+      ),
+      attribute.style("image-rendering", "pixelated"),
+    ],
+    [
+      // Filled portion with gradient
+      html.div(
+        [
+          attribute.class(
+            "h-full bg-gradient-to-r from-amber-500 via-yellow-400 to-amber-500",
+          ),
+          attribute.style("width", float.to_string(percentage) <> "%"),
+        ],
+        [],
+      ),
+      // Shine effect overlay
+      html.div(
+        [
+          attribute.class("absolute inset-0 opacity-40"),
+          attribute.style(
+            "background",
+            "repeating-linear-gradient(90deg, transparent, transparent 8px, rgba(255,255,255,0.2) 8px, rgba(255,255,255,0.2) 16px)",
+          ),
+        ],
+        [],
+      ),
+    ],
+  )
 }
 
-fn render_cast_delay_bar(
-  time_since_last_cast: Float,
-  cast_delay: Float,
-  recharge_time: Float,
-  current_spell_index: Int,
-  total_slots: Int,
-  is_recharging: Bool,
-) -> element.Element(Msg) {
-  let total_cycle_time = case is_recharging {
-    True -> recharge_time
-    False -> cast_delay
-  }
-
-  let progress_percentage = case total_cycle_time >. 0.0 {
-    True -> float.min(time_since_last_cast /. total_cycle_time *. 100.0, 100.0)
-    False -> 100.0
-  }
-
-  let bar_color = case is_recharging {
-    True -> "bg-purple-500"
-    False -> "bg-yellow-500"
-  }
-
-  let status_text = case is_recharging {
-    True -> "RECHARGE"
-    False ->
-      "CAST "
-      <> int.to_string(current_spell_index + 1)
-      <> "/"
-      <> int.to_string(total_slots)
-  }
-
-  html.div([attribute.class("mb-2")], [
-    html.div([attribute.class("text-gray-300 text-xs mb-1")], [
-      html.text(status_text),
+fn view_inventory_section(model: Model(tiramisu_msg)) -> element.Element(Msg) {
+  html.div([], [
+    // Wand section
+    html.div([], [
+      html.div([attribute.class("flex items-center gap-2 mb-3")], [
+        html.span([attribute.class("text-amber-400 text-2xl")], [
+          html.text("⚡"),
+        ]),
+        html.span([attribute.class("text-white font-bold text-xl")], [
+          html.text("WAND SLOTS"),
+        ]),
+      ]),
+      render_wand_slots(
+        model.wand_slots,
+        model.drag_state,
+        model.casting_spell_indices,
+      ),
     ]),
-    html.div(
-      [
-        attribute.class(
-          "w-48 h-2 bg-gray-800 border border-amber-600 relative overflow-hidden",
-        ),
-      ],
-      [
-        html.div(
-          [
-            attribute.class(bar_color <> " h-full transition-all"),
-            attribute.style(
-              "width",
-              float.to_string(progress_percentage) <> "%",
-            ),
-          ],
-          [],
-        ),
-      ],
-    ),
+    // Spell bag section
+    html.div([], [
+      html.div([attribute.class("flex items-center gap-2 mb-3")], [
+        html.span([attribute.class("text-purple-400 text-2xl")], [
+          html.text("🎒"),
+        ]),
+        html.span([attribute.class("text-white font-bold text-xl")], [
+          html.text("SPELL BAG"),
+        ]),
+      ]),
+      render_spell_bag(model.spell_bag, model.drag_state),
+    ]),
   ])
 }
 
@@ -1273,9 +1417,14 @@ fn render_wand_slots(
     )
 
   element.map(
-    ensaimada.container(config, drag_state, sortable_items, fn(item, idx, ds) {
-      render_wand_slot_item(item, idx, ds, casting_indices)
-    }),
+    ensaimada.container(
+      config,
+      drag_state,
+      sortable_items,
+      fn(item, idx, drag_state) {
+        render_wand_slot_item(item, idx, drag_state, casting_indices)
+      },
+    ),
     WandSortableMsg,
   )
 }
@@ -1330,6 +1479,7 @@ fn render_wand_slot_item(
     ]),
     [
       content_element,
+      // Inner shadow effect
       html.div(
         [
           attribute.class("absolute inset-0 opacity-20 pointer-events-none"),
@@ -1440,6 +1590,13 @@ fn spell_ui_sprite(spell_item: spell.Spell) -> String {
   }
 }
 
+fn float_to_string_rounded(value: Float) -> String {
+  value
+  |> float.round()
+  |> int.to_string()
+}
+
+/// Generate tooltip text showing spell stats
 fn spell_tooltip(spell_item: spell.Spell) -> String {
   case spell_item {
     spell.DamageSpell(_, damage_spell) -> {
@@ -1465,6 +1622,7 @@ fn spell_tooltip(spell_item: spell.Spell) -> String {
           <> float.to_string(float.to_precision(damage_spell.mana_cost, 1)),
       ]
 
+      // Add cast delay if non-zero
       let stats = case damage_spell.cast_delay_addition {
         0.0 -> stats
         delay -> [
@@ -1475,6 +1633,7 @@ fn spell_tooltip(spell_item: spell.Spell) -> String {
         ]
       }
 
+      // Add critical chance if non-zero
       let stats = case damage_spell.critical_chance {
         0.0 -> stats
         crit -> {
@@ -1484,6 +1643,7 @@ fn spell_tooltip(spell_item: spell.Spell) -> String {
         }
       }
 
+      // Add spread if non-zero
       let stats = case damage_spell.spread {
         0.0 -> stats
         spread -> [
@@ -1494,17 +1654,298 @@ fn spell_tooltip(spell_item: spell.Spell) -> String {
 
       string.join(list.reverse(stats), "\n")
     }
-    spell.ModifierSpell(_, _) -> "Modifier spell"
-    spell.MulticastSpell(_, _) -> "Multicast spell"
+    spell.ModifierSpell(_, modifier_spell) -> {
+      let stats = [modifier_spell.name, "─────────────"]
+
+      // Damage
+      let stats = case
+        modifier_spell.damage_multiplier,
+        modifier_spell.damage_addition
+      {
+        1.0, 0.0 -> stats
+        mult, add -> {
+          let text = case mult, add {
+            1.0, _ -> "Damage: +" <> float.to_string(float.to_precision(add, 1))
+            _, 0.0 ->
+              "Damage: x" <> float.to_string(float.to_precision(mult, 2))
+            _, _ ->
+              "Damage: +"
+              <> float.to_string(float.to_precision(add, 1))
+              <> ", x"
+              <> float.to_string(float.to_precision(mult, 2))
+          }
+          [text, ..stats]
+        }
+      }
+
+      // Speed
+      let stats = case
+        modifier_spell.projectile_speed_multiplier,
+        modifier_spell.projectile_speed_addition
+      {
+        1.0, 0.0 -> stats
+        mult, add -> {
+          let text = case mult, add {
+            1.0, _ -> "Speed: +" <> float.to_string(float.to_precision(add, 1))
+            _, 0.0 -> "Speed: x" <> float.to_string(float.to_precision(mult, 2))
+            _, _ ->
+              "Speed: +"
+              <> float.to_string(float.to_precision(add, 1))
+              <> ", x"
+              <> float.to_string(float.to_precision(mult, 2))
+          }
+          [text, ..stats]
+        }
+      }
+
+      // Lifetime
+      let stats = case
+        modifier_spell.projectile_lifetime_multiplier,
+        modifier_spell.projectile_lifetime_addition
+      {
+        1.0, 0.0 -> stats
+        mult, add -> {
+          let text = case mult, add {
+            1.0, _ ->
+              "Lifetime: +"
+              <> float.to_string(float.to_precision(add, 1))
+              <> "s"
+            _, 0.0 ->
+              "Lifetime: x" <> float.to_string(float.to_precision(mult, 2))
+            _, _ ->
+              "Lifetime: +"
+              <> float.to_string(float.to_precision(add, 1))
+              <> "s, x"
+              <> float.to_string(float.to_precision(mult, 2))
+          }
+          [text, ..stats]
+        }
+      }
+
+      // Size
+      let stats = case
+        modifier_spell.projectile_size_multiplier,
+        modifier_spell.projectile_size_addition
+      {
+        1.0, 0.0 -> stats
+        mult, add -> {
+          let text = case mult, add {
+            1.0, _ -> "Size: +" <> float.to_string(float.to_precision(add, 1))
+            _, 0.0 -> "Size: x" <> float.to_string(float.to_precision(mult, 2))
+            _, _ ->
+              "Size: +"
+              <> float.to_string(float.to_precision(add, 1))
+              <> ", x"
+              <> float.to_string(float.to_precision(mult, 2))
+          }
+          [text, ..stats]
+        }
+      }
+
+      // Cast delay
+      let stats = case
+        modifier_spell.cast_delay_multiplier,
+        modifier_spell.cast_delay_addition
+      {
+        1.0, 0.0 -> stats
+        mult, add -> {
+          let text = case mult, add {
+            1.0, _ ->
+              "Cast Delay: +"
+              <> float.to_string(float.to_precision(add, 2))
+              <> "s"
+            _, 0.0 ->
+              "Cast Delay: x" <> float.to_string(float.to_precision(mult, 2))
+            _, _ ->
+              "Cast Delay: +"
+              <> float.to_string(float.to_precision(add, 2))
+              <> "s, x"
+              <> float.to_string(float.to_precision(mult, 2))
+          }
+          [text, ..stats]
+        }
+      }
+
+      // Critical chance
+      let stats = case
+        modifier_spell.critical_chance_multiplier,
+        modifier_spell.critical_chance_addition
+      {
+        1.0, 0.0 -> stats
+        mult, add -> {
+          let text = case mult, add {
+            1.0, _ -> {
+              let percent = float.to_string(float.to_precision(add *. 100.0, 1))
+              "Crit Chance: +" <> percent <> "%"
+            }
+            _, 0.0 ->
+              "Crit Chance: x" <> float.to_string(float.to_precision(mult, 2))
+            _, _ -> {
+              let percent = float.to_string(float.to_precision(add *. 100.0, 1))
+              "Crit Chance: +"
+              <> percent
+              <> "%, x"
+              <> float.to_string(float.to_precision(mult, 2))
+            }
+          }
+          [text, ..stats]
+        }
+      }
+
+      // Spread
+      let stats = case
+        modifier_spell.spread_multiplier,
+        modifier_spell.spread_addition
+      {
+        1.0, 0.0 -> stats
+        mult, add -> {
+          let text = case mult, add {
+            1.0, _ ->
+              "Spread: +" <> float.to_string(float.to_precision(add, 1)) <> "°"
+            _, 0.0 ->
+              "Spread: x" <> float.to_string(float.to_precision(mult, 2))
+            _, _ ->
+              "Spread: +"
+              <> float.to_string(float.to_precision(add, 1))
+              <> "°, x"
+              <> float.to_string(float.to_precision(mult, 2))
+          }
+          [text, ..stats]
+        }
+      }
+
+      // Mana cost
+      let stats = case modifier_spell.mana_cost {
+        0.0 -> stats
+        cost -> [
+          "Mana: " <> float.to_string(float.to_precision(cost, 1)),
+          ..stats
+        ]
+      }
+
+      string.join(list.reverse(stats), "\n")
+    }
+    spell.MulticastSpell(_, multicast_spell) -> {
+      let count_text = case multicast_spell.spell_count {
+        spell.Fixed(n) -> "Casts " <> int.to_string(n) <> " spells"
+        spell.AllRemaining -> "Casts all remaining spells"
+      }
+
+      string.join(
+        [
+          multicast_spell.name,
+          "─────────────",
+          count_text,
+          "Mana: "
+            <> float.to_string(float.to_precision(multicast_spell.mana_cost, 1)),
+        ],
+        "\n",
+      )
+    }
   }
 }
 
-fn float_to_string_rounded(value: Float) -> String {
-  float.to_string(float.to_precision(value, 0))
+fn render_cast_delay_bar(
+  time_since_last_cast: Float,
+  cast_delay: Float,
+  recharge_time: Float,
+  current_spell_index: Int,
+  wand_slot_count: Int,
+  is_recharging: Bool,
+) -> element.Element(Msg) {
+  // Determine if we're ready to cast or still waiting
+  let is_ready = time_since_last_cast >=. cast_delay
+
+  // Calculate wait time based on phase
+  let max_delay = float.max(cast_delay, recharge_time)
+
+  // Calculate progress based on which phase we're in
+  let #(_progress, percentage) = case is_recharging, is_ready {
+    True, _ -> {
+      // During recharge (wand reload): show single bar from start to ready
+      // Timer goes from (cast_delay - max_delay) to cast_delay
+      // Progress goes from 0% to 100% over max_delay duration
+      let start_time = cast_delay -. max_delay
+      let prog = case max_delay >. 0.0 {
+        True -> {
+          let elapsed = time_since_last_cast -. start_time
+          float.max(0.0, float.min(1.0, elapsed /. max_delay))
+        }
+        False -> 1.0
+      }
+      #(prog, prog *. 100.0)
+    }
+    False, True -> {
+      // Ready to cast
+      #(1.0, 100.0)
+    }
+    False, False -> {
+      // During normal cast delay: progress from 0 to cast_delay
+      let prog = float.min(1.0, time_since_last_cast /. cast_delay)
+      #(prog, prog *. 100.0)
+    }
+  }
+
+  let bar_color = case is_recharging, is_ready {
+    True, _ -> "bg-red-500"
+    False, True -> "bg-green-500"
+    False, False -> "bg-yellow-500"
+  }
+
+  // Check if next cast will wrap
+  let will_wrap = current_spell_index >= wand_slot_count && wand_slot_count > 0
+  let wrapped_index = case wand_slot_count {
+    0 -> 0
+    _ -> current_spell_index % wand_slot_count
+  }
+
+  html.div([attribute.class("mb-2")], [
+    // Cast delay label and current spell index
+    html.div(
+      [attribute.class("flex justify-between text-xs text-gray-300 mb-1")],
+      [
+        html.span([], [
+          html.text(case is_recharging, is_ready {
+            True, _ -> "Recharging..."
+            False, True -> "Ready to cast!"
+            False, False -> "Cast delay..."
+          }),
+        ]),
+        html.span([attribute.class("flex items-center gap-1")], [
+          html.text("Next: " <> int.to_string(wrapped_index)),
+          case will_wrap {
+            True ->
+              html.span([attribute.class("text-purple-400 font-bold")], [
+                html.text("↻"),
+              ])
+            False -> html.span([], [])
+          },
+        ]),
+      ],
+    ),
+    // Progress bar
+    html.div(
+      [
+        attribute.class(
+          "w-full h-2 bg-gray-700 rounded-full overflow-hidden border border-gray-600",
+        ),
+      ],
+      [
+        html.div(
+          [
+            attribute.class(bar_color <> " h-full"),
+            attribute.style("width", float.to_string(percentage) <> "%"),
+          ],
+          [],
+        ),
+      ],
+    ),
+  ])
 }
 
 pub fn start(wrapper: fn(UiToGameMsg) -> a) -> Nil {
-  let app = lustre.application(init, update, view)
-  let assert Ok(_) = lustre.start(app, "#ui", wrapper)
+  let assert Ok(_) =
+    lustre.application(init, update, view)
+    |> lustre.start("#ui", wrapper)
   Nil
 }

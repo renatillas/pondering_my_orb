@@ -1,11 +1,13 @@
 import gleam/dict.{type Dict}
 import gleam/option.{type Option, None}
 import pondering_my_orb/camera
+import pondering_my_orb/chest
 import pondering_my_orb/damage_number
 import pondering_my_orb/enemy.{type Enemy}
 import pondering_my_orb/id.{type Id}
 import pondering_my_orb/loot
 import pondering_my_orb/map
+import pondering_my_orb/perk
 import pondering_my_orb/player
 import pondering_my_orb/score
 import pondering_my_orb/spell
@@ -58,6 +60,8 @@ pub type Model {
     // Loot System
     loot_drops: List(loot.LootDrop),
     next_loot_drop_id: Int,
+    // Chests
+    chests: List(chest.Chest),
     // Damage Numbers
     damage_numbers: List(damage_number.DamageNumber),
     next_damage_number_id: Int,
@@ -67,6 +71,8 @@ pub type Model {
     showing_spell_rewards: Bool,
     // Wand selection
     showing_wand_selection: Bool,
+    // Perk slot machine
+    showing_perk_slot_machine: Bool,
     // Pause state
     is_paused: Bool,
     // Debug menu
@@ -88,12 +94,18 @@ pub type Msg {
   EnemySpawnStarted(Int)
   EnemySpawned
   EnemySpawnIntervalDecreased
-  EnemyAttacksPlayer(damage: Float, enemy_position: Vec3(Float))
+  EnemyAttacksPlayer(
+    enemy_id: Id,
+    damage: Float,
+    enemy_position: Vec3(Float),
+  )
   // Projectiles
   ProjectileDamagedEnemy(Id, Float, Vec3(Float), List(spell.SpellEffect))
   EnemyKilled(Id)
   // XP & Leveling
   PlayerLeveledUp(new_level: Int)
+  // Chests
+  ChestOpened(chest_id: Id, perk: perk.Perk)
   // Camera
   PointerLocked
   PointerLockFailed
@@ -129,10 +141,12 @@ pub fn init_model() -> Model {
     xp_animation: None,
     loot_drops: [],
     next_loot_drop_id: 0,
+    chests: chest.create_map_chests(0),
     damage_numbers: [],
     next_damage_number_id: 0,
     showing_spell_rewards: False,
     showing_wand_selection: False,
+    showing_perk_slot_machine: False,
     is_paused: False,
     is_debug_menu_open: False,
     score: score.init(),
