@@ -72,8 +72,8 @@ pub fn render(
 
   // Font size and color depend on if it's a critical hit
   let #(font_size, color) = case number.is_critical {
-    True -> #("3.5em", "#FFFF00")
-    // Yellow for crits, bigger
+    True -> #("5.0em", "#FF6600")
+    // Orange for Big Bonk crits, much bigger!
     False -> #("2.5em", "#FFFFFF")
     // White for normal
   }

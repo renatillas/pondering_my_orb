@@ -42,37 +42,34 @@ pub fn basic_enemy_not_elite_test() {
   assert basic.xp_value == 10
 }
 
-pub fn perk_health_boost_increases_health_test() {
+pub fn perk_fragile_strength_halves_health_test() {
   let initial_player = player.init()
-  let perk_value = perk.HealthBoost(1.5)
-  // 50% boost
+  let perk_value = perk.FragileStrength
 
   let boosted_player = player.apply_perk(initial_player, perk_value)
 
-  // Max health should be 1.5x the original
-  assert boosted_player.max_health == initial_player.max_health *. 1.5
+  // Max health should be halved
+  assert boosted_player.max_health == initial_player.max_health /. 2.0
 }
 
-pub fn perk_speed_boost_increases_speed_test() {
+pub fn perk_vampirism_adds_to_perks_list_test() {
   let initial_player = player.init()
-  let perk_value = perk.SpeedBoost(1.25)
-  // 25% boost
+  let perk_value = perk.Vampirism(0.1)
 
   let boosted_player = player.apply_perk(initial_player, perk_value)
 
-  // Speed should be 1.25x the original
-  assert boosted_player.speed == initial_player.speed *. 1.25
+  // Vampirism should be added to the perks list
+  assert boosted_player.perks == [perk_value]
 }
 
-pub fn perk_mana_regen_boost_increases_regen_test() {
+pub fn perk_turbo_skates_adds_to_perks_list_test() {
   let initial_player = player.init()
-  let perk_value = perk.ManaRegenBoost(1.3)
+  let perk_value = perk.TurboSkates(0.05)
 
   let boosted_player = player.apply_perk(initial_player, perk_value)
 
-  // Mana regen should be increased
-  assert boosted_player.wand.mana_recharge_rate
-    == initial_player.wand.mana_recharge_rate *. 1.3
+  // TurboSkates should be added to the perks list
+  assert boosted_player.perks == [perk_value]
 }
 
 pub fn loot_drop_can_be_picked_up_when_close_test() {
@@ -167,8 +164,7 @@ pub fn player_pickup_loot_applies_wand_test() {
 }
 
 pub fn player_pickup_loot_applies_perk_test() {
-  let perk_value = perk.SpeedBoost(2.0)
-  // Double speed
+  let perk_value = perk.BloodThirst(10.0)
 
   // Create a proper physics body for the test
   let physics_body =
@@ -191,7 +187,6 @@ pub fn player_pickup_loot_applies_perk_test() {
 
   let initial_player =
     player.init() |> player.with_position(Vec3(1.0, 0.0, 1.0))
-  let original_speed = initial_player.speed
 
   let #(updated_player, picked_up_ids) =
     player.pickup_loot(initial_player, [loot_drop], 2.0)
@@ -199,15 +194,14 @@ pub fn player_pickup_loot_applies_perk_test() {
   // Player should have picked up the loot
   assert picked_up_ids == [id.loot_drop(2)]
 
-  // Player's speed should be doubled
-  assert updated_player.speed == original_speed *. 2.0
+  // BloodThirst should be added to perks list
+  assert updated_player.perks == [perk_value]
 }
 
-pub fn perk_info_displays_correct_percentage_test() {
-  let health_boost = perk.HealthBoost(1.25)
-  // 25% boost
-  let info = perk.get_info(health_boost)
+pub fn perk_info_displays_correct_info_test() {
+  let beefy_ring = perk.BeefyRing(0.2)
+  let info = perk.get_info(beefy_ring)
 
-  assert info.name == "Health Boost"
-  assert info.description == "Increases max health by 25%"
+  assert info.name == "Beefy Ring"
+  assert info.description == "+20% damage per 100 max HP"
 }

@@ -128,14 +128,6 @@ pub fn load_assets(cache: asset.AssetCache) -> AssetBundle {
   let assert Ok(spark_explosion_spritesheet) =
     spritesheet.from_grid(spark_explosion_texture, columns: 49, rows: 1)
 
-  let spark_explosion_animation =
-    spritesheet.animation(
-      name: "explosion",
-      frames: list.range(1, 44),
-      frame_duration: 40.0,
-      loop: spritesheet.Once,
-    )
-
   // Load spark texture and create spritesheet
   let assert Ok(orbiting_shard_texture) =
     asset.get_texture(cache, "spell_projectiles/orbiting_shard.png")
@@ -322,6 +314,7 @@ pub fn load_assets(cache: asset.AssetCache) -> AssetBundle {
     |> dict.insert(spell.Spark, spark_visuals)
     |> dict.insert(spell.LightningBolt, lightning_bolt_visuals)
     |> dict.insert(spell.OrbitingSpell, orbiting_shard_visuals)
+    |> dict.insert(spell.SparkWithTrigger, spark_visuals)
 
   AssetBundle(
     ground: ground,

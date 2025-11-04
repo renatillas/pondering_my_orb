@@ -28,12 +28,14 @@ pub type Id {
   Fireball
   LightningBolt
   Spark
+  SparkWithTrigger
   Piercing
   DoubleSpell
   AddMana
   AddDamage
   OrbitingSpell
   RapidFire
+  AddTrigger
 }
 
 pub type Spell {
@@ -92,6 +94,7 @@ pub type DamageSpell {
     ui_sprite: String,
     on_hit_effects: List(SpellEffect),
     is_beam: Bool,
+    has_trigger: Bool,
   )
 }
 
@@ -117,6 +120,7 @@ pub type ModifierSpell {
     spread_addition: Float,
     added_effects: List(SpellEffect),
     ui_sprite: String,
+    adds_trigger: Bool,
   )
 }
 
@@ -142,6 +146,7 @@ pub fn default_modifier(name: String, ui_sprite: String) {
     spread_addition: 0.0,
     added_effects: [],
     ui_sprite:,
+    adds_trigger: False,
   )
 }
 
@@ -171,6 +176,7 @@ pub type Projectile {
     animation_state: spritesheet.AnimationState,
     visuals: SpellVisuals,
     projectile_type: ProjectileType,
+    trigger_payload: option.Option(ModifiedSpell),
   )
 }
 
@@ -336,6 +342,7 @@ pub fn spark(visuals: SpellVisuals) -> Spell {
       ui_sprite: "spell_icons/spark.png",
       on_hit_effects: [AreaOfEffect(2.0)],
       is_beam: False,
+      has_trigger: False,
     ),
   )
 }
@@ -358,6 +365,7 @@ pub fn lightning(visuals: SpellVisuals) -> Spell {
       ui_sprite: "spell_icons/lightning_bolt.png",
       on_hit_effects: [AreaOfEffect(10.0)],
       is_beam: True,
+      has_trigger: False,
     ),
   )
 }
@@ -383,6 +391,7 @@ pub fn fireball(visuals: SpellVisuals) -> Spell {
         ApplyBurning(duration: 3.0, damage_per_second: 1.0),
       ],
       is_beam: False,
+      has_trigger: False,
     ),
   )
 }
@@ -405,6 +414,7 @@ pub fn orbiting_spell(visuals: SpellVisuals) -> Spell {
       ui_sprite: "spell_icons/orbiting_shards.png",
       on_hit_effects: [],
       is_beam: False,
+      has_trigger: False,
     ),
   )
 }
@@ -462,6 +472,41 @@ pub fn piercing() -> Spell {
       ..default_modifier("Piercing", "spell_icons/piercing.png"),
       mana_cost: 130.0,
       added_effects: [PiercingShot],
+    ),
+  )
+}
+
+/// Spark with Trigger - fires a projectile that casts another spell upon collision
+pub fn spark_with_trigger(visuals: SpellVisuals) -> Spell {
+  DamageSpell(
+    id: SparkWithTrigger,
+    kind: Damage(
+      name: "Spark with Trigger",
+      damage: 3.0,
+      projectile_speed: 50.0,
+      projectile_lifetime: 2.0,
+      mana_cost: 10.0,
+      projectile_size: 1.0,
+      cast_delay_addition: 0.05,
+      critical_chance: 0.05,
+      spread: -1.0,
+      visuals:,
+      ui_sprite: "spell_icons/spark_trigger.png",
+      on_hit_effects: [AreaOfEffect(2.0)],
+      is_beam: False,
+      has_trigger: True,
+    ),
+  )
+}
+
+/// Add Trigger - makes the next projectile cast another spell upon collision
+pub fn add_trigger() -> Spell {
+  ModifierSpell(
+    id: AddTrigger,
+    kind: Modifier(
+      ..default_modifier("Add Trigger", "spell_icons/add_trigger.png"),
+      mana_cost: 10.0,
+      adds_trigger: True,
     ),
   )
 }
@@ -567,6 +612,7 @@ fn realign_orbiting_projectiles(
           orbit_radius: radius,
           orbit_speed: speed,
         ),
+        trigger_payload: p.trigger_payload,
       )
     })
 
@@ -578,6 +624,31 @@ fn normalize_angle(angle: Float) -> Float {
   let two_pi = maths.pi() *. 2.0
   let normalized = angle -. two_pi *. float.floor(angle /. two_pi)
   normalized
+}
+
+/// Create a triggered projectile from a payload spell
+fn create_triggered_projectile(
+  parent_id: Int,
+  payload: ModifiedSpell,
+  position: Vec3(Float),
+  direction: Vec3(Float),
+) -> Projectile {
+  let base_spell = get_base_damage_spell(payload)
+
+  // Generate unique ID for triggered projectile (parent_id * 10000 to avoid collisions)
+  let triggered_id = parent_id * 10_000 + 1
+
+  Projectile(
+    id: triggered_id,
+    spell: payload,
+    position: position,
+    direction: direction,
+    time_alive: 0.0,
+    animation_state: spritesheet.initial_state("projectile"),
+    visuals: base_spell.visuals,
+    projectile_type: Standard,
+    trigger_payload: option.None,
+  )
 }
 
 pub fn update(
@@ -596,12 +667,12 @@ pub fn update(
     realign_orbiting_projectiles(updated_projectiles, player_position)
 
   // Check each projectile against each enemy for collisions
-  let #(hits, remaining_projectiles) =
+  let #(hits, remaining_projectiles, triggered_projectiles) =
     list.fold(
       over: aligned_projectiles,
-      from: #([], []),
+      from: #([], [], []),
       with: fn(acc, projectile) {
-        let #(hits, remaining) = acc
+        let #(hits, remaining, triggered) = acc
 
         // Handle beams differently - they only hit on spawn, but persist visually
         case projectile.projectile_type {
@@ -632,14 +703,30 @@ pub fn update(
                         animation: projectile.visuals.hit_animation,
                         spell_effects: base_spell.on_hit_effects,
                       )
-                    #([hit, ..hits], [projectile, ..remaining])
+
+                    // Spawn triggered projectile if this spell has a trigger payload
+                    let new_triggered = case projectile.trigger_payload {
+                      option.Some(payload) -> {
+                        let triggered_proj =
+                          create_triggered_projectile(
+                            projectile.id,
+                            payload,
+                            target_position,
+                            projectile.direction,
+                          )
+                        [triggered_proj, ..triggered]
+                      }
+                      option.None -> triggered
+                    }
+
+                    #([hit, ..hits], [projectile, ..remaining], new_triggered)
                   }
-                  Error(_) -> #(hits, [projectile, ..remaining])
+                  Error(_) -> #(hits, [projectile, ..remaining], triggered)
                 }
               }
               False -> {
                 // Not first frame - just keep rendering
-                #(hits, [projectile, ..remaining])
+                #(hits, [projectile, ..remaining], triggered)
               }
             }
           }
@@ -666,13 +753,33 @@ pub fn update(
                     animation: projectile.visuals.hit_animation,
                     spell_effects: base_spell.on_hit_effects,
                   )
+
+                // Spawn triggered projectile if this spell has a trigger payload
+                let new_triggered = case projectile.trigger_payload {
+                  option.Some(payload) -> {
+                    let triggered_proj =
+                      create_triggered_projectile(
+                        projectile.id,
+                        payload,
+                        projectile.position,
+                        projectile.direction,
+                      )
+                    [triggered_proj, ..triggered]
+                  }
+                  option.None -> triggered
+                }
+
                 // Keep piercing projectiles in remaining list
                 case has_piercing(base_spell.on_hit_effects) {
-                  True -> #([hit, ..hits], [projectile, ..remaining])
-                  False -> #([hit, ..hits], remaining)
+                  True -> #(
+                    [hit, ..hits],
+                    [projectile, ..remaining],
+                    new_triggered,
+                  )
+                  False -> #([hit, ..hits], remaining, new_triggered)
                 }
               }
-              Error(_) -> #(hits, [projectile, ..remaining])
+              Error(_) -> #(hits, [projectile, ..remaining], triggered)
             }
           }
           Orbiting(..) -> {
@@ -698,18 +805,38 @@ pub fn update(
                     spell_effects: base_spell.on_hit_effects,
                   )
 
-                #([hit, ..hits], remaining)
+                // Spawn triggered projectile if this spell has a trigger payload
+                let new_triggered = case projectile.trigger_payload {
+                  option.Some(payload) -> {
+                    let triggered_proj =
+                      create_triggered_projectile(
+                        projectile.id,
+                        payload,
+                        projectile.position,
+                        projectile.direction,
+                      )
+                    [triggered_proj, ..triggered]
+                  }
+                  option.None -> triggered
+                }
+
+                // Orbiting projectiles don't get destroyed, they stay in remaining
+                #([hit, ..hits], remaining, new_triggered)
               }
-              Error(_) -> #(hits, [projectile, ..remaining])
+              Error(_) -> #(hits, [projectile, ..remaining], triggered)
             }
           }
         }
       },
     )
 
+  // Combine remaining projectiles with newly triggered projectiles
+  let all_projectiles =
+    list.append(remaining_projectiles, triggered_projectiles)
+
   // Filter out projectiles that have exceeded their lifetime
   let final_projectiles =
-    remaining_projectiles
+    all_projectiles
     |> list.fold(from: [], with: fn(acc, projectile) {
       case projectile.time_alive <. projectile.spell.final_lifetime {
         True -> [projectile, ..acc]
@@ -796,6 +923,7 @@ fn update_position(
         ..projectile,
         time_alive: new_time_alive,
         animation_state: new_animation_state,
+        trigger_payload: projectile.trigger_payload,
       )
     Standard -> {
       let Vec3(x, y, z) = projectile.position
@@ -811,6 +939,7 @@ fn update_position(
         position: Vec3(new_x, new_y, new_z),
         time_alive: new_time_alive,
         animation_state: new_animation_state,
+        trigger_payload: projectile.trigger_payload,
       )
     }
     Orbiting(
@@ -829,6 +958,7 @@ fn update_position(
           orbit_radius: radius,
           orbit_speed: speed,
         ),
+        trigger_payload: projectile.trigger_payload,
       )
     }
   }

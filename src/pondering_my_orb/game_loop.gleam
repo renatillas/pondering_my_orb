@@ -160,6 +160,14 @@ pub fn handle_tick(
       ui.LootPickedUp,
     )
 
+  // Check for chest opening
+  let #(updated_chests, chest_opening_effects) =
+    collision_handler.open_chests(
+      model.chests,
+      player_with_xp.position,
+      game_state.ChestOpened,
+    )
+
   let player = player_with_xp
 
   // Update damage numbers
@@ -232,6 +240,7 @@ pub fn handle_tick(
       level_up_effect,
       interval_decrease_effect,
       effect.batch(loot_pickup_effects),
+      effect.batch(chest_opening_effects),
       debug_menu_effect,
     ])
 
@@ -246,6 +255,7 @@ pub fn handle_tick(
       enemies: enemies,
       xp_shards: remaining_shards,
       loot_drops: remaining_loot,
+      chests: updated_chests,
       damage_numbers: updated_damage_numbers,
       pending_player_knockback: None,
       score: new_score,
@@ -261,12 +271,14 @@ fn calculate_time_scale(model: Model) -> Float {
   case
     model.showing_spell_rewards,
     model.showing_wand_selection,
+    model.showing_perk_slot_machine,
     model.is_paused
   {
-    True, _, _ -> 0.0
-    _, True, _ -> 0.0
-    _, _, True -> 0.0
-    False, False, False -> 1.0
+    True, _, _, _ -> 0.0
+    _, True, _, _ -> 0.0
+    _, _, True, _ -> 0.0
+    _, _, _, True -> 0.0
+    False, False, False, False -> 1.0
   }
 }
 

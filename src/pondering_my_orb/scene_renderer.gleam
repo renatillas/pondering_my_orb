@@ -2,6 +2,7 @@ import gleam/bool
 import gleam/list
 import gleam/option.{Some}
 import pondering_my_orb/camera as game_camera
+import pondering_my_orb/chest
 import pondering_my_orb/damage_number
 import pondering_my_orb/enemy
 import pondering_my_orb/game_state.{type Model, Playing}
@@ -54,6 +55,9 @@ pub fn render(model: Model) -> scene.Node(id.Id) {
   // Render loot drops
   let loot_drops = list.map(model.loot_drops, loot.render)
 
+  // Render chests
+  let chests = list.map(model.chests, chest.render)
+
   // Render damage numbers
   let damage_numbers =
     list.map(model.damage_numbers, damage_number.render(
@@ -76,6 +80,7 @@ pub fn render(model: Model) -> scene.Node(id.Id) {
       explosions,
       xp_shards,
       loot_drops,
+      chests,
       damage_numbers,
       [
         player.view(id.player(), model.player),
