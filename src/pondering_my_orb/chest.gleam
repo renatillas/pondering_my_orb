@@ -10,12 +10,7 @@ import vec/vec3.{type Vec3, Vec3}
 
 /// Represents a chest in the world that contains a perk
 pub type Chest {
-  Chest(
-    id: Id,
-    position: Vec3(Float),
-    is_opened: Bool,
-    perk: Perk,
-  )
+  Chest(id: Id, position: Vec3(Float), is_opened: Bool, perk: Perk)
 }
 
 /// Create a new chest at a position with a random perk
@@ -37,9 +32,7 @@ pub fn create_map_chests(start_id: Int) -> List(Chest) {
     Vec3(0.0, 0.5, -20.0),
   ]
 
-  list.index_map(positions, fn(pos, idx) {
-    new(id.chest(start_id + idx), pos)
-  })
+  list.index_map(positions, fn(pos, idx) { new(id.chest(start_id + idx), pos) })
 }
 
 /// Mark a chest as opened

@@ -9,15 +9,16 @@ import lustre/element/html
 import lustre/event
 import pondering_my_orb/spell
 
-pub type Msg {
+pub type Msg(inventory_msg) {
   SpellRewardClicked(spell.Spell)
   DoneWithLevelUp
+  InventoryMsg(inventory_msg)
 }
 
 pub fn view(
   rewards: List(spell.Spell),
-  inventory_section: element.Element(parent_msg),
-) -> element.Element(Msg) {
+  inventory_section: element.Element(inventory_msg),
+) -> element.Element(Msg(inventory_msg)) {
   html.div(
     [
       attribute.class(
@@ -47,14 +48,21 @@ pub fn view(
               [html.text("LEVEL UP!")],
             ),
             html.p([attribute.class("text-xl text-yellow-100")], [
-              html.text("Choose a spell and organize your inventory"),
+              html.text(case rewards {
+                [] -> "Organize your inventory and click DONE"
+                _ -> "Choose a spell and organize your inventory"
+              }),
             ]),
           ]),
-          // Spell options
-          html.div(
-            [attribute.class("flex gap-6 justify-center mb-8")],
-            list.map(rewards, view_spell_reward_card),
-          ),
+          // Spell options (only show if there are rewards)
+          case rewards {
+            [] -> html.div([], [])
+            _ ->
+              html.div(
+                [attribute.class("flex gap-6 justify-center mb-8")],
+                list.map(rewards, view_spell_reward_card),
+              )
+          },
           // Inventory management section (passed from parent)
           html.div(
             [
@@ -62,7 +70,7 @@ pub fn view(
                 "border-t-4 border-yellow-600/50 pt-6 mb-6 space-y-6",
               ),
             ],
-            [element.map(inventory_section, fn(_) { DoneWithLevelUp })],
+            [element.map(inventory_section, InventoryMsg)],
           ),
           // Done button
           html.div([attribute.class("flex justify-center")], [
@@ -83,7 +91,7 @@ pub fn view(
   )
 }
 
-fn view_spell_reward_card(reward_spell: spell.Spell) -> element.Element(Msg) {
+fn view_spell_reward_card(reward_spell: spell.Spell) -> element.Element(Msg(a)) {
   let #(name, sprite_path, description, type_label, type_color) = case
     reward_spell
   {

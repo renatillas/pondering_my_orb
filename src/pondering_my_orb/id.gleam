@@ -1,7 +1,8 @@
 pub type Id {
   Scene(layer: Layer)
   Camera(layer: Layer)
-  Box(layer: Layer)
+  Map(layer: Layer)
+  Tower(layer: Layer, id: Int)
   Foliage(layer: Layer, id: Int)
   Ambient(layer: Layer)
   Directional(layer: Layer)
@@ -18,6 +19,8 @@ pub type Id {
   LootDrop(layer: Layer, id: Int)
   DamageNumber(layer: Layer, id: Int)
   Chest(layer: Layer, id: Int)
+  Crate(layer: Layer, id: Int)
+  Elevation(layer: Layer, id: Int)
 }
 
 pub type Layer {
@@ -31,8 +34,12 @@ pub fn camera() {
   Camera(layer: MiscelaniaLayer)
 }
 
-pub fn box() {
-  Box(layer: MapLayer)
+pub fn map() {
+  Map(layer: MapLayer)
+}
+
+pub fn tower(id: Int) -> Id {
+  Tower(layer: MapLayer, id: id)
 }
 
 pub fn foliage(id: Int) -> Id {
@@ -97,6 +104,14 @@ pub fn damage_number(id: Int) -> Id {
 
 pub fn chest(id: Int) -> Id {
   Chest(layer: MapLayer, id: id)
+}
+
+pub fn crate(id: Int) -> Id {
+  Crate(layer: MapLayer, id: id)
+}
+
+pub fn elevation(id: Int) -> Id {
+  Elevation(layer: MapLayer, id: id)
 }
 
 pub fn scene() -> Id {

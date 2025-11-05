@@ -1,21 +1,25 @@
 import gleam/dict.{type Dict}
-import gleam/float
-import gleam/int
 import gleam/list
-import gleam/option.{None}
-import pondering_my_orb/map
+import gleam/option
 import pondering_my_orb/spell
 import tiramisu/asset
 import tiramisu/spritesheet
-import tiramisu/transform
-import vec/vec3.{Vec3}
 
 /// Bundle of all loaded game assets
 pub type AssetBundle {
   AssetBundle(
     // Map assets
-    ground: map.Obstacle(map.Ground),
-    foliage: map.Obstacle(map.Box),
+    floor_tile: asset.Object3D,
+    tower_base: asset.Object3D,
+    tower_middle: asset.Object3D,
+    tower_edge: asset.Object3D,
+    tower_top: asset.Object3D,
+    crate: asset.Object3D,
+    crate_small: asset.Object3D,
+    barrel: asset.Object3D,
+    stairs_stone: asset.Object3D,
+    stairs_wood: asset.Object3D,
+    bricks: asset.Object3D,
     // XP system
     xp_spritesheet: spritesheet.Spritesheet,
     xp_animation: spritesheet.Animation,
@@ -36,37 +40,31 @@ pub type AssetBundle {
 
 /// Load all game assets and return a bundle
 pub fn load_assets(cache: asset.AssetCache) -> AssetBundle {
-  // Load tree models
-  let assert Ok(tree01_fbx) =
-    asset.get_fbx(cache, "tree_pack_1.1/models/tree01.fbx")
-  let assert Ok(tree01_texture) =
-    asset.get_texture(cache, "tree_pack_1.1/textures/tree01.png")
-  let assert Ok(tree05_fbx) =
-    asset.get_fbx(cache, "tree_pack_1.1/models/tree05.fbx")
-  let assert Ok(tree05_texture) =
-    asset.get_texture(cache, "tree_pack_1.1/textures/tree05.png")
-  let assert Ok(tree10_fbx) =
-    asset.get_fbx(cache, "tree_pack_1.1/models/tree10.fbx")
-  let assert Ok(tree10_texture) =
-    asset.get_texture(cache, "tree_pack_1.1/textures/tree10.png")
-  let assert Ok(tree15_fbx) =
-    asset.get_fbx(cache, "tree_pack_1.1/models/tree15.fbx")
-  let assert Ok(tree15_texture) =
-    asset.get_texture(cache, "tree_pack_1.1/textures/tree15.png")
+  // Load floor tile
+  let assert Ok(floor_fbx) = asset.get_fbx(cache, "medieval/Models/floor.fbx")
 
-  let foliage_models = [
-    tree01_fbx.scene,
-    tree05_fbx.scene,
-    tree10_fbx.scene,
-    tree15_fbx.scene,
-  ]
+  // Load tower parts
+  let assert Ok(tower_base_fbx) =
+    asset.get_fbx(cache, "medieval/Models/tower-base.fbx")
+  let assert Ok(tower_middle_fbx) =
+    asset.get_fbx(cache, "medieval/Models/tower.fbx")
+  let assert Ok(tower_top_fbx) =
+    asset.get_fbx(cache, "medieval/Models/tower-top.fbx")
+  let assert Ok(tower_edge_fbx) =
+    asset.get_fbx(cache, "medieval/Models/tower-edge.fbx")
 
-  let foliage_textures = [
-    tree01_texture,
-    tree05_texture,
-    tree10_texture,
-    tree15_texture,
-  ]
+  // Load props and decoration
+  let assert Ok(crate_fbx) =
+    asset.get_fbx(cache, "medieval/Models/detail-crate.fbx")
+  let assert Ok(crate_small_fbx) =
+    asset.get_fbx(cache, "medieval/Models/detail-crate-small.fbx")
+  let assert Ok(barrel_fbx) =
+    asset.get_fbx(cache, "medieval/Models/detail-barrel.fbx")
+  let assert Ok(stairs_stone_fbx) =
+    asset.get_fbx(cache, "medieval/Models/stairs-stone.fbx")
+  let assert Ok(stairs_wood_fbx) =
+    asset.get_fbx(cache, "medieval/Models/stairs-wood.fbx")
+  let assert Ok(bricks_fbx) = asset.get_fbx(cache, "medieval/Models/bricks.fbx")
 
   // Load XP coin texture and create spritesheet
   let assert Ok(xp_texture) = asset.get_texture(cache, "spr_coin_azu.png")
@@ -198,9 +196,9 @@ pub fn load_assets(cache: asset.AssetCache) -> AssetBundle {
   // Load player sprite textures (single frame images)
   let assert Ok(mago_idle_texture) =
     asset.get_texture(cache, "player/mago_idle.png")
-  let assert Ok(mago_idle_spritesheet) =
+  let assert Ok(player_idle_spritesheet) =
     spritesheet.from_grid(mago_idle_texture, columns: 1, rows: 1)
-  let mago_idle_animation =
+  let player_idle_animation =
     spritesheet.animation(
       name: "idle",
       frames: [0],
@@ -210,9 +208,9 @@ pub fn load_assets(cache: asset.AssetCache) -> AssetBundle {
 
   let assert Ok(mago_attacking_texture) =
     asset.get_texture(cache, "player/mago_attacking.png")
-  let assert Ok(mago_attacking_spritesheet) =
+  let assert Ok(player_attacking_spritesheet) =
     spritesheet.from_grid(mago_attacking_texture, columns: 1, rows: 1)
-  let mago_attacking_animation =
+  let player_attacking_animation =
     spritesheet.animation(
       name: "attacking",
       frames: [0],
@@ -243,71 +241,6 @@ pub fn load_assets(cache: asset.AssetCache) -> AssetBundle {
       loop: spritesheet.Repeat,
     )
 
-  // Create random tree and bush instances
-  let foliage_instances =
-    list.range(0, 39)
-    |> list.map(fn(_) {
-      let x = { float.random() *. 90.0 } -. 45.0
-      let z = { float.random() *. 90.0 } -. 45.0
-
-      // Random rotation around Y axis for variety
-      let rotation_y = float.random() *. 6.28318
-
-      transform.identity
-      |> transform.with_position(vec3.Vec3(x, 0.0, z))
-      |> transform.with_euler_rotation(vec3.Vec3(0.0, rotation_y, 0.0))
-      |> transform.with_scale(vec3.Vec3(0.03, 0.03, 0.03))
-    })
-
-  // Interleave models and textures with transforms by repeating them enough times
-  let repeated_models =
-    list.flatten([
-      foliage_models,
-      foliage_models,
-      foliage_models,
-      foliage_models,
-      foliage_models,
-      foliage_models,
-    ])
-
-  let repeated_textures =
-    list.flatten([
-      foliage_textures,
-      foliage_textures,
-      foliage_textures,
-      foliage_textures,
-      foliage_textures,
-      foliage_textures,
-    ])
-
-  // Create triplets of (model, texture, transform)
-  let foliage_triplets =
-    list.zip(repeated_models, repeated_textures)
-    |> list.zip(foliage_instances)
-    |> list.map(fn(pair) {
-      let #(#(model, texture), transform) = pair
-      #(model, texture, transform)
-    })
-    |> list.take(40)
-
-  let foliage = map.foliage(foliage_triplets)
-
-  let ground =
-    list.flatten(
-      list.map(list.range(0, 36), fn(x) {
-        list.map(list.range(0, 36), fn(z) {
-          transform.identity
-          |> transform.with_position(Vec3(
-            int.to_float(x) -. 18.0,
-            0.0,
-            int.to_float(z) -. 18.0,
-          ))
-          |> transform.with_scale(Vec3(0.05, 0.05, 0.05))
-        })
-      }),
-    )
-    |> map.ground
-
   let spell_visuals =
     dict.new()
     |> dict.insert(spell.Fireball, fireball_visuals)
@@ -317,39 +250,79 @@ pub fn load_assets(cache: asset.AssetCache) -> AssetBundle {
     |> dict.insert(spell.SparkWithTrigger, spark_visuals)
 
   AssetBundle(
-    ground: ground,
-    foliage: foliage,
-    xp_spritesheet: xp_spritesheet,
-    xp_animation: xp_animation,
-    enemy1_spritesheet: enemy1_spritesheet,
-    enemy1_animation: enemy1_animation,
-    enemy2_spritesheet: enemy2_spritesheet,
-    enemy2_animation: enemy2_animation,
-    player_idle_spritesheet: mago_idle_spritesheet,
-    player_idle_animation: mago_idle_animation,
-    player_attacking_spritesheet: mago_attacking_spritesheet,
-    player_attacking_animation: mago_attacking_animation,
-    spell_visuals: spell_visuals,
+    floor_tile: floor_fbx.scene,
+    tower_base: tower_base_fbx.scene,
+    tower_middle: tower_middle_fbx.scene,
+    tower_edge: tower_edge_fbx.scene,
+    tower_top: tower_top_fbx.scene,
+    crate: crate_fbx.scene,
+    crate_small: crate_small_fbx.scene,
+    barrel: barrel_fbx.scene,
+    stairs_stone: stairs_stone_fbx.scene,
+    stairs_wood: stairs_wood_fbx.scene,
+    bricks: bricks_fbx.scene,
+    xp_spritesheet:,
+    xp_animation:,
+    enemy1_spritesheet:,
+    enemy1_animation:,
+    enemy2_spritesheet:,
+    enemy2_animation:,
+    player_idle_spritesheet:,
+    player_idle_animation:,
+    player_attacking_spritesheet:,
+    player_attacking_animation:,
+    spell_visuals:,
   )
 }
 
 /// List of all assets to load
 pub fn get_asset_list() -> List(asset.AssetType) {
   [
-    // Load a selection of tree models
-    asset.FBXAsset("tree_pack_1.1/models/tree01.fbx", None),
-    asset.FBXAsset("tree_pack_1.1/models/tree05.fbx", None),
-    asset.FBXAsset("tree_pack_1.1/models/tree10.fbx", None),
-    asset.FBXAsset("tree_pack_1.1/models/tree15.fbx", None),
-    // Load textures for trees and bushes
-    asset.TextureAsset("tree_pack_1.1/textures/tree01.png"),
-    asset.TextureAsset("tree_pack_1.1/textures/tree05.png"),
-    asset.TextureAsset("tree_pack_1.1/textures/tree10.png"),
-    asset.TextureAsset("tree_pack_1.1/textures/tree15.png"),
-    asset.TextureAsset("tree_pack_1.1/textures/bush01.png"),
-    asset.TextureAsset("tree_pack_1.1/textures/bush03.png"),
-    asset.TextureAsset("tree_pack_1.1/textures/bush05.png"),
-    // Other assets
+    // Medieval assets
+    asset.FBXAsset(
+      "medieval/Models/floor.fbx",
+      option.Some("medieval/Models/Textures/"),
+    ),
+    asset.FBXAsset(
+      "medieval/Models/tower-base.fbx",
+      option.Some("medieval/Models/Textures/"),
+    ),
+    asset.FBXAsset(
+      "medieval/Models/tower.fbx",
+      option.Some("medieval/Models/Textures/"),
+    ),
+    asset.FBXAsset(
+      "medieval/Models/tower-edge.fbx",
+      option.Some("medieval/Models/Textures/"),
+    ),
+    asset.FBXAsset(
+      "medieval/Models/tower-top.fbx",
+      option.Some("medieval/Models/Textures/"),
+    ),
+    asset.FBXAsset(
+      "medieval/Models/detail-crate.fbx",
+      option.Some("medieval/Models/Textures/"),
+    ),
+    asset.FBXAsset(
+      "medieval/Models/detail-crate-small.fbx",
+      option.Some("medieval/Models/Textures/"),
+    ),
+    asset.FBXAsset(
+      "medieval/Models/detail-barrel.fbx",
+      option.Some("medieval/Models/Textures/"),
+    ),
+    asset.FBXAsset(
+      "medieval/Models/stairs-stone.fbx",
+      option.Some("medieval/Models/Textures/"),
+    ),
+    asset.FBXAsset(
+      "medieval/Models/stairs-wood.fbx",
+      option.Some("medieval/Models/Textures/"),
+    ),
+    asset.FBXAsset(
+      "medieval/Models/bricks.fbx",
+      option.Some("medieval/Models/Textures/"),
+    ),
     asset.TextureAsset("spr_coin_azu.png"),
     asset.TextureAsset("SPRITESHEET_Files/FireBall_2_64x64.png"),
     asset.TextureAsset("SPRITESHEET_Files/Explosion_2_64x64.png"),

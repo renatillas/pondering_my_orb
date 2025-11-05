@@ -23,7 +23,7 @@ import vec/vec3f
 
 const mouse_sensitivity = 0.003
 
-const jumping_speed = 500.0
+const jumping_speed = 12.0
 
 const passive_heal_delay = 6.0
 
@@ -177,7 +177,7 @@ pub fn view(player_id: id.Id, player: Player) {
           |> transform.with_euler_rotation(player.rotation),
         pixel_art: True,
         physics: option.Some(
-          physics.new_rigid_body(physics.Dynamic)
+          physics.new_rigid_body(physics.Kinematic)
           |> physics.with_collider(physics.Capsule(
             offset: transform.identity,
             half_height: 1.0,
@@ -185,10 +185,17 @@ pub fn view(player_id: id.Id, player: Player) {
           ))
           |> physics.with_restitution(0.0)
           |> physics.with_mass(70.0)
-          |> physics.with_friction(0.0)
+          |> physics.with_friction(1.0)
+          |> physics.with_linear_damping(0.0)
+          |> physics.with_body_ccd_enabled()
           |> physics.with_lock_rotation_x()
           |> physics.with_lock_rotation_y()
           |> physics.with_lock_rotation_z()
+          |> physics.with_character_controller(
+            offset: 0.001,
+            up_vector: Vec3(0.0, 1.0, 0.0),
+            slide_enabled: True,
+          )
           |> physics.build(),
         ),
       )
@@ -212,7 +219,7 @@ pub fn view(player_id: id.Id, player: Player) {
         transform: transform.at(player.position)
           |> transform.with_euler_rotation(player.rotation),
         physics: option.Some(
-          physics.new_rigid_body(physics.Dynamic)
+          physics.new_rigid_body(physics.Kinematic)
           |> physics.with_collider(physics.Capsule(
             offset: transform.identity,
             half_height: 1.0,
@@ -221,9 +228,16 @@ pub fn view(player_id: id.Id, player: Player) {
           |> physics.with_restitution(0.0)
           |> physics.with_mass(70.0)
           |> physics.with_friction(0.0)
+          |> physics.with_linear_damping(0.9)
+          |> physics.with_body_ccd_enabled()
           |> physics.with_lock_rotation_x()
           |> physics.with_lock_rotation_y()
           |> physics.with_lock_rotation_z()
+          |> physics.with_character_controller(
+            offset: 0.001,
+            up_vector: Vec3(0.0, 1.0, 0.0),
+            slide_enabled: True,
+          )
           |> physics.build(),
         ),
       )
@@ -238,7 +252,7 @@ pub fn init() -> Player {
 
   new(
     health: 100.0,
-    speed: 10.0,
+    speed: 20.0,
     position: Vec3(0.0, 2.0, 0.0),
     rotation: Vec3(0.0, 0.0, 0.0),
     time_since_taking_damage: 0.0,
@@ -326,12 +340,13 @@ fn calculate_velocity(
   let #(forward_x, forward_z) = directions.0
   let #(right_x, right_z) = directions.1
 
-  let velocity_x = case
-    input.is_action_pressed(input_state, bindings, Forward),
+  let forward_pressed = input.is_action_pressed(input_state, bindings, Forward)
+  let backward_pressed =
     input.is_action_pressed(input_state, bindings, Backward)
-  {
-    True, False -> forward_x *. player_move_speed
-    False, True -> -1.0 *. forward_x *. player_move_speed
+
+  let velocity_x = case forward_pressed, backward_pressed {
+    True, False -> forward_x
+    False, True -> -1.0 *. forward_x
     _, _ -> 0.0
   }
 
@@ -339,8 +354,8 @@ fn calculate_velocity(
     input.is_action_pressed(input_state, bindings, Forward),
     input.is_action_pressed(input_state, bindings, Backward)
   {
-    True, False -> forward_z *. player_move_speed
-    False, True -> -1.0 *. forward_z *. player_move_speed
+    True, False -> forward_z
+    False, True -> -1.0 *. forward_z
     _, _ -> 0.0
   }
 
@@ -348,8 +363,8 @@ fn calculate_velocity(
     input.is_action_pressed(input_state, bindings, Left),
     input.is_action_pressed(input_state, bindings, Right)
   {
-    True, False -> velocity_x +. right_x *. player_move_speed
-    False, True -> velocity_x -. right_x *. player_move_speed
+    True, False -> velocity_x +. right_x
+    False, True -> velocity_x -. right_x
     _, _ -> velocity_x
   }
 
@@ -357,12 +372,15 @@ fn calculate_velocity(
     input.is_action_pressed(input_state, bindings, Left),
     input.is_action_pressed(input_state, bindings, Right)
   {
-    True, False -> velocity_z +. right_z *. player_move_speed
-    False, True -> velocity_z -. right_z *. player_move_speed
+    True, False -> velocity_z +. right_z
+    False, True -> velocity_z -. right_z
     _, _ -> velocity_z
   }
 
-  Vec3(velocity_x, player_velocity.y, velocity_z)
+  Vec3(velocity_x, 0.0, velocity_z)
+  |> vec3f.normalize()
+  |> vec3f.scale(by: player_move_speed)
+  |> vec3.replace_y(player_velocity.y)
 }
 
 pub fn handle_input(
@@ -372,7 +390,7 @@ pub fn handle_input(
   bindings bindings: input.InputBindings(PlayerAction),
   pointer_locked pointer_locked: Bool,
   camera_pitch camera_pitch: Float,
-  physics_world physics_world: physics.PhysicsWorld(id),
+  physics_world physics_world: physics.PhysicsWorld(id.Id),
   pointer_locked_msg pointer_locked_msg: msg,
   pointer_lock_failed_msg pointer_lock_failed_msg: msg,
 ) -> #(Player, Vec3(Float), Float, List(Effect(msg))) {
@@ -446,36 +464,31 @@ pub fn handle_input(
 
 fn calculate_jump(
   player: Player,
-  physics_world: physics.PhysicsWorld(id),
+  _physics_world: physics.PhysicsWorld(id.Id),
   input_state: input.InputState,
   bindings: input.InputBindings(PlayerAction),
 ) -> #(Player, Vec3(Float), Bool) {
-  let raycast_origin =
-    Vec3(player.position.x, player.position.y -. 1.6, player.position.z)
+  // Use stored is_airborne from game state (updated from physics after compute_character_movement)
+  let on_ground = !player.is_airborne
 
-  // Cast ray downward to detect ground
-  let raycast_direction = Vec3(0.0, -1.0, 0.0)
+  // Use just_pressed for jump - more responsive for platformers
+  let jump_just_pressed =
+    input.is_action_just_pressed(input_state, bindings, Jump)
 
-  let on_ground =
-    physics.raycast(
-      physics_world,
-      origin: raycast_origin,
-      direction: raycast_direction,
-      max_distance: 0.0,
-    )
-    |> result.is_ok()
-
-  let is_airborne = !on_ground
-
-  case on_ground, input.is_action_pressed(input_state, bindings, Jump), player.jump_timeout {
-    True, True, 0.0 -> {
+  // Allow jumping if just pressed (no need to hold)
+  case on_ground, jump_just_pressed, player.jump_timeout <=. 0.0 {
+    True, True, True -> {
+      // Note: is_airborne will be updated from physics in game loop after this
       #(
-        Player(..player, jump_timeout: 0.1, is_airborne: True),
+        Player(..player, jump_timeout: 0.1),
         Vec3(0.0, jumping_speed, 0.0),
         True,
       )
     }
-    _, _, _ -> #(Player(..player, is_airborne:), vec3f.zero, is_airborne)
+    _, _, _ -> {
+      // is_airborne will be updated from physics in game loop
+      #(player, vec3f.zero, player.is_airborne)
+    }
   }
 }
 
@@ -493,10 +506,6 @@ pub fn take_damage(player: Player, damage: Float) -> #(Player, Float) {
           current_reflect,
         )
         // Mirror: reflect damage
-        perk.Mirror(reflect_percent) -> #(
-          current_damage,
-          current_reflect +. current_damage *. reflect_percent,
-        )
         _ -> acc
       }
     })
@@ -510,7 +519,7 @@ pub fn take_damage(player: Player, damage: Float) -> #(Player, Float) {
       let has_za_warudo =
         list.any(player.perks, fn(p) {
           case p {
-            perk.ZaWarudo -> True
+            perk.OneLife -> True
             _ -> False
           }
         })
@@ -521,7 +530,7 @@ pub fn take_damage(player: Player, damage: Float) -> #(Player, Float) {
           let remaining_perks =
             list.filter(player.perks, fn(p) {
               case p {
-                perk.ZaWarudo -> False
+                perk.OneLife -> False
                 _ -> True
               }
             })
@@ -549,7 +558,6 @@ pub fn on_enemy_killed(player: Player) -> Player {
   let heal_amount =
     list.fold(player.perks, 0.0, fn(acc, perk_value) {
       case perk_value {
-        perk.BloodThirst(hp_per_kill) -> acc +. hp_per_kill
         _ -> acc
       }
     })
@@ -572,10 +580,6 @@ pub fn get_effective_cast_delay(player: Player) -> Float {
   let cast_speed_bonus =
     list.fold(player.perks, 0.0, fn(acc, perk_value) {
       case perk_value {
-        perk.TurboSkates(bonus_per_speed) -> {
-          // Each point of speed gives a cast speed bonus
-          acc +. player.speed *. bonus_per_speed
-        }
         _ -> acc
       }
     })
@@ -992,7 +996,7 @@ pub fn apply_damage_perks(
           }
 
           // Idle Juice: more damage while standing still
-          perk.IdleJuice(max_bonus, time_to_max) -> {
+          perk.Trance(max_bonus, time_to_max) -> {
             let idle_progress =
               float.min(1.0, player.time_standing_still /. time_to_max)
             let bonus_multiplier = 1.0 +. max_bonus *. idle_progress
@@ -1004,72 +1008,10 @@ pub fn apply_damage_perks(
             )
           }
 
-          // Scarf: more damage while airborne
-          perk.Scarf(multiplier) -> {
-            case player.is_airborne {
-              True -> #(
-                current_damage *. multiplier,
-                already_crit,
-                current_self_damage,
-                current_heal,
-              )
-              False -> acc
-            }
-          }
-
-          // Speed Boi: more damage when below HP threshold
-          perk.SpeedBoi(threshold, multiplier) -> {
-            let hp_percent = player.current_health /. player.max_health
-            case hp_percent <. threshold {
-              True -> #(
-                current_damage *. multiplier,
-                already_crit,
-                current_self_damage,
-                current_heal,
-              )
-              False -> acc
-            }
-          }
-
           // Berserker's Rage: more damage based on missing HP
           perk.BerserkersRage(max_bonus) -> {
             let missing_hp = 1.0 -. player.current_health /. player.max_health
             let bonus_multiplier = 1.0 +. max_bonus *. missing_hp
-            #(
-              current_damage *. bonus_multiplier,
-              already_crit,
-              current_self_damage,
-              current_heal,
-            )
-          }
-
-          // Kevin's Punch: chance to take damage when hitting enemies
-          perk.KevinsPunch(chance, damage_percent) -> {
-            let roll = float.random()
-            case roll <. chance {
-              True -> {
-                let kevin_damage = player.max_health *. damage_percent
-                #(
-                  current_damage,
-                  already_crit,
-                  current_self_damage +. kevin_damage,
-                  current_heal,
-                )
-              }
-              False -> acc
-            }
-          }
-
-          // Vampirism: heal % of damage dealt
-          perk.Vampirism(lifesteal_percent) -> {
-            let heal = current_damage *. lifesteal_percent
-            #(current_damage, already_crit, current_self_damage, current_heal +. heal)
-          }
-
-          // Beefy Ring: more damage per 100 max HP
-          perk.BeefyRing(damage_per_100_hp) -> {
-            let hp_bonus = player.max_health /. 100.0 *. damage_per_100_hp
-            let bonus_multiplier = 1.0 +. hp_bonus
             #(
               current_damage *. bonus_multiplier,
               already_crit,
@@ -1095,16 +1037,6 @@ pub fn apply_damage_perks(
           perk.GlassCannon(damage_mult, _damage_taken_mult) -> {
             #(
               current_damage *. damage_mult,
-              already_crit,
-              current_self_damage,
-              current_heal,
-            )
-          }
-
-          // Fragile Strength: double damage
-          perk.FragileStrength -> {
-            #(
-              current_damage *. 2.0,
               already_crit,
               current_self_damage,
               current_heal,
@@ -1138,36 +1070,11 @@ pub fn apply_perk(player: Player, perk_value: perk.Perk) -> Player {
       Player(..player, perks: [perk_value, ..player.perks])
     }
 
-    perk.FragileStrength -> {
-      // Double damage, half max HP
-      let new_max_health = player.max_health /. 2.0
-      let new_current_health = float.min(player.current_health, new_max_health)
-      Player(
-        ..player,
-        max_health: new_max_health,
-        current_health: new_current_health,
-        perks: [perk_value, ..player.perks],
-      )
-    }
-
-    perk.TurboSkates(_) -> {
-      // Affects cast speed based on movement speed
-      // Applied dynamically during casting
-      Player(..player, perks: [perk_value, ..player.perks])
-    }
-
     // Passive perks stored in perks list and applied during damage calculation or other events
     perk.BigBonk(..)
-    | perk.IdleJuice(..)
-    | perk.Scarf(_)
-    | perk.KevinsPunch(..)
-    | perk.SpeedBoi(..)
+    | perk.Trance(..)
     | perk.BerserkersRage(_)
-    | perk.ZaWarudo
-    | perk.Vampirism(_)
-    | perk.BeefyRing(_)
-    | perk.Execute(..)
-    | perk.Mirror(_)
-    | perk.BloodThirst(_) -> Player(..player, perks: [perk_value, ..player.perks])
+    | perk.OneLife
+    | perk.Execute(..) -> Player(..player, perks: [perk_value, ..player.perks])
   }
 }

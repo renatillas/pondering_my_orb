@@ -119,8 +119,8 @@ pub fn view(camera: Camera) {
         |> postprocessing.add_pass(postprocessing.render_pass())
         // Bloom effect for glowing projectiles and explosions
         |> postprocessing.add_pass(postprocessing.bloom(
-          strength: 0.2,
-          threshold: 0.7,
+          strength: 0.3,
+          threshold: 0.5,
           radius: 0.5,
         ))
         |> postprocessing.add_pass(postprocessing.color_correction(

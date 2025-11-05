@@ -2,7 +2,6 @@ import gleam/bool
 import gleam/dict
 import gleam/float
 import gleam/int
-import gleam/io
 import gleam/javascript/promise
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -20,6 +19,7 @@ import pondering_my_orb/game_state.{
 }
 import pondering_my_orb/id.{type Id}
 import pondering_my_orb/loot
+import pondering_my_orb/map
 import pondering_my_orb/perk
 import pondering_my_orb/player
 import pondering_my_orb/reward_system
@@ -66,7 +66,7 @@ fn init(_ctx: tiramisu.Context(Id)) -> #(Model, Effect(Msg), Option(_)) {
 
   #(
     game_state.init_model(),
-    effect.from(fn(_) { debug.show_collider_wireframes(physics_world, False) }),
+    effect.from(fn(_) { debug.show_collider_wireframes(physics_world, True) }),
     Some(physics_world),
   )
 }
@@ -211,15 +211,10 @@ fn handle_assets_loaded(
     wand.set_spell(
       model.player.wand,
       0,
-      spell.orbiting_spell(
-        dict.get(bundle.spell_visuals, spell.OrbitingSpell)
-        |> result.unwrap(spell.SpellVisuals(
-          projectile_spritesheet: spell.mock_spritesheet(),
-          projectile_animation: spell.mock_animation(),
-          hit_spritesheet: spell.mock_spritesheet(),
-          hit_animation: spell.mock_animation(),
-        )),
-      ),
+      spell.spark({
+        let assert Ok(visuals) = dict.get(bundle.spell_visuals, spell.Spark)
+        visuals
+      }),
     )
   let updated_player =
     player.Player(..model.player, wand: updated_wand)
@@ -229,6 +224,29 @@ fn handle_assets_loaded(
       bundle.player_attacking_spritesheet,
       bundle.player_attacking_animation,
     )
+
+  // Generate tiled floor map with tower
+  let floor_map =
+    map.generate(
+      bundle.floor_tile,
+      bundle.tower_base,
+      bundle.tower_middle,
+      bundle.tower_edge,
+      bundle.tower_top,
+      bundle.crate,
+      bundle.crate_small,
+      bundle.barrel,
+      bundle.stairs_stone,
+      bundle.stairs_wood,
+      bundle.bricks,
+    )
+
+  // Get spawn position on top of the floor
+  let spawn_position = map.get_spawn_position()
+
+  // Update player position to spawn on top of terrain
+  let positioned_player =
+    player.Player(..updated_player, position: spawn_position)
 
   let effects =
     effect.batch([
@@ -248,9 +266,8 @@ fn handle_assets_loaded(
   #(
     game_state.Model(
       ..model,
-      player: updated_player,
-      ground: Some(bundle.ground),
-      foliage: Some(bundle.foliage),
+      player: positioned_player,
+      map: Some(floor_map),
       game_phase: Playing,
       xp_spritesheet: Some(bundle.xp_spritesheet),
       xp_animation: Some(bundle.xp_animation),
@@ -339,8 +356,8 @@ fn handle_enemy_spawned(
   model: Model,
   physics_world: physics.PhysicsWorld(Id),
 ) -> #(Model, Effect(Msg), Option(_)) {
-  // Don't spawn enemies when showing spell rewards or paused
-  use <- bool.guard(model.showing_spell_rewards || model.is_paused, return: #(
+  // Don't spawn enemies when game is frozen
+  use <- bool.guard(game_state.is_game_frozen(model), return: #(
     model,
     effect.none(),
     Some(physics_world),
@@ -354,6 +371,7 @@ fn handle_enemy_spawned(
       enemy1_animation: model.enemy1_animation,
       enemy2_spritesheet: model.enemy2_spritesheet,
       enemy2_animation: model.enemy2_animation,
+      map_size: map.tile_size *. int.to_float(map.tiles_width),
     )
 
   let new_enemy = enemy_spawner.spawn_enemy(spawn_config)
@@ -620,9 +638,6 @@ fn handle_chest_opened(
   physics_world: physics.PhysicsWorld(Id),
   _ctx: tiramisu.Context(Id),
 ) -> #(Model, Effect(Msg), Option(_)) {
-  io.println("=== CHEST OPENED ===")
-  io.println("Perk: " <> perk.get_info(perk_value).name)
-  io.println("Setting showing_perk_slot_machine: True")
   #(
     game_state.Model(..model, showing_perk_slot_machine: True),
     effect.batch([
@@ -667,9 +682,6 @@ fn handle_ui_message(
       let updated_spell_bag =
         spell_bag.add_spell(model.player.spell_bag, selected_spell)
 
-      let spell_count = spell_bag.list_spells(updated_spell_bag) |> list.length
-      io.println("Total spells in bag: " <> int.to_string(spell_count))
-
       let updated_player =
         player.Player(..model.player, spell_bag: updated_spell_bag)
 
@@ -680,8 +692,6 @@ fn handle_ui_message(
       )
     }
     ui.LevelUpComplete -> {
-      io.println("=== LEVEL UP COMPLETE ===")
-
       #(
         game_state.Model(..model, showing_spell_rewards: False),
         effect.request_pointer_lock(
@@ -692,7 +702,6 @@ fn handle_ui_message(
       )
     }
     ui.GamePaused -> {
-      io.println("=== GAME PAUSED ===")
       #(
         game_state.Model(..model, is_paused: True),
         effect.exit_pointer_lock(),
@@ -700,7 +709,6 @@ fn handle_ui_message(
       )
     }
     ui.GameResumed -> {
-      io.println("=== GAME RESUMED ===")
       #(
         game_state.Model(..model, is_paused: False),
         effect.none(),
@@ -779,7 +787,6 @@ fn handle_ui_message(
     }
     // Debug menu handlers
     ui.DebugMenuOpened -> {
-      io.println("=== DEBUG MENU OPENED ===")
       #(
         game_state.Model(..model, is_paused: True, is_debug_menu_open: True),
         effect.batch([
@@ -791,7 +798,6 @@ fn handle_ui_message(
       )
     }
     ui.DebugMenuClosed -> {
-      io.println("=== DEBUG MENU CLOSED ===")
       #(
         game_state.Model(..model, is_paused: False, is_debug_menu_open: False),
         effect.batch([
@@ -888,7 +894,6 @@ fn handle_ui_message(
       )
     }
     ui.PerkSlotMachineStarted -> {
-      io.println("=== PERK SLOT MACHINE STARTED ===")
       // Freeze the game while slot machine is showing
       #(
         game_state.Model(..model, showing_perk_slot_machine: True),
@@ -897,23 +902,15 @@ fn handle_ui_message(
       )
     }
     ui.PerkSlotMachineComplete(perk_value) -> {
-      io.println("=== PERK SLOT MACHINE COMPLETE ===")
-      io.println("Perk: " <> perk.get_info(perk_value).name)
-      // Apply the perk to the player and unfreeze game
+      // Apply the perk to the player and clear the flag - game will automatically unfreeze
       let updated_player = player.apply_perk(model.player, perk_value)
       #(
         game_state.Model(
           ..model,
           player: updated_player,
           showing_perk_slot_machine: False,
-          is_paused: False,
         ),
-        effect.batch([
-          effect.request_pointer_lock(
-            on_success: game_state.PointerLocked,
-            on_error: game_state.PointerLockFailed,
-          ),
-        ]),
+        effect.none(),
         ctx.physics_world,
       )
     }
