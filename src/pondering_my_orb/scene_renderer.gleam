@@ -2,7 +2,6 @@ import gleam/bool
 import gleam/list
 import gleam/option.{Some}
 import pondering_my_orb/camera as game_camera
-import pondering_my_orb/chest
 import pondering_my_orb/damage_number
 import pondering_my_orb/enemy
 import pondering_my_orb/game_state.{type Model, Playing}
@@ -25,13 +24,8 @@ pub fn render(model: Model) -> scene.Node(id.Id) {
 
   let camera = game_camera.view(model.camera)
 
-  let ground = case model.ground {
-    Some(ground) -> [map.view_ground(ground, id.ground())]
-    _ -> []
-  }
-
-  let foliage = case model.foliage {
-    Some(foliage) -> [map.view_foliage(foliage, id.box())]
+  let map_chunks = case model.map {
+    Some(map) -> map.view(map)
     _ -> []
   }
 
@@ -55,9 +49,6 @@ pub fn render(model: Model) -> scene.Node(id.Id) {
   // Render loot drops
   let loot_drops = list.map(model.loot_drops, loot.render)
 
-  // Render chests
-  let chests = list.map(model.chests, chest.render)
-
   // Render damage numbers
   let damage_numbers =
     list.map(model.damage_numbers, damage_number.render(
@@ -74,13 +65,11 @@ pub fn render(model: Model) -> scene.Node(id.Id) {
     transform: transform.identity,
     children: list.flatten([
       enemies,
-      ground,
-      foliage,
+      map_chunks,
       projectiles,
       explosions,
       xp_shards,
       loot_drops,
-      chests,
       damage_numbers,
       [
         player.view(id.player(), model.player),
@@ -89,7 +78,7 @@ pub fn render(model: Model) -> scene.Node(id.Id) {
           id: id.ambient(),
           light: {
             let assert Ok(light) =
-              light.ambient(color: 0xffffff, intensity: 0.5)
+              light.ambient(color: 0xffffff, intensity: 1.0)
             light
           },
           transform: transform.identity,

@@ -169,7 +169,9 @@ fn view_wand_stat_compact(
   ])
 }
 
-fn view_spell_slot(spell_opt: option.Option(spell.Spell)) -> element.Element(msg) {
+fn view_spell_slot(
+  spell_opt: option.Option(spell.Spell),
+) -> element.Element(msg) {
   case spell_opt {
     option.Some(spell_value) -> {
       let #(sprite_path, name) = case spell_value {

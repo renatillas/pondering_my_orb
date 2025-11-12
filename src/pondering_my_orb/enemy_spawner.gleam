@@ -16,6 +16,7 @@ pub type SpawnConfig {
     enemy1_animation: Option(spritesheet.Animation),
     enemy2_spritesheet: Option(spritesheet.Spritesheet),
     enemy2_animation: Option(spritesheet.Animation),
+    map_size: Float,
   )
 }
 
@@ -35,9 +36,17 @@ pub fn spawn_enemy(config: SpawnConfig) -> Enemy(id.Id) {
 
   let spawn_position =
     Vec3(
-      config.player_position.x +. offset_x,
+      float.clamp(
+        config.player_position.x +. offset_x,
+        min: { { 0.0 -. config.map_size } /. 2.0 } +. 1.0,
+        max: { config.map_size /. 2.0 } -. 1.0,
+      ),
       spawn_height,
-      config.player_position.z +. offset_z,
+      float.clamp(
+        config.player_position.z +. offset_z,
+        min: { { 0.0 -. config.map_size } /. 2.0 } +. 1.0,
+        max: { config.map_size /. 2.0 } -. 1.0,
+      ),
     )
 
   // 15% chance to spawn elite enemy

@@ -178,19 +178,10 @@ fn view_perk_description(perk_value: perk.Perk) -> element.Element(msg) {
 fn get_perk_emoji(perk_value: perk.Perk) -> String {
   case perk_value {
     perk.BigBonk(..) -> "🎯"
-    perk.IdleJuice(..) -> "🧃"
-    perk.Scarf(_) -> "🧣"
-    perk.KevinsPunch(..) -> "👊"
-    perk.SpeedBoi(..) -> "⚠️"
-    perk.ZaWarudo -> "⏰"
+    perk.Trance(..) -> "🧃"
+    perk.OneLife -> "⏰"
     perk.BerserkersRage(_) -> "😤"
-    perk.Vampirism(_) -> "🧛"
-    perk.BeefyRing(_) -> "💪"
     perk.Execute(..) -> "⚔️"
     perk.GlassCannon(..) -> "💎"
-    perk.Mirror(_) -> "🪞"
-    perk.FragileStrength -> "⚡"
-    perk.BloodThirst(_) -> "🩸"
-    perk.TurboSkates(_) -> "⏱️"
   }
 }

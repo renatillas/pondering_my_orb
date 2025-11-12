@@ -15,7 +15,6 @@ export function request_pointer_lock_sync() {
     canvas.mozRequestPointerLock;
 
   if (requestFn) {
-    console.log('[PointerLock] Requesting pointer lock...');
     requestFn.call(canvas);
   } else {
     console.warn('[PointerLock] Pointer Lock API not supported');
@@ -29,7 +28,6 @@ export function exit_pointer_lock() {
     document.mozExitPointerLock;
 
   if (exitFn) {
-    console.log('[PointerLock] Exiting pointer lock...');
     exitFn.call(document);
   } else {
     console.warn('[PointerLock] Exit Pointer Lock API not supported');

@@ -30,8 +30,7 @@ pub type Model {
     game_phase: GamePhase,
     restarted: Bool,
     // Map
-    ground: Option(map.Obstacle(map.Ground)),
-    foliage: Option(map.Obstacle(map.Box)),
+    map: Option(map.Map),
     // Player
     player: player.Player,
     player_bindings: input.InputBindings(player.PlayerAction),
@@ -82,6 +81,15 @@ pub type Model {
   )
 }
 
+/// Returns true if the game should be frozen (no updates, no input)
+pub fn is_game_frozen(model: Model) -> Bool {
+  model.showing_spell_rewards
+  || model.showing_wand_selection
+  || model.showing_perk_slot_machine
+  || model.is_paused
+  || model.is_debug_menu_open
+}
+
 pub type Msg {
   Tick
   // Game Phase
@@ -94,11 +102,7 @@ pub type Msg {
   EnemySpawnStarted(Int)
   EnemySpawned
   EnemySpawnIntervalDecreased
-  EnemyAttacksPlayer(
-    enemy_id: Id,
-    damage: Float,
-    enemy_position: Vec3(Float),
-  )
+  EnemyAttacksPlayer(enemy_id: Id, damage: Float, enemy_position: Vec3(Float))
   // Projectiles
   ProjectileDamagedEnemy(Id, Float, Vec3(Float), List(spell.SpellEffect))
   EnemyKilled(Id)
@@ -117,8 +121,6 @@ pub fn init_model() -> Model {
   Model(
     game_phase: StartScreen,
     restarted: False,
-    ground: None,
-    foliage: None,
     player: player.init(),
     player_bindings: player.default_bindings(),
     pending_player_knockback: None,
@@ -141,7 +143,7 @@ pub fn init_model() -> Model {
     xp_animation: None,
     loot_drops: [],
     next_loot_drop_id: 0,
-    chests: chest.create_map_chests(0),
+    chests: [],
     damage_numbers: [],
     next_damage_number_id: 0,
     showing_spell_rewards: False,
@@ -151,5 +153,6 @@ pub fn init_model() -> Model {
     is_debug_menu_open: False,
     score: score.init(),
     visuals: dict.new(),
+    map: option.None,
   )
 }

@@ -317,7 +317,11 @@ pub fn update(
     True -> #(
       0.0,
       effect.from(fn(dispatch) {
-        dispatch(enemy_attacks_player_msg(enemy.id, enemy.damage, enemy.position))
+        dispatch(enemy_attacks_player_msg(
+          enemy.id,
+          enemy.damage,
+          enemy.position,
+        ))
       }),
     )
     False -> #(time_since_last_attack, effect.none())
@@ -340,7 +344,7 @@ fn climb_velocity(
   let raycast_origin =
     Vec3(
       enemy.position.x +. normalized_direction.x *. 0.7,
-      enemy.position.y -. 0.7,
+      enemy.position.y -. 1.0,
       // Lower body level
       enemy.position.z +. normalized_direction.z *. 0.7,
     )

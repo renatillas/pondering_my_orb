@@ -1,5 +1,4 @@
 import gleam/bool
-import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -19,12 +18,12 @@ import pondering_my_orb/spell
 import pondering_my_orb/ui
 import pondering_my_orb/xp_shard
 import tiramisu
+import tiramisu/debug
 import tiramisu/effect.{type Effect}
 import tiramisu/input
 import tiramisu/physics
 import tiramisu/ui as tiramisu_ui
 import vec/vec3.{type Vec3, Vec3}
-import vec/vec3f
 
 const interval_decrease_threshold = 15_000.0
 
@@ -63,13 +62,6 @@ pub fn handle_tick(
     input.is_key_just_pressed(ctx.input, input.KeyM)
   {
     True -> {
-      io.println(
-        "M key pressed! Debug menu open: "
-        <> case model.is_debug_menu_open {
-          True -> "true"
-          False -> "false"
-        },
-      )
       effect.from(fn(dispatch) {
         dispatch(
           game_state.UIMessage(case model.is_debug_menu_open {
@@ -92,21 +84,34 @@ pub fn handle_tick(
       scaled_delta,
     )
 
-  // Update physics (if game is not paused)
-  let physics_world = case model.showing_spell_rewards, model.is_paused {
-    False, False -> {
-      physics_manager.update_physics(
-        physics_world,
-        player,
-        player.velocity,
-        impulse,
-        enemies,
-        model.pending_player_knockback,
+  // Update physics (if game is not frozen)
+  let #(physics_world, player_updated_velocity, is_grounded) = case
+    game_state.is_game_frozen(model)
+  {
+    False -> {
+      let #(updated_physics, new_velocity, grounded) =
+        physics_manager.update_physics(
+          physics_world,
+          player,
+          player.velocity,
+          impulse,
+          enemies,
+          model.pending_player_knockback,
+          scaled_delta,
+        )
+
+      #(
+        updated_physics |> physics_manager.step_physics(scaled_delta),
+        new_velocity,
+        grounded,
       )
-      |> physics_manager.step_physics(player.quaternion_rotation, scaled_delta)
     }
-    _, _ -> physics_world
+    True -> #(physics_world, player.velocity, !player.is_airborne)
   }
+
+  // Update player with new velocity and grounded state from physics
+  let player =
+    player.Player(..player, velocity: player_updated_velocity, is_airborne: !is_grounded)
 
   // Read position from physics, rotation is controlled by input
   let player_position =
@@ -242,6 +247,7 @@ pub fn handle_tick(
       effect.batch(loot_pickup_effects),
       effect.batch(chest_opening_effects),
       debug_menu_effect,
+      effect.from(fn(_) { debug.show_collider_wireframes(physics_world, True) }),
     ])
 
   #(
@@ -268,17 +274,9 @@ pub fn handle_tick(
 
 /// Calculate time scale based on pause states
 fn calculate_time_scale(model: Model) -> Float {
-  case
-    model.showing_spell_rewards,
-    model.showing_wand_selection,
-    model.showing_perk_slot_machine,
-    model.is_paused
-  {
-    True, _, _, _ -> 0.0
-    _, True, _, _ -> 0.0
-    _, _, True, _ -> 0.0
-    _, _, _, True -> 0.0
-    False, False, False, False -> 1.0
+  case game_state.is_game_frozen(model) {
+    True -> 0.0
+    False -> 1.0
   }
 }
 
@@ -288,16 +286,16 @@ fn handle_player_input(
   physics_world: physics.PhysicsWorld(id.Id),
   ctx: tiramisu.Context(id.Id),
 ) -> #(player.Player, Vec3(Float), Float, List(Effect(Msg))) {
-  case
-    model.showing_spell_rewards,
-    model.showing_wand_selection,
-    model.is_paused
-  {
-    False, False, False ->
+  let is_frozen = game_state.is_game_frozen(model)
+
+  // Use velocity from player state (not physics world - kinematic bodies don't store velocity properly)
+  let player_velocity_from_state = model.player.velocity
+
+  case is_frozen {
+    False ->
       player.handle_input(
         model.player,
-        velocity: physics.get_velocity(physics_world, id.player())
-          |> result.unwrap(Vec3(0.0, 0.0, 0.0)),
+        velocity: player_velocity_from_state,
         input_state: ctx.input,
         bindings: model.player_bindings,
         pointer_locked: model.camera.pointer_locked,
@@ -306,7 +304,7 @@ fn handle_player_input(
         pointer_locked_msg: game_state.PointerLocked,
         pointer_lock_failed_msg: game_state.PointerLockFailed,
       )
-    _, _, _ -> #(model.player, vec3f.zero, model.camera.pitch, [])
+    True -> #(model.player, player_velocity_from_state, model.camera.pitch, [])
   }
 }
 

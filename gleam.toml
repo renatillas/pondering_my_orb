@@ -29,7 +29,7 @@ grille_pain = "1.1.4"
 
 [dev-dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
-mascarpone = ">= 1.3.0 and < 2.0.0"
+mascarpone = ">= 2.0.0 and < 3.0.0"
 lustre_dev_tools = ">= 2.1.3 and < 3.0.0"
 
 

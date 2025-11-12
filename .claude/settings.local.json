@@ -6,13 +6,14 @@
       "Read(//Users/renata-amutio/Projects/renatillas/sortable/**)",
       "Bash(gleam test:*)",
       "Read(//Users/renata-amutio/Projects/renatillas/tiramisu/src/tiramisu/**)",
-      "Read(//Users/renata-amutio/Projects/renatillas/tiramisu/src/**)"
+      "Read(//Users/renata-amutio/Projects/renatillas/tiramisu/src/**)",
+      "Read(//Users/renata-amutio/Projects/renatillas/tiramisu/test/**)"
     ],
     "deny": [],
     "ask": []
   },
+  "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "language-server"
-  ],
-  "enableAllProjectMcpServers": true
+  ]
 }
