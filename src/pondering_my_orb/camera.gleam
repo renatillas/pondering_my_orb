@@ -1,137 +1,162 @@
 import gleam/float
-import gleam/option.{None}
-import gleam_community/maths
-import pondering_my_orb/id
-import pondering_my_orb/player
+import gleam/option
+import gleam/time/duration
+import tiramisu
 import tiramisu/camera
-import tiramisu/postprocessing
+import tiramisu/input
 import tiramisu/scene
 import tiramisu/transform
-import vec/vec3.{type Vec3, Vec3}
+import vec/vec3
 
-pub type Camera {
-  Camera(
-    pointer_locked: Bool,
-    distance: Float,
-    height: Float,
-    position: Vec3(Float),
-    rotation: transform.Quaternion,
-    shake_time: Float,
-    pitch: Float,
-  )
+// =============================================================================
+// TYPES
+// =============================================================================
+
+pub type Model {
+  Model(x: Float, z: Float, zoom: Float)
 }
 
-pub fn init() {
-  Camera(
-    pointer_locked: False,
-    distance: 5.0,
-    height: 2.0,
-    position: Vec3(0.0, 7.0, -5.0),
-    rotation: transform.Quaternion(x: 0.0, y: 0.0, z: 0.0, w: 1.0),
-    shake_time: 0.0,
-    pitch: 0.0,
-  )
+pub type Msg {
+  Tick
 }
 
-pub fn update(
-  camera: Camera,
-  new_pitch new_pitch: Float,
-  player player: player.Player,
-  delta_time delta_time: Float,
-) {
-  let shake_time = float.max(0.0, camera.shake_time -. delta_time /. 1000.0)
+// =============================================================================
+// CONSTANTS
+// =============================================================================
 
-  let horizontal_distance = camera.distance *. maths.cos(new_pitch)
-  let vertical_offset = camera.distance *. maths.sin(new_pitch)
+const move_speed = 30.0
 
-  let behind_x = -1.0 *. maths.sin(player.rotation.y) *. horizontal_distance
-  let behind_z = -1.0 *. maths.cos(player.rotation.y) *. horizontal_distance
+const zoom_speed = 50.0
 
-  // Position camera directly behind player (no smoothing for responsive feel)
-  let camera_position =
-    Vec3(
-      player.position.x +. behind_x,
-      player.position.y +. camera.height +. vertical_offset,
-      player.position.z +. behind_z,
-    )
+const min_zoom = 5.0
 
-  // Calculate camera rotation by looking at the player (no smoothing)
-  let look_at_target =
-    Vec3(player.position.x, player.position.y +. 1.0, player.position.z)
-  let from_transform = transform.at(position: camera_position)
-  let to_transform = transform.at(position: look_at_target)
-  let look_at_transform =
-    transform.look_at(from: from_transform, to: to_transform, up: option.None)
-  let rotation = transform.rotation_quaternion(look_at_transform)
+const max_zoom = 100.0
 
-  Camera(
-    ..camera,
-    shake_time:,
-    position: camera_position,
-    rotation:,
-    pitch: new_pitch,
-  )
+const initial_zoom = 30.0
+
+const camera_distance = 50.0
+
+// =============================================================================
+// INIT
+// =============================================================================
+
+pub fn init() -> Model {
+  Model(x: 0.0, z: 0.0, zoom: initial_zoom)
 }
 
-pub fn view(camera: Camera) {
-  let assert Ok(cam) =
-    camera.perspective(field_of_view: 75.0, near: 0.1, far: 1000.0)
+// =============================================================================
+// UPDATE
+// =============================================================================
 
-  // Use the smoothed camera position from model
-  let base_camera_position = camera.position
+pub fn update(model: Model, msg: Msg, ctx: tiramisu.Context) -> Model {
+  case msg {
+    Tick -> {
+      let dt = duration.to_seconds(ctx.delta_time)
 
-  // Apply screen shake if active
-  let camera_position = case camera.shake_time >. 0.0 {
-    True -> {
-      // Calculate shake intensity (stronger at start, fades out)
-      let shake_intensity = camera.shake_time /. 0.03 *. 0.015
+      // Screen-relative input for isometric view
+      // Calculate net screen direction (opposing keys cancel out)
+      let up_pressed =
+        input.is_key_pressed(ctx.input, input.KeyW)
+        || input.is_key_pressed(ctx.input, input.ArrowUp)
+      let down_pressed =
+        input.is_key_pressed(ctx.input, input.KeyS)
+        || input.is_key_pressed(ctx.input, input.ArrowDown)
+      let left_pressed =
+        input.is_key_pressed(ctx.input, input.KeyA)
+        || input.is_key_pressed(ctx.input, input.ArrowLeft)
+      let right_pressed =
+        input.is_key_pressed(ctx.input, input.KeyD)
+        || input.is_key_pressed(ctx.input, input.ArrowRight)
 
-      // Random shake offset (using position as seed for pseudo-randomness)
-      let shake_x = { float.random() -. 0.5 } *. shake_intensity
-      let shake_y = { float.random() -. 0.5 } *. shake_intensity
-      let shake_z = { float.random() -. 0.5 } *. shake_intensity
+      // Net vertical: -1 = up, +1 = down, 0 = neither/both
+      let screen_y = case up_pressed, down_pressed {
+        True, False -> -1.0
+        False, True -> 1.0
+        _, _ -> 0.0
+      }
 
-      Vec3(
-        base_camera_position.x +. shake_x,
-        base_camera_position.y +. shake_y,
-        base_camera_position.z +. shake_z,
-      )
+      // Net horizontal: -1 = left, +1 = right, 0 = neither/both
+      let screen_x = case left_pressed, right_pressed {
+        True, False -> -1.0
+        False, True -> 1.0
+        _, _ -> 0.0
+      }
+
+      // Convert screen directions to world space for isometric view:
+      // Screen up    -> world (-X, -Z) = toward top of diamond
+      // Screen down  -> world (+X, +Z) = toward bottom of diamond
+      // Screen left  -> world (-X, +Z) = toward left of diamond
+      // Screen right -> world (+X, -Z) = toward right of diamond
+      let diagonal = 0.7071
+
+      // Transform screen coords to world coords
+      // world_x = screen_y * diagonal + screen_x * diagonal
+      // world_z = screen_y * diagonal - screen_x * diagonal
+      let raw_x = screen_y *. diagonal +. screen_x *. diagonal
+      let raw_z = screen_y *. diagonal -. screen_x *. diagonal
+
+      // Normalize if moving diagonally
+      let #(move_x, move_z) = case screen_x != 0.0 && screen_y != 0.0 {
+        True -> #(raw_x *. diagonal, raw_z *. diagonal)
+        False -> #(raw_x, raw_z)
+      }
+
+      // Mouse wheel for zoom
+      let wheel_delta = input.mouse_wheel_delta(ctx.input)
+      let zoom_change = wheel_delta *. zoom_speed *. dt
+
+      // Update camera position
+      let new_x = model.x +. move_x *. move_speed *. dt
+      let new_z = model.z +. move_z *. move_speed *. dt
+      let new_zoom =
+        float.clamp(model.zoom +. zoom_change, min: min_zoom, max: max_zoom)
+
+      Model(x: new_x, z: new_z, zoom: new_zoom)
     }
-    False -> base_camera_position
   }
+}
 
-  // Use the smoothed rotation from camera model instead of recalculating look-at
-  let camera_transform =
-    transform.at(position: camera_position)
-    |> transform.with_quaternion_rotation(camera.rotation)
+// =============================================================================
+// VIEW
+// =============================================================================
 
-  let camera_node =
-    scene.camera(
-      id: id.camera(),
-      camera: cam,
-      transform: camera_transform,
-      look_at: option.None,
-      active: True,
-      viewport: None,
-      postprocessing: option.Some(
-        postprocessing.new()
-        |> postprocessing.add_pass(postprocessing.clear_pass(option.None))
-        |> postprocessing.add_pass(postprocessing.render_pass())
-        // Bloom effect for glowing projectiles and explosions
-        |> postprocessing.add_pass(postprocessing.bloom(
-          strength: 0.3,
-          threshold: 0.5,
-          radius: 0.5,
-        ))
-        |> postprocessing.add_pass(postprocessing.color_correction(
-          brightness: 0.05,
-          contrast: 0.15,
-          saturation: 0.2,
-        ))
-        |> postprocessing.add_pass(postprocessing.pixelate(2))
-        |> postprocessing.add_pass(postprocessing.fxaa())
-        |> postprocessing.add_pass(postprocessing.output_pass()),
-      ),
+pub fn view(model: Model, ctx: tiramisu.Context) -> scene.Node {
+  // Isometric camera with orthographic projection
+  let ortho_size = model.zoom
+  let aspect = ctx.canvas_size.x /. ctx.canvas_size.y
+
+  let cam =
+    camera.orthographic(
+      left: 0.0 -. ortho_size *. aspect,
+      right: ortho_size *. aspect,
+      top: ortho_size,
+      bottom: 0.0 -. ortho_size,
+      near: 0.1,
+      far: 1000.0,
     )
-  camera_node
+
+  // Isometric camera position: offset equally on X and Z, plus height
+  // This creates the diamond view where grid corners point up/down/left/right
+  let camera_pos =
+    transform.at(position: vec3.Vec3(
+      model.x +. camera_distance,
+      camera_distance,
+      model.z +. camera_distance,
+    ))
+  let target_pos = transform.at(position: vec3.Vec3(model.x, 0.0, model.z))
+  let camera_transform =
+    transform.look_at(
+      from: camera_pos,
+      to: target_pos,
+      up: option.Some(vec3.Vec3(0.0, 1.0, 0.0)),
+    )
+
+  scene.camera(
+    id: "main-camera",
+    camera: cam,
+    transform: camera_transform,
+    active: True,
+    viewport: option.None,
+    postprocessing: option.None,
+  )
 }
