@@ -1,103 +1,266 @@
+import gleam/dict.{type Dict}
+import gleam/int
 import gleam/list
 import gleam/option
-import pondering_my_orb/id.{type Id}
-import tiramisu/asset
+import gleam/result
+import gleam_community/colour
+import tiramisu/effect
 import tiramisu/geometry
+import tiramisu/light
 import tiramisu/material
-import tiramisu/physics
+import tiramisu/model
 import tiramisu/scene
-import tiramisu/transform.{type Transform}
+import tiramisu/transform
 import vec/vec3
 
-pub type Box
+import pondering_my_orb/map/generator
 
-pub type Ground
+// =============================================================================
+// TYPES
+// =============================================================================
 
-pub opaque type Obstacle(kind) {
-  Foliage(instances: List(#(asset.Object3D, asset.Texture, Transform)))
-  Ground(instances: List(Transform))
+pub type LoadState {
+  Loading(loaded: Int, total: Int)
+  Loaded
+  Failed(String)
 }
 
-pub fn foliage(
-  instances: List(#(asset.Object3D, asset.Texture, Transform)),
-) -> Obstacle(Box) {
-  Foliage(instances:)
+pub type Model {
+  Model(
+    load_state: LoadState,
+    arena: generator.Arena,
+    models: Dict(String, model.FBXData),
+  )
 }
 
-pub fn ground(instances: List(Transform)) -> Obstacle(Ground) {
-  Ground(instances:)
+pub type Msg {
+  ModelLoaded(String, model.FBXData)
+  LoadFailed(String)
 }
 
-pub fn view_foliage(obstacles: Obstacle(Box), base_id: Id) -> scene.Node(Id) {
-  let assert Foliage(instances:) = obstacles
+// =============================================================================
+// CONSTANTS
+// =============================================================================
 
-  // Group instances by model and texture
-  // For now, assuming all instances share the same model and texture
-  // If you need different textures per instance, you'll need to group them
-  case instances {
-    [] -> scene.empty(id: base_id, transform: transform.identity, children: [])
-    [first, ..] -> {
-      let #(model, texture, _) = first
+const model_scale = 0.1
 
-      // Extract just the transforms
-      let transforms =
-        list.map(instances, fn(inst) {
-          let #(_, _, t) = inst
-          t
-        })
+/// All models to load with their paths
+fn model_paths() -> List(#(String, String)) {
+  [
+    // Floor
+    #("floor-stone", "medieval/Models/floor.fbx"),
+    // Fortified Walls
+    #("wall-fortified", "medieval/Models/wall-fortified.fbx"),
+    #("wall-fortified_gate", "medieval/Models/wall-fortified-gate.fbx"),
+  ]
+}
 
-      // Create Lambert material with texture for fully matte foliage
-      let assert Ok(foliage_material) =
-        material.lambert(
-          color: 0xffffff,
-          map: option.Some(texture),
-          normal_map: option.None,
-          ambient_oclusion_map: option.None,
-          transparent: True,
-          opacity: 1.0,
-          alpha_test: 0.5,
-        )
+fn total_models() -> Int {
+  list.length(model_paths())
+}
 
-      scene.instanced_model(
-        id: base_id,
-        object: model,
-        instances: transforms,
-        physics: option.Some(
-          physics.new_rigid_body(physics.Fixed)
-          |> physics.with_collider(physics.Cylinder(
-            offset: transform.identity,
-            half_height: 0.3,
-            radius: 0.2,
-          ))
-          |> physics.with_friction(0.0)
-          |> physics.build(),
-        ),
-        material: option.Some(foliage_material),
+// =============================================================================
+// INIT
+// =============================================================================
+
+pub fn init() -> #(Model, effect.Effect(Msg)) {
+  let map_model =
+    Model(
+      load_state: Loading(loaded: 0, total: total_models()),
+      arena: generator.create_arena(),
+      models: dict.new(),
+    )
+
+  // Load all FBX models
+  let load_effects =
+    model_paths()
+    |> list.map(fn(entry) {
+      let #(key, path) = entry
+      model.load_fbx(path, ModelLoaded(key, _), LoadFailed(key))
+    })
+    |> effect.batch
+
+  #(map_model, load_effects)
+}
+
+// =============================================================================
+// UPDATE
+// =============================================================================
+
+pub fn update(map_model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
+  case msg {
+    ModelLoaded(key, data) -> {
+      let new_models = dict.insert(map_model.models, key, data)
+      let new_loaded = dict.size(new_models)
+      let new_state = case new_loaded >= total_models() {
+        True -> Loaded
+        False -> Loading(loaded: new_loaded, total: total_models())
+      }
+      #(
+        Model(..map_model, models: new_models, load_state: new_state),
+        effect.none(),
+      )
+    }
+    LoadFailed(key) -> {
+      #(
+        Model(..map_model, load_state: Failed("Failed to load: " <> key)),
+        effect.none(),
       )
     }
   }
 }
 
-pub fn view_ground(_ground: Obstacle(Ground), id: id) -> scene.Node(id) {
-  let assert Ok(geometry) = geometry.plane(100.0, 100.0)
-  let assert Ok(material) =
-    material.new() |> material.with_color(0xaaaaaa) |> material.build()
+// =============================================================================
+// VIEW
+// =============================================================================
+
+pub fn view(map_model: Model) -> List(scene.Node) {
+  case map_model.load_state {
+    Loading(loaded, total) -> [loading_indicator(loaded, total)]
+    Failed(_error) -> [error_indicator()]
+    Loaded -> render_arena(map_model)
+  }
+}
+
+// =============================================================================
+// LOADING INDICATORS
+// =============================================================================
+
+fn loading_indicator(loaded: Int, total: Int) -> scene.Node {
+  let assert Ok(geo) = geometry.box(vec3.Vec3(1.0, 1.0, 1.0))
+  let assert Ok(mat) =
+    material.new()
+    |> material.with_color(0x4ecdc4)
+    |> material.build()
+
+  let progress = int.to_float(loaded) /. int.to_float(total)
+
   scene.mesh(
-    id: id,
-    physics: option.Some(
-      physics.new_rigid_body(physics.Fixed)
-      |> physics.with_collider(physics.Box(
-        offset: transform.at(vec3.Vec3(0.0, 0.0, -0.25))
-          |> transform.with_euler_rotation(vec3.Vec3(1.57, 0.0, 0.0)),
-        width: 100.0,
-        height: 0.5,
-        depth: 100.0,
-      ))
-      |> physics.build(),
-    ),
-    geometry:,
-    material:,
-    transform: transform.identity
-      |> transform.with_euler_rotation(vec3.Vec3(-1.56, 0.0, 0.0)),
+    id: "loading-cube",
+    geometry: geo,
+    material: mat,
+    transform: transform.at(position: vec3.Vec3(0.0, 0.0, 0.0))
+      |> transform.with_scale(vec3.Vec3(
+        1.0 +. progress,
+        1.0 +. progress,
+        1.0 +. progress,
+      )),
+    physics: option.None,
   )
+}
+
+fn error_indicator() -> scene.Node {
+  let assert Ok(geo) = geometry.box(vec3.Vec3(2.0, 2.0, 2.0))
+  let assert Ok(mat) =
+    material.new()
+    |> material.with_color(0xff0000)
+    |> material.build()
+
+  scene.mesh(
+    id: "error-cube",
+    geometry: geo,
+    material: mat,
+    transform: transform.identity,
+    physics: option.None,
+  )
+}
+
+// =============================================================================
+// ARENA RENDERING
+// =============================================================================
+
+fn render_arena(map_model: Model) -> List(scene.Node) {
+  // Render all elements
+  let element_nodes =
+    map_model.arena.elements
+    |> list.index_map(fn(element, index) {
+      render_element(map_model, element, index)
+    })
+    |> list.filter_map(fn(x) { x })
+
+  // Add lights
+  let light_nodes = create_lights()
+
+  list.flatten([light_nodes, element_nodes])
+}
+
+fn render_element(
+  map_model: Model,
+  element: generator.StructureElement,
+  index: Int,
+) -> Result(scene.Node, Nil) {
+  let model_key = generator.element_type_to_string(element.element_type)
+
+  case dict.get(map_model.models, model_key) {
+    Error(Nil) -> Error(Nil)
+    Ok(fbx) -> {
+      let id =
+        generator.element_type_to_string(element.element_type)
+        <> "-"
+        <> int.to_string(index)
+
+      Ok(scene.object_3d(
+        id: id,
+        object: model.get_fbx_scene(fbx),
+        transform: transform.at(position: element.position)
+          |> transform.with_scale(vec3.Vec3(
+            model_scale,
+            model_scale,
+            model_scale,
+          ))
+          |> transform.with_euler_rotation(vec3.Vec3(0.0, element.rotation, 0.0)),
+        animation: option.None,
+        physics: option.None,
+        material: option.None,
+        transparent: False,
+      ))
+    }
+  }
+}
+
+// =============================================================================
+// ELEMENT TYPE MAPPING
+// =============================================================================
+
+// =============================================================================
+// LIGHTING
+// =============================================================================
+
+fn create_lights() -> List(scene.Node) {
+  // Ambient light - subtle base illumination
+  let assert Ok(ambient_light) = light.ambient(color: 0xffffff, intensity: 0.2)
+  let ambient =
+    scene.light(
+      id: "ambient",
+      light: ambient_light,
+      transform: transform.identity,
+    )
+
+  // Directional light - sun
+  let assert Ok(dir_light) =
+    light.directional(color: colour.white |> colour.to_rgb_hex, intensity: 1.5)
+    |> result.map(light.with_shadows(_, True))
+    |> result.try(light.with_shadow_resolution(_, 4096))
+  let directional =
+    scene.light(
+      id: "sun",
+      light: dir_light,
+      transform: transform.at(position: vec3.Vec3(-30.0, 60.0, -30.0)),
+    )
+
+  // Hemisphere light for outdoor ambient
+  let assert Ok(hemi_light) =
+    light.hemisphere(
+      intensity: 0.3,
+      sky_color: 0x87ceeb,
+      ground_color: 0x8b7355,
+    )
+  let hemisphere =
+    scene.light(
+      id: "hemisphere",
+      light: hemi_light,
+      transform: transform.identity,
+    )
+
+  [ambient, directional, hemisphere]
 }

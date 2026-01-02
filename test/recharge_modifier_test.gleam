@@ -1,16 +1,21 @@
 import gleam/option
+import gleam/time/duration
 import iv
-import pondering_my_orb/spell
-import pondering_my_orb/wand
-import vec/vec3.{Vec3}
+import pondering_my_orb/magic_system/spell
+import pondering_my_orb/magic_system/wand
+import vec/vec2
+import vec/vec3
 
 // Helper to create test visuals
 fn test_visuals() -> spell.SpellVisuals {
   spell.SpellVisuals(
-    projectile_spritesheet: spell.mock_spritesheet(),
-    projectile_animation: spell.mock_animation(),
-    hit_spritesheet: spell.mock_spritesheet(),
-    hit_animation: spell.mock_animation(),
+    projectile: spell.StaticSprite(
+      texture_path: "test_sprite.png",
+      size: vec2.Vec2(1.0, 1.0),
+    ),
+    hit_effect: spell.GenericExplosion,
+    base_tint: 0xFFFF00,
+    emissive_intensity: 1.0,
   )
 }
 
@@ -32,8 +37,8 @@ pub fn rapid_fire_reduces_recharge_test() {
       max_mana: 100.0,
       current_mana: 100.0,
       mana_recharge_rate: 30.0,
-      cast_delay: 0.2,
-      recharge_time: 0.5,
+      cast_delay: duration.milliseconds(200),
+      recharge_time: duration.milliseconds(500),
       spells_per_cast: 1,
       spread: 0.0,
     )
@@ -42,23 +47,18 @@ pub fn rapid_fire_reduces_recharge_test() {
     wand.cast(
       test_wand,
       0,
-      Vec3(0.0, 0.0, 0.0),
-      Vec3(1.0, 0.0, 0.0),
+      vec3.Vec3(0.0, 0.0, 0.0),
+      vec3.Vec3(1.0, 0.0, 0.0),
       0,
       option.None,
       option.None,
       [],
     )
 
-  case result {
-    wand.CastSuccess(total_recharge_time_addition:, ..) -> {
-      // Rapid Fire has recharge_addition of -0.33
-      assert total_recharge_time_addition == -0.33
-    }
-    wand.NotEnoughMana(..) | wand.NoSpellToCast | wand.WandEmpty -> {
-      panic as "Expected CastSuccess but got an error result"
-    }
-  }
+  let assert wand.CastSuccess(total_recharge_time_addition:, ..) = result
+
+  // Rapid Fire has recharge_addition of -0.33 seconds = -330ms
+  assert total_recharge_time_addition == duration.milliseconds(-330)
 }
 
 /// Test: Multiple modifiers should accumulate recharge additions
@@ -71,7 +71,7 @@ pub fn multiple_modifiers_accumulate_recharge_test() {
       id: spell.AddDamage,
       kind: spell.Modifier(
         ..spell.default_modifier("Test Modifier", "test.png"),
-        recharge_addition: 0.5,
+        recharge_addition: duration.milliseconds(500),
       ),
     )
 
@@ -90,8 +90,8 @@ pub fn multiple_modifiers_accumulate_recharge_test() {
       max_mana: 100.0,
       current_mana: 100.0,
       mana_recharge_rate: 30.0,
-      cast_delay: 0.2,
-      recharge_time: 0.5,
+      cast_delay: duration.milliseconds(200),
+      recharge_time: duration.milliseconds(500),
       spells_per_cast: 1,
       spread: 0.0,
     )
@@ -100,24 +100,19 @@ pub fn multiple_modifiers_accumulate_recharge_test() {
     wand.cast(
       test_wand,
       0,
-      Vec3(0.0, 0.0, 0.0),
-      Vec3(1.0, 0.0, 0.0),
+      vec3.Vec3(0.0, 0.0, 0.0),
+      vec3.Vec3(1.0, 0.0, 0.0),
       0,
       option.None,
       option.None,
       [],
     )
 
-  case result {
-    wand.CastSuccess(total_recharge_time_addition:, ..) -> {
-      // Should be approximately 0.17
-      assert total_recharge_time_addition >. 0.16
-      assert total_recharge_time_addition <. 0.18
-    }
-    wand.NotEnoughMana(..) | wand.NoSpellToCast | wand.WandEmpty -> {
-      panic as "Expected CastSuccess but got an error result"
-    }
-  }
+  let assert wand.CastSuccess(total_recharge_time_addition:, ..) = result
+
+  // Should be approximately 0.17 seconds = 170ms
+  assert duration.approximate(total_recharge_time_addition)
+    == #(170, duration.Millisecond)
 }
 
 /// Test: Recharge multiplier should multiply the accumulated recharge additions
@@ -130,7 +125,7 @@ pub fn recharge_multiplier_test() {
       id: spell.AddDamage,
       kind: spell.Modifier(
         ..spell.default_modifier("Multiplier", "test.png"),
-        recharge_addition: 1.0,
+        recharge_addition: duration.seconds(1),
         recharge_multiplier: 2.0,
       ),
     )
@@ -149,8 +144,8 @@ pub fn recharge_multiplier_test() {
       max_mana: 100.0,
       current_mana: 100.0,
       mana_recharge_rate: 30.0,
-      cast_delay: 0.2,
-      recharge_time: 0.5,
+      cast_delay: duration.milliseconds(200),
+      recharge_time: duration.milliseconds(500),
       spells_per_cast: 1,
       spread: 0.0,
     )
@@ -159,22 +154,18 @@ pub fn recharge_multiplier_test() {
     wand.cast(
       test_wand,
       0,
-      Vec3(0.0, 0.0, 0.0),
-      Vec3(1.0, 0.0, 0.0),
+      vec3.Vec3(0.0, 0.0, 0.0),
+      vec3.Vec3(1.0, 0.0, 0.0),
       0,
       option.None,
       option.None,
       [],
     )
 
-  case result {
-    wand.CastSuccess(total_recharge_time_addition:, ..) -> {
-      assert total_recharge_time_addition == 2.0
-    }
-    wand.NotEnoughMana(..) | wand.NoSpellToCast | wand.WandEmpty -> {
-      panic as "Expected CastSuccess but got an error result"
-    }
-  }
+  let assert wand.CastSuccess(total_recharge_time_addition:, ..) = result
+
+  assert duration.approximate(total_recharge_time_addition)
+    == #(2, duration.Second)
 }
 
 /// Test: Modified spell should contain final_recharge_time
@@ -188,7 +179,7 @@ pub fn modified_spell_includes_recharge_time_test() {
   let modifier =
     spell.Modifier(
       ..spell.default_modifier("Test", "test.png"),
-      recharge_addition: 0.5,
+      recharge_addition: duration.milliseconds(500),
       recharge_multiplier: 2.0,
     )
 
@@ -198,5 +189,6 @@ pub fn modified_spell_includes_recharge_time_test() {
 
   // Check that final_recharge_time is calculated correctly
   // (0.0 + 0.5) * 2.0 = 1.0
-  assert modified.final_recharge_time == 1.0
+  assert duration.approximate(modified.final_recharge_time)
+    == #(1, duration.Second)
 }

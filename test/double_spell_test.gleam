@@ -1,23 +1,22 @@
 import gleam/list
 import gleam/option
-import gleeunit
-import gleeunit/should
+import gleam/time/duration
 import iv
-import pondering_my_orb/spell
-import pondering_my_orb/wand
-import vec/vec3.{Vec3}
-
-pub fn main() {
-  gleeunit.main()
-}
+import pondering_my_orb/magic_system/spell
+import pondering_my_orb/magic_system/wand
+import vec/vec2
+import vec/vec3
 
 // Helper to create test visuals
 fn test_visuals() -> spell.SpellVisuals {
   spell.SpellVisuals(
-    projectile_spritesheet: spell.mock_spritesheet(),
-    projectile_animation: spell.mock_animation(),
-    hit_spritesheet: spell.mock_spritesheet(),
-    hit_animation: spell.mock_animation(),
+    projectile: spell.StaticSprite(
+      texture_path: "test_sprite.png",
+      size: vec2.Vec2(1.0, 1.0),
+    ),
+    hit_effect: spell.GenericExplosion,
+    base_tint: 0xFF0000,
+    emissive_intensity: 1.0,
   )
 }
 
@@ -41,8 +40,8 @@ pub fn double_spell_casts_two_spells_test() {
       max_mana: 100.0,
       current_mana: 100.0,
       mana_recharge_rate: 30.0,
-      cast_delay: 0.2,
-      recharge_time: 0.5,
+      cast_delay: duration.milliseconds(200),
+      recharge_time: duration.milliseconds(500),
       spells_per_cast: 1,
       spread: 0.0,
     )
@@ -51,35 +50,26 @@ pub fn double_spell_casts_two_spells_test() {
     wand.cast(
       test_wand,
       0,
-      Vec3(0.0, 0.0, 0.0),
-      Vec3(1.0, 0.0, 0.0),
+      vec3.Vec3(0.0, 0.0, 0.0),
+      vec3.Vec3(1.0, 0.0, 0.0),
       0,
       option.None,
       option.None,
       [],
     )
 
-  case result {
-    wand.CastSuccess(
-      projectiles: projectiles,
-      casting_indices: casting_indices,
-      ..,
-    ) -> {
-      // Should cast 2 projectiles
-      projectiles
-      |> list.length
-      |> should.equal(2)
+  let assert wand.CastSuccess(
+    projectiles: projectiles,
+    casting_indices: casting_indices,
+    ..,
+  ) = result
 
-      // Should highlight: double_spell (0), fireball (1), fireball (2)
-      // Indices are added in reverse order
-      casting_indices
-      |> list.reverse
-      |> should.equal([0, 1, 2])
-    }
-    wand.NotEnoughMana(..) -> should.fail()
-    wand.NoSpellToCast -> should.fail()
-    wand.WandEmpty -> should.fail()
-  }
+  // Should cast 2 projectiles
+  assert list.length(projectiles) == 2
+
+  // Should highlight: double_spell (0), fireball (1), fireball (2)
+  // Indices are added in reverse order
+  assert list.reverse(casting_indices) == [0, 1, 2]
 }
 
 /// Test: Double spell with only 1 spell after it should cast that 1 spell
@@ -100,8 +90,8 @@ pub fn double_spell_with_one_spell_test() {
       max_mana: 100.0,
       current_mana: 100.0,
       mana_recharge_rate: 30.0,
-      cast_delay: 0.2,
-      recharge_time: 0.5,
+      cast_delay: duration.milliseconds(200),
+      recharge_time: duration.milliseconds(500),
       spells_per_cast: 1,
       spread: 0.0,
     )
@@ -110,32 +100,25 @@ pub fn double_spell_with_one_spell_test() {
     wand.cast(
       test_wand,
       0,
-      Vec3(0.0, 0.0, 0.0),
-      Vec3(1.0, 0.0, 0.0),
+      vec3.Vec3(0.0, 0.0, 0.0),
+      vec3.Vec3(1.0, 0.0, 0.0),
       0,
       option.None,
       option.None,
       [],
     )
 
-  case result {
-    wand.CastSuccess(
-      projectiles: projectiles,
-      casting_indices: casting_indices,
-      ..,
-    ) -> {
-      // Should cast 1 projectile
-      projectiles
-      |> list.length
-      |> should.equal(1)
+  let assert wand.CastSuccess(
+    projectiles: projectiles,
+    casting_indices: casting_indices,
+    ..,
+  ) = result
 
-      // Should highlight: double_spell (0), fireball (1)
-      casting_indices
-      |> list.reverse
-      |> should.equal([0, 1])
-    }
-    _ -> should.fail()
-  }
+  // Should cast 1 projectile
+  assert list.length(projectiles) == 1
+
+  // Should highlight: double_spell (0), fireball (1)
+  assert list.reverse(casting_indices) == [0, 1]
 }
 
 /// Test: Double spell at end of wand with wrapping
@@ -158,8 +141,8 @@ pub fn double_spell_wrapping_test() {
       max_mana: 100.0,
       current_mana: 100.0,
       mana_recharge_rate: 30.0,
-      cast_delay: 0.2,
-      recharge_time: 0.5,
+      cast_delay: duration.milliseconds(200),
+      recharge_time: duration.milliseconds(500),
       spells_per_cast: 1,
       spread: 0.0,
     )
@@ -168,42 +151,33 @@ pub fn double_spell_wrapping_test() {
     wand.cast(
       test_wand,
       2,
-      Vec3(0.0, 0.0, 0.0),
-      Vec3(1.0, 0.0, 0.0),
+      vec3.Vec3(0.0, 0.0, 0.0),
+      vec3.Vec3(1.0, 0.0, 0.0),
       0,
       option.None,
       option.None,
       [],
     )
 
-  case result {
-    wand.CastSuccess(
-      projectiles: projectiles,
-      next_cast_index: next_cast_index,
-      casting_indices: casting_indices,
-      did_wrap: did_wrap,
-      ..,
-    ) -> {
-      // Should cast 2 projectiles
-      projectiles
-      |> list.length
-      |> should.equal(2)
+  let assert wand.CastSuccess(
+    projectiles: projectiles,
+    next_cast_index: next_cast_index,
+    casting_indices: casting_indices,
+    did_wrap: did_wrap,
+    ..,
+  ) = result
 
-      // Should wrap back to start
-      did_wrap
-      |> should.be_true()
+  // Should cast 2 projectiles
+  assert list.length(projectiles) == 2
 
-      // Next cast should be at index 2 (after wrapping)
-      next_cast_index
-      |> should.equal(2)
+  // Should wrap back to start
+  assert did_wrap == True
 
-      // Should highlight: double_spell (2), fireball (0), fireball (1)
-      casting_indices
-      |> list.reverse
-      |> should.equal([2, 0, 1])
-    }
-    _ -> should.fail()
-  }
+  // Next cast should be at index 2 (after wrapping)
+  assert next_cast_index == 2
+
+  // Should highlight: double_spell (2), fireball (0), fireball (1)
+  assert list.reverse(casting_indices) == [2, 0, 1]
 }
 
 /// Test: Multiple double spells in a row
@@ -230,8 +204,8 @@ pub fn multiple_double_spells_test() {
       max_mana: 100.0,
       current_mana: 100.0,
       mana_recharge_rate: 30.0,
-      cast_delay: 0.2,
-      recharge_time: 0.5,
+      cast_delay: duration.milliseconds(200),
+      recharge_time: duration.milliseconds(500),
       spells_per_cast: 1,
       spread: 0.0,
     )
@@ -240,35 +214,28 @@ pub fn multiple_double_spells_test() {
     wand.cast(
       test_wand,
       0,
-      Vec3(0.0, 0.0, 0.0),
-      Vec3(1.0, 0.0, 0.0),
+      vec3.Vec3(0.0, 0.0, 0.0),
+      vec3.Vec3(1.0, 0.0, 0.0),
       0,
       option.None,
       option.None,
       [],
     )
 
-  case result {
-    wand.CastSuccess(
-      projectiles: projectiles,
-      casting_indices: casting_indices,
-      ..,
-    ) -> {
-      // First double: draw = 1 - 1 + 2 = 2
-      // Second double: draw = 2 - 1 + 2 = 3
-      // Three fireballs: draw = 3 - 1 - 1 - 1 = 0
-      // Should cast 3 projectiles
-      projectiles
-      |> list.length
-      |> should.equal(3)
+  let assert wand.CastSuccess(
+    projectiles: projectiles,
+    casting_indices: casting_indices,
+    ..,
+  ) = result
 
-      // Should highlight: double (0), double (1), fireball (2), fireball (3), fireball (4)
-      casting_indices
-      |> list.reverse
-      |> should.equal([0, 1, 2, 3, 4])
-    }
-    _ -> should.fail()
-  }
+  // First double: draw = 1 - 1 + 2 = 2
+  // Second double: draw = 2 - 1 + 2 = 3
+  // Three fireballs: draw = 3 - 1 - 1 - 1 = 0
+  // Should cast 3 projectiles
+  assert list.length(projectiles) == 3
+
+  // Should highlight: double (0), double (1), fireball (2), fireball (3), fireball (4)
+  assert list.reverse(casting_indices) == [0, 1, 2, 3, 4]
 }
 
 /// Test: Double spell with empty slot after it
@@ -291,8 +258,8 @@ pub fn double_spell_with_empty_slot_test() {
       max_mana: 100.0,
       current_mana: 100.0,
       mana_recharge_rate: 30.0,
-      cast_delay: 0.2,
-      recharge_time: 0.5,
+      cast_delay: duration.milliseconds(200),
+      recharge_time: duration.milliseconds(500),
       spells_per_cast: 1,
       spread: 0.0,
     )
@@ -301,32 +268,25 @@ pub fn double_spell_with_empty_slot_test() {
     wand.cast(
       test_wand,
       0,
-      Vec3(0.0, 0.0, 0.0),
-      Vec3(1.0, 0.0, 0.0),
+      vec3.Vec3(0.0, 0.0, 0.0),
+      vec3.Vec3(1.0, 0.0, 0.0),
       0,
       option.None,
       option.None,
       [],
     )
 
-  case result {
-    wand.CastSuccess(
-      projectiles: projectiles,
-      casting_indices: casting_indices,
-      ..,
-    ) -> {
-      // Should cast 2 projectiles (skipping the empty slot)
-      projectiles
-      |> list.length
-      |> should.equal(2)
+  let assert wand.CastSuccess(
+    projectiles: projectiles,
+    casting_indices: casting_indices,
+    ..,
+  ) = result
 
-      // Should highlight: double_spell (0), empty (1), fireball (2), fireball (3)
-      casting_indices
-      |> list.reverse
-      |> should.equal([0, 1, 2, 3])
-    }
-    _ -> should.fail()
-  }
+  // Should cast 2 projectiles (skipping the empty slot)
+  assert list.length(projectiles) == 2
+
+  // Should highlight: double_spell (0), empty (1), fireball (2), fireball (3)
+  assert list.reverse(casting_indices) == [0, 1, 2, 3]
 }
 
 /// Test: Double spell with modifier before damage spell
@@ -349,8 +309,8 @@ pub fn double_spell_with_modifier_test() {
       max_mana: 100.0,
       current_mana: 100.0,
       mana_recharge_rate: 30.0,
-      cast_delay: 0.2,
-      recharge_time: 0.5,
+      cast_delay: duration.milliseconds(200),
+      recharge_time: duration.milliseconds(500),
       spells_per_cast: 1,
       spread: 0.0,
     )
@@ -359,41 +319,33 @@ pub fn double_spell_with_modifier_test() {
     wand.cast(
       test_wand,
       0,
-      Vec3(0.0, 0.0, 0.0),
-      Vec3(1.0, 0.0, 0.0),
+      vec3.Vec3(0.0, 0.0, 0.0),
+      vec3.Vec3(1.0, 0.0, 0.0),
       0,
       option.None,
       option.None,
       [],
     )
 
-  case result {
-    wand.CastSuccess(
-      projectiles: projectiles,
-      remaining_mana: remaining_mana,
-      casting_indices: casting_indices,
-      ..,
-    ) -> {
-      // Should cast 2 projectiles
-      projectiles
-      |> list.length
-      |> should.equal(2)
+  let assert wand.CastSuccess(
+    projectiles: projectiles,
+    remaining_mana: remaining_mana,
+    casting_indices: casting_indices,
+    ..,
+  ) = result
 
-      // Fireball normally costs 15.0 mana each
-      // Add Mana reduces cost by 30.0
-      // So each modified fireball costs 15.0 - 30.0 = -15.0 (gains 15 mana!)
-      // Total mana change: -15 * 2 = -30 (gain 30 mana)
-      // Expected remaining: 100.0 - (-30.0) = 130.0
-      remaining_mana
-      |> should.equal(130.0)
+  // Should cast 2 projectiles
+  assert list.length(projectiles) == 2
 
-      // Should highlight all used slots
-      casting_indices
-      |> list.reverse
-      |> should.equal([0, 1, 2, 3])
-    }
-    _ -> should.fail()
-  }
+  // Fireball normally costs 15.0 mana each
+  // Add Mana reduces cost by 30.0
+  // So each modified fireball costs 15.0 - 30.0 = -15.0 (gains 15 mana!)
+  // Total mana change: -15 * 2 = -30 (gain 30 mana)
+  // Expected remaining: 100.0 - (-30.0) = 130.0
+  assert remaining_mana == 130.0
+
+  // Should highlight all used slots
+  assert list.reverse(casting_indices) == [0, 1, 2, 3]
 }
 
 /// Test: Double spell wrapping with partial spells available
@@ -416,8 +368,8 @@ pub fn double_spell_wrapping_partial_test() {
       max_mana: 100.0,
       current_mana: 100.0,
       mana_recharge_rate: 30.0,
-      cast_delay: 0.2,
-      recharge_time: 0.5,
+      cast_delay: duration.milliseconds(200),
+      recharge_time: duration.milliseconds(500),
       spells_per_cast: 1,
       spread: 0.0,
     )
@@ -426,25 +378,20 @@ pub fn double_spell_wrapping_partial_test() {
     wand.cast(
       test_wand,
       2,
-      Vec3(0.0, 0.0, 0.0),
-      Vec3(1.0, 0.0, 0.0),
+      vec3.Vec3(0.0, 0.0, 0.0),
+      vec3.Vec3(1.0, 0.0, 0.0),
       0,
       option.None,
       option.None,
       [],
     )
 
-  case result {
-    wand.CastSuccess(projectiles: projectiles, did_wrap: did_wrap, ..) -> {
-      // Should cast 1 projectile (only 1 available)
-      projectiles
-      |> list.length
-      |> should.equal(1)
+  let assert wand.CastSuccess(projectiles: projectiles, did_wrap: did_wrap, ..) =
+    result
 
-      // Should wrap
-      did_wrap
-      |> should.be_true()
-    }
-    _ -> should.fail()
-  }
+  // Should cast 1 projectile (only 1 available)
+  assert list.length(projectiles) == 1
+
+  // Should wrap
+  assert did_wrap == True
 }
