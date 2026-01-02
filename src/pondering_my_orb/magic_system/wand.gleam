@@ -6,9 +6,10 @@ import gleam/result
 import gleam/time/duration
 import gleam_community/maths
 import iv
-import pondering_my_orb/magic_system/spell
 import vec/vec3
 import vec/vec3f
+
+import pondering_my_orb/magic_system/spell
 
 const base_cast_delay = 150
 
@@ -211,7 +212,6 @@ const max_orbiting_projectiles = 8
 
 /// Default orbit radius for orbiting projectiles
 const orbit_radius = 3.0
-
 
 // ============================================================================
 // State Machine Helper Functions

@@ -48,10 +48,19 @@ const model_scale = 0.1
 fn model_paths() -> List(#(String, String)) {
   [
     // Floor
-    #("floor-stone", "medieval/Models/floor.fbx"),
+    #(
+      generator.FloorStone |> generator.element_type_to_string,
+      "medieval/Models/floor.fbx",
+    ),
     // Fortified Walls
-    #("wall-fortified", "medieval/Models/wall-fortified.fbx"),
-    #("wall-fortified_gate", "medieval/Models/wall-fortified-gate.fbx"),
+    #(
+      generator.WallFortified |> generator.element_type_to_string,
+      "medieval/Models/wall-fortified.fbx",
+    ),
+    #(
+      generator.WallFortifiedGate |> generator.element_type_to_string,
+      "medieval/Models/wall-fortified-gate.fbx",
+    ),
   ]
 }
 

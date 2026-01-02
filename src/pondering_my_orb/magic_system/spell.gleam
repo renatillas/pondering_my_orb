@@ -560,3 +560,11 @@ pub fn add_trigger() -> Spell {
     ),
   )
 }
+
+pub fn name(spell: Spell) -> String {
+  case spell {
+    DamageSpell(_, kind) -> kind.name
+    ModifierSpell(_, kind) -> kind.name
+    MulticastSpell(_, kind) -> kind.name
+  }
+}

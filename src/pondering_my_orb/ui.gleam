@@ -27,8 +27,8 @@ type Msg {
 }
 
 /// Lustre model - stores UI state and the bridge
-pub type UIModel {
-  UIModel(
+pub type Model {
+  Model(
     bridge: ui.Bridge(game_msg.ToUI, game_msg.ToGame),
     wand_slots: List(Option(spell.Spell)),
     selected_slot: Option(Int),
@@ -65,9 +65,9 @@ pub fn start(
 
 fn init(
   bridge: ui.Bridge(game_msg.ToUI, game_msg.ToGame),
-) -> #(UIModel, effect.Effect(Msg)) {
+) -> #(Model, effect.Effect(Msg)) {
   #(
-    UIModel(
+    Model(
       bridge: bridge,
       wand_slots: [option.None, option.None, option.None, option.None],
       selected_slot: option.None,
@@ -84,10 +84,10 @@ fn init(
 // UPDATE
 // =============================================================================
 
-fn update(model: UIModel, msg: Msg) -> #(UIModel, effect.Effect(Msg)) {
+fn update(model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
   case msg {
     GameMsg(game_msg.SlotClicked(slot)) -> #(
-      UIModel(..model, selected_slot: option.Some(slot)),
+      Model(..model, selected_slot: option.Some(slot)),
       ui.to_tiramisu(
         model.bridge,
         game_msg.PlayerMsg(player.MagicMsg(magic.SelectSlot(slot))),
@@ -96,7 +96,7 @@ fn update(model: UIModel, msg: Msg) -> #(UIModel, effect.Effect(Msg)) {
     )
 
     GameMsg(game_msg.WandUpdated(slots, selected, mana, max_mana, available)) -> #(
-      UIModel(
+      Model(
         ..model,
         wand_slots: slots,
         selected_slot: selected,
@@ -140,7 +140,7 @@ fn update(model: UIModel, msg: Msg) -> #(UIModel, effect.Effect(Msg)) {
                 [spell, ..] -> {
                   let spell_id = get_spell_id(spell)
                   #(
-                    UIModel(..model, drag_state: new_drag_state),
+                    Model(..model, drag_state: new_drag_state),
                     ui.to_tiramisu(
                       model.bridge,
                       game_msg.PlayerMsg(
@@ -154,13 +154,13 @@ fn update(model: UIModel, msg: Msg) -> #(UIModel, effect.Effect(Msg)) {
                   )
                 }
                 [] -> #(
-                  UIModel(..model, drag_state: new_drag_state),
+                  Model(..model, drag_state: new_drag_state),
                   effect.none(),
                 )
               }
             }
             False -> #(
-              UIModel(..model, drag_state: new_drag_state),
+              Model(..model, drag_state: new_drag_state),
               effect.none(),
             )
           }
@@ -169,7 +169,7 @@ fn update(model: UIModel, msg: Msg) -> #(UIModel, effect.Effect(Msg)) {
         option.Some(ensaimada.SameContainer(from_index, to_index)) -> {
           // Send reorder to game
           #(
-            UIModel(..model, drag_state: new_drag_state),
+            Model(..model, drag_state: new_drag_state),
             ui.to_tiramisu(
               model.bridge,
               game_msg.PlayerMsg(
@@ -181,7 +181,7 @@ fn update(model: UIModel, msg: Msg) -> #(UIModel, effect.Effect(Msg)) {
         }
 
         option.None -> #(
-          UIModel(..model, drag_state: new_drag_state),
+          Model(..model, drag_state: new_drag_state),
           effect.none(),
         )
       }
@@ -201,7 +201,7 @@ fn get_spell_id(spell: spell.Spell) -> spell.Id {
 // VIEW
 // =============================================================================
 
-fn view(model: UIModel) -> Element(Msg) {
+fn view(model: Model) -> Element(Msg) {
   html.div(
     [
       class(
@@ -219,7 +219,7 @@ fn view(model: UIModel) -> Element(Msg) {
   )
 }
 
-fn view_spell_library(model: UIModel) -> Element(Msg) {
+fn view_spell_library(model: Model) -> Element(Msg) {
   let library_config =
     ensaimada.Config(
       on_reorder: fn(_, _) { Nil },
@@ -261,7 +261,7 @@ fn render_library_spell(
   _drag_state: ensaimada.DragState,
 ) -> Element(Nil) {
   let spell = ensaimada.item_data(item)
-  let name = get_spell_name(spell)
+  let name = spell.name(spell)
   let color = get_spell_color_class(spell)
 
   html.div(
@@ -274,7 +274,7 @@ fn render_library_spell(
   )
 }
 
-fn view_wand_bar(model: UIModel) -> Element(Msg) {
+fn view_wand_bar(model: Model) -> Element(Msg) {
   let wand_config =
     ensaimada.Config(
       on_reorder: fn(_, _) { Nil },
@@ -317,7 +317,7 @@ fn render_wand_slot(
   }
 
   let spell_name = case spell_opt {
-    option.Some(spell) -> get_spell_name(spell)
+    option.Some(spell) -> spell.name(spell)
     option.None -> "Empty"
   }
 
@@ -367,14 +367,6 @@ fn view_mana_bar(mana: Float, max_mana: Float) -> Element(Msg) {
 // =============================================================================
 // HELPERS
 // =============================================================================
-
-fn get_spell_name(spell: spell.Spell) -> String {
-  case spell {
-    spell.DamageSpell(_, kind) -> kind.name
-    spell.ModifierSpell(_, kind) -> kind.name
-    spell.MulticastSpell(_, kind) -> kind.name
-  }
-}
 
 fn get_spell_color_class(spell: spell.Spell) -> String {
   case spell {
