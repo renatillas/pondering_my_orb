@@ -46,7 +46,8 @@ pub type Model {
     spawn_timer: duration.Duration,
     spawn_interval: duration.Duration,
     player_pos: Vec3(Float),
-    damage_to_player: Float,
+    // Positions where enemies died this frame (for altar spawning)
+    death_positions: List(Vec3(Float)),
   )
 }
 
@@ -94,7 +95,7 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
       spawn_timer: duration.milliseconds(0),
       spawn_interval: duration.milliseconds(spawn_interval_ms),
       player_pos: Vec3(0.0, 0.0, 0.0),
-      damage_to_player: 0.0,
+      death_positions: [],
     )
 
   #(model, effect.tick(Tick))
@@ -104,44 +105,61 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
 // UPDATE
 // =============================================================================
 
+/// Update enemies. Accepts taggers for cross-module dispatch.
 pub fn update(
   model: Model,
   msg: Msg,
   ctx: tiramisu.Context,
-) -> #(Model, effect.Effect(Msg)) {
+  player_took_damage player_took_damage,
+  effect_mapper effect_mapper,
+) -> #(Model, effect.Effect(game_msg)) {
   case msg {
     Tick -> {
-      let new_model = tick(model, ctx)
-      #(new_model, effect.tick(Tick))
+      let #(new_model, damage) = tick(model, ctx)
+      let damage_effect = case damage >. 0.0 {
+        True -> effect.dispatch(player_took_damage(damage))
+        False -> effect.none()
+      }
+      #(new_model, effect.batch([effect.tick(effect_mapper(Tick)), damage_effect]))
     }
 
     UpdatePlayerPos(player_pos) -> {
-      // Update player position and immediately recalculate velocities
-      // so they're ready when physics PreStep reads them
       let model_with_pos = Model(..model, player_pos: player_pos)
       let model_with_velocities = calculate_velocities(model_with_pos)
       #(model_with_velocities, effect.none())
     }
 
     TakeProjectileDamage(enemy_id, damage) -> {
-      let updated_enemies =
-        list.filter_map(model.enemies, fn(enemy) {
+      let #(updated_enemies, new_death_positions) =
+        list.fold(model.enemies, #([], model.death_positions), fn(acc, enemy) {
+          let #(enemies_acc, deaths_acc) = acc
           case enemy.id == enemy_id {
             True -> {
               let new_health = health.damage(enemy.health, damage)
               case health.is_dead(new_health) {
-                True -> Error(Nil)
-                False -> Ok(Enemy(..enemy, health: new_health))
+                True -> #(enemies_acc, [enemy.position, ..deaths_acc])
+                False -> {
+                  #(
+                    [Enemy(..enemy, health: new_health), ..enemies_acc],
+                    deaths_acc,
+                  )
+                }
               }
             }
-            False -> Ok(enemy)
+            False -> #([enemy, ..enemies_acc], deaths_acc)
           }
         })
-      #(Model(..model, enemies: updated_enemies), effect.none())
+      #(
+        Model(
+          ..model,
+          enemies: updated_enemies,
+          death_positions: new_death_positions,
+        ),
+        effect.none(),
+      )
     }
 
     UpdatePositionsFromPhysics(positions) -> {
-      // Update enemy positions from physics simulation
       let updated_enemies =
         list.map(model.enemies, fn(enemy) {
           case list.find(positions, fn(p) { p.0 == enemy.id }) {
@@ -158,11 +176,8 @@ pub fn update(
 // TICK
 // =============================================================================
 
-fn tick(model: Model, ctx: tiramisu.Context) -> Model {
+fn tick(model: Model, ctx: tiramisu.Context) -> #(Model, Float) {
   let dt = ctx.delta_time
-
-  // Reset damage to player each tick
-  let model = Model(..model, damage_to_player: 0.0)
 
   // Update spawn timer and spawn enemies
   let model = update_spawning(model, dt)
@@ -170,11 +185,8 @@ fn tick(model: Model, ctx: tiramisu.Context) -> Model {
   // Move enemies toward player
   let model = update_movement(model, dt)
 
-  // Check for enemy attacks on player
-  let model = update_attacks(model, dt)
-
-  // Projectile collision detection is now handled by physics system
-  model
+  // Check for enemy attacks on player (returns damage dealt)
+  update_attacks(model, dt)
 }
 
 fn update_spawning(model: Model, dt: duration.Duration) -> Model {
@@ -250,7 +262,7 @@ fn calculate_velocities(model: Model) -> Model {
   Model(..model, enemies: updated_enemies)
 }
 
-fn update_attacks(model: Model, dt: duration.Duration) -> Model {
+fn update_attacks(model: Model, dt: duration.Duration) -> #(Model, Float) {
   let #(updated_enemies, total_damage) =
     list.fold(model.enemies, #([], 0.0), fn(acc, enemy) {
       let #(enemies_acc, damage_acc) = acc
@@ -268,7 +280,6 @@ fn update_attacks(model: Model, dt: duration.Duration) -> Model {
 
       case distance <=. attack_range && new_cooldown_secs <=. 0.0 {
         True -> {
-          // Attack!
           let attacking_enemy =
             Enemy(
               ..enemy,
@@ -283,7 +294,7 @@ fn update_attacks(model: Model, dt: duration.Duration) -> Model {
       }
     })
 
-  Model(..model, enemies: updated_enemies, damage_to_player: total_damage)
+  #(Model(..model, enemies: updated_enemies), total_damage)
 }
 
 // =============================================================================
@@ -411,11 +422,6 @@ fn view_enemy_health_bar(enemy_health: health.Health) -> element.Element(Nil) {
 // PUBLIC HELPERS
 // =============================================================================
 
-/// Get the accumulated damage to deal to the player this frame
-pub fn get_damage_to_player(model: Model) -> Float {
-  model.damage_to_player
-}
-
 /// Get enemies with their desired velocities for physics
 pub fn get_enemies_for_physics(model: Model) -> List(#(id.Id, Vec3(Float))) {
   list.map(model.enemies, fn(e) { #(e.id, e.desired_velocity) })
@@ -448,4 +454,18 @@ pub fn apply_physics_positions(
       }
     })
   Model(..model, enemies: updated_enemies, player_pos: player_pos)
+}
+
+/// Get positions where enemies died (for altar spawning)
+pub fn get_death_positions(model: Model) -> List(Vec3(Float)) {
+  model.death_positions
+}
+
+/// Clear death positions after they've been processed
+pub fn clear_death_positions(model: Model) -> Model {
+  Model(..model, death_positions: [])
+}
+
+pub fn id(enemy: Enemy) -> id.Id {
+  enemy.id
 }

@@ -58,18 +58,7 @@ pub type HitEffectType {
 
 /// Visual source for a spell projectile - either static texture or animated spritesheet
 pub type ProjectileVisual {
-  /// Static single-frame sprite (e.g., spark.png)
   StaticSprite(texture_path: String, size: vec2.Vec2(Float))
-  /// Animated spritesheet (e.g., FireBall_64x64.png)
-  AnimatedSprite(
-    spritesheet_path: String,
-    columns: Int,
-    rows: Int,
-    frames: List(Int),
-    frame_duration_ms: Int,
-    loop_mode: SpritesheetLoop,
-    size: vec2.Vec2(Float),
-  )
 }
 
 /// Visual configuration for spell effects

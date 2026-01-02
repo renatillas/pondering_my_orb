@@ -11,10 +11,6 @@ import vec/vec3f
 
 import pondering_my_orb/magic_system/spell
 
-const base_cast_delay = 150
-
-const base_recharge_time = 330
-
 /// Represents a wand with spell slots
 pub type Wand {
   Wand(
@@ -104,19 +100,28 @@ pub fn new(
   )
 }
 
-/// Create a new wand with random stats
+/// Create a new wand with random stats (Noita-inspired ranges)
 pub fn new_random(name: String) -> Wand {
-  let slot_count = case float.random() {
-    r if r <. 0.5 -> 2
-    _ -> 3
-  }
+  // Capacity (slots): 2-6
+  let slot_count = 2 + int.random(5)
 
-  let cast_delay = duration.milliseconds(base_cast_delay + int.random(100))
-  let recharge_time =
-    duration.milliseconds(base_recharge_time + int.random(140))
+  // Spells/Cast: 1-3
+  let spells_per_cast = 1 + int.random(3)
+
+  // Cast Delay: 50-250ms
+  let cast_delay = duration.milliseconds(50 + int.random(201))
+
+  // Recharge Time: 20-470ms
+  let recharge_time = duration.milliseconds(20 + int.random(451))
+
+  // Mana Max: 80-130
   let max_mana = 80.0 +. float.random() *. 50.0
-  let mana_recharge_rate = 25.0 +. float.random() *. 15.0
-  let spread = 0.0
+
+  // Mana Charge Speed: 5-40 per second
+  let mana_recharge_rate = 5.0 +. float.random() *. 35.0
+
+  // Spread: 0-10 degrees
+  let spread = float.random() *. 10.0
 
   new(
     name:,
@@ -125,7 +130,7 @@ pub fn new_random(name: String) -> Wand {
     mana_recharge_rate:,
     cast_delay:,
     recharge_time:,
-    spells_per_cast: 1,
+    spells_per_cast:,
     spread:,
   )
 }
@@ -964,4 +969,18 @@ fn apply_spread(
       |> vec3f.normalize()
     }
   }
+}
+
+/// Get the names of all spells in a wand's slots
+pub fn get_spell_names(wand: Wand) -> List(String) {
+  wand.slots
+  |> iv.to_list()
+  |> list.filter_map(fn(slot) {
+    case slot {
+      option.Some(spell.DamageSpell(_, kind)) -> Ok(kind.name)
+      option.Some(spell.ModifierSpell(_, kind)) -> Ok(kind.name)
+      option.Some(spell.MulticastSpell(_, kind)) -> Ok(kind.name)
+      option.None -> Error(Nil)
+    }
+  })
 }

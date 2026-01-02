@@ -1,4 +1,5 @@
 import gleam/float
+import gleam/list
 import gleam/option.{type Option}
 import gleam/time/duration
 import tiramisu
@@ -18,6 +19,8 @@ import pondering_my_orb/game_physics/layer
 import pondering_my_orb/health
 import pondering_my_orb/id
 import pondering_my_orb/magic_system/spell
+import pondering_my_orb/magic_system/spell_bag
+import pondering_my_orb/magic_system/wand
 import pondering_my_orb/player/magic
 
 // =============================================================================
@@ -95,12 +98,20 @@ pub fn update(
   case msg {
     Tick -> {
       let new_model = tick(model, ctx)
+
       // Send player state to magic module
       let update_magic_effect =
         effect.dispatch(
           MagicMsg(magic.UpdatePlayerState(new_model.position, new_model.zoom)),
         )
-      #(new_model, effect.batch([effect.tick(Tick), update_magic_effect]))
+
+      // Check for wand switching input
+      let wand_switch_effect = get_wand_switch_effect(ctx)
+
+      #(
+        new_model,
+        effect.batch([effect.tick(Tick), update_magic_effect, wand_switch_effect]),
+      )
     }
     MagicMsg(magic_msg) -> {
       let #(new_magic, magic_effect) = magic.update(model.magic, magic_msg, ctx)
@@ -128,9 +139,14 @@ fn update_movement(model: Model, ctx: tiramisu.Context) -> Model {
   // Convert to world space and normalize if non-zero
   let world_movement = screen_to_world_movement(screen_input)
 
-  // Mouse wheel for zoom
+  // Mouse wheel for zoom (only when Shift is NOT held - Shift+scroll is for wand switching)
+  let shift_held = input.is_key_pressed(ctx.input, input.ShiftLeft)
+    || input.is_key_pressed(ctx.input, input.ShiftRight)
   let wheel_delta = input.mouse_wheel_delta(ctx.input)
-  let zoom_change = wheel_delta *. zoom_speed *. dt
+  let zoom_change = case shift_held {
+    True -> 0.0  // Scroll used for wand switching when shift held
+    False -> wheel_delta *. zoom_speed *. dt
+  }
   let new_zoom =
     float.clamp(model.zoom +. zoom_change, min: min_zoom, max: max_zoom)
 
@@ -218,6 +234,41 @@ fn screen_to_world_movement(screen_input: Vec2(Float)) -> Vec2(Float) {
     True -> vec2f.normalize(combined)
     False -> vec2f.zero
   }
+}
+
+// =============================================================================
+// WAND SWITCHING
+// =============================================================================
+
+/// Check for wand switch inputs and return appropriate effect
+fn get_wand_switch_effect(ctx: tiramisu.Context) -> effect.Effect(Msg) {
+  // Number keys 1-4 for direct wand selection
+  let key_effect = case
+    input.is_key_just_pressed(ctx.input, input.Digit1),
+    input.is_key_just_pressed(ctx.input, input.Digit2),
+    input.is_key_just_pressed(ctx.input, input.Digit3),
+    input.is_key_just_pressed(ctx.input, input.Digit4)
+  {
+    True, _, _, _ -> effect.dispatch(MagicMsg(magic.SwitchWand(0)))
+    _, True, _, _ -> effect.dispatch(MagicMsg(magic.SwitchWand(1)))
+    _, _, True, _ -> effect.dispatch(MagicMsg(magic.SwitchWand(2)))
+    _, _, _, True -> effect.dispatch(MagicMsg(magic.SwitchWand(3)))
+    _, _, _, _ -> effect.none()
+  }
+
+  // Shift + scroll wheel for wand cycling
+  let shift_held =
+    input.is_key_pressed(ctx.input, input.ShiftLeft)
+    || input.is_key_pressed(ctx.input, input.ShiftRight)
+  let wheel_delta = input.mouse_wheel_delta(ctx.input)
+
+  let scroll_effect = case shift_held, wheel_delta {
+    True, d if d >. 0.0 -> effect.dispatch(MagicMsg(magic.SwitchWandRelative(-1)))
+    True, d if d <. 0.0 -> effect.dispatch(MagicMsg(magic.SwitchWandRelative(1)))
+    _, _ -> effect.none()
+  }
+
+  effect.batch([key_effect, scroll_effect])
 }
 
 // =============================================================================
@@ -319,11 +370,32 @@ fn create_camera(model: Model, ctx: tiramisu.Context) -> scene.Node {
 // STATE HELPERS
 // =============================================================================
 
-/// Get wand state for UI synchronization
+/// Get wand state for UI synchronization (active wand)
 pub fn get_wand_ui_state(
   model: Model,
-) -> #(List(Option(spell.Spell)), Option(Int), Float, Float, List(spell.Spell)) {
+) -> #(List(Option(spell.Spell)), Option(Int), Float, Float, spell_bag.SpellBag) {
   magic.get_wand_ui_state(model.magic)
+}
+
+/// Get wand inventory for UI
+pub fn get_wand_inventory(model: Model) -> List(Option(wand.Wand)) {
+  magic.get_wand_inventory(model.magic)
+}
+
+/// Get wand names for UI display
+pub fn get_wand_names(model: Model) -> List(Option(String)) {
+  magic.get_wand_inventory(model.magic)
+  |> list.map(fn(wand_opt) {
+    case wand_opt {
+      option.Some(w) -> option.Some(w.name)
+      option.None -> option.None
+    }
+  })
+}
+
+/// Get active wand index
+pub fn get_active_wand_index(model: Model) -> Int {
+  magic.get_active_wand_index(model.magic)
 }
 
 /// Get current projectiles for collision detection

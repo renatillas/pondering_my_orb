@@ -20,20 +20,27 @@ import vec/vec3f
 
 import pondering_my_orb/id
 import pondering_my_orb/magic_system/spell
+import pondering_my_orb/magic_system/spell_bag
 import pondering_my_orb/magic_system/wand
 
 // =============================================================================
 // TYPES
 // =============================================================================
 
+/// Per-wand state tracking cooldowns and cast index
+pub type WandState {
+  WandState(cast_cooldown: duration.Duration, wand_cast_index: Int)
+}
+
 pub type Model {
   Model(
-    wand: wand.Wand,
+    // 4 wand slots (like Noita)
+    wands: iv.Array(Option(wand.Wand)),
+    active_wand_index: Int,
+    wand_states: iv.Array(WandState),
     projectiles: List(spell.Projectile),
     next_projectile_id: Int,
-    cast_cooldown: duration.Duration,
-    wand_cast_index: Int,
-    available_spells: List(spell.Spell),
+    spell_bag: spell_bag.SpellBag,
     selected_spell_slot: Option(Int),
     // Player state needed for casting
     player_pos: Vec3(Float),
@@ -48,6 +55,13 @@ pub type Msg {
   SelectSlot(Int)
   ReorderWandSlots(from_index: Int, to_index: Int)
   RemoveProjectile(Int)
+  // Wand switching
+  SwitchWand(wand_index: Int)
+  SwitchWandRelative(delta: Int)
+  // Pick up wand from altar
+  PickUpWand(wand.Wand)
+  // Remove spell from wand slot (move to spell bag)
+  RemoveSpellFromSlot(slot_index: Int)
 }
 
 // =============================================================================
@@ -55,19 +69,6 @@ pub type Msg {
 // =============================================================================
 
 pub fn init() -> #(Model, effect.Effect(Msg)) {
-  // Create a wand with 4 slots
-  let initial_wand =
-    wand.new(
-      name: "Starter Wand",
-      slot_count: 4,
-      max_mana: 100.0,
-      mana_recharge_rate: 30.0,
-      cast_delay: duration.milliseconds(150),
-      recharge_time: duration.milliseconds(330),
-      spells_per_cast: 1,
-      spread: 0.0,
-    )
-
   // Create default spell visuals
   let default_visuals =
     spell.SpellVisuals(
@@ -80,22 +81,49 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
       emissive_intensity: 1.0,
     )
 
-  // Available spells the player can add to their wand
-  let available_spells = [
-    spell.spark(default_visuals),
-    spell.fireball(spell.SpellVisuals(..default_visuals, base_tint: 0xFF4400)),
-    spell.add_damage(),
-    spell.rapid_fire(),
-  ]
+  // Create starter wand with 4 slots and a spark in slot 0
+  let starter_wand =
+    wand.new(
+      name: "Starter Wand",
+      slot_count: 4,
+      max_mana: 100.0,
+      mana_recharge_rate: 30.0,
+      cast_delay: duration.milliseconds(150),
+      recharge_time: duration.milliseconds(330),
+      spells_per_cast: 1,
+      spread: 0.0,
+    )
+  let assert Ok(starter_wand) =
+    wand.set_spell(starter_wand, 0, spell.spark(default_visuals))
+
+  // 4 wand slots - only first slot has the starter wand
+  let wands =
+    iv.from_list([
+      option.Some(starter_wand),
+      option.None,
+      option.None,
+      option.None,
+    ])
+
+  // Per-wand state (cooldown and cast index for each slot)
+  let initial_wand_state =
+    WandState(
+      cast_cooldown: duration.milliseconds(0),
+      wand_cast_index: 0,
+    )
+  let wand_states = iv.repeat(initial_wand_state, 4)
+
+  // Start with an empty spell bag
+  let initial_spell_bag = spell_bag.new()
 
   let model =
     Model(
-      wand: initial_wand,
+      wands: wands,
+      active_wand_index: 0,
+      wand_states: wand_states,
       projectiles: [],
       next_projectile_id: 0,
-      cast_cooldown: duration.milliseconds(0),
-      wand_cast_index: 0,
-      available_spells: available_spells,
+      spell_bag: initial_spell_bag,
       selected_spell_slot: option.None,
       player_pos: Vec3(0.0, 1.0, 0.0),
       zoom: 30.0,
@@ -124,48 +152,61 @@ pub fn update(
     }
 
     PlaceSpellInSlot(spell_id, slot_index) -> {
-      let maybe_new_spell =
-        list.find(model.available_spells, fn(s) { s.id == spell_id })
+      // Find the spell in the spell bag by id
+      let maybe_spell =
+        spell_bag.list_spells(model.spell_bag)
+        |> list.find(fn(s) { s.id == spell_id })
 
-      case maybe_new_spell {
-        Ok(spell_to_place) -> {
-          let existing_spell = case wand.get_spell(model.wand, slot_index) {
+      case maybe_spell, get_active_wand(model) {
+        Ok(spell_to_place), option.Some(active_wand) -> {
+          // Get existing spell in wand slot (if any)
+          let existing_spell = case wand.get_spell(active_wand, slot_index) {
             Ok(option.Some(spell)) -> option.Some(spell)
             _ -> option.None
           }
 
+          // Remove the spell from bag
+          let updated_bag =
+            spell_bag.remove_spell(model.spell_bag, spell_to_place)
+
+          // Add the spell to wand slot
           case
             iv.set(
-              model.wand.slots,
+              active_wand.slots,
               at: slot_index,
               to: option.Some(spell_to_place),
             )
           {
             Ok(new_slots) -> {
-              let new_wand = wand.Wand(..model.wand, slots: new_slots)
+              let new_wand = wand.Wand(..active_wand, slots: new_slots)
 
-              let updated_available =
-                model.available_spells
-                |> list.filter(fn(s) { s.id != spell_id })
-
-              let final_available = case existing_spell {
-                option.Some(old_spell) -> [old_spell, ..updated_available]
-                option.None -> updated_available
+              // If there was an existing spell in the slot, add it back to bag
+              let final_bag = case existing_spell {
+                option.Some(old_spell) ->
+                  spell_bag.add_spell(updated_bag, old_spell)
+                option.None -> updated_bag
               }
 
-              let new_model =
-                Model(
-                  ..model,
-                  wand: new_wand,
-                  available_spells: final_available,
+              // Update the wand in the wands array
+              case
+                iv.set(
+                  model.wands,
+                  at: model.active_wand_index,
+                  to: option.Some(new_wand),
                 )
-
-              #(new_model, effect.none())
+              {
+                Ok(new_wands) -> {
+                  let new_model =
+                    Model(..model, wands: new_wands, spell_bag: final_bag)
+                  #(new_model, effect.none())
+                }
+                Error(_) -> #(model, effect.none())
+              }
             }
             Error(_) -> #(model, effect.none())
           }
         }
-        Error(_) -> #(model, effect.none())
+        _, _ -> #(model, effect.none())
       }
     }
 
@@ -176,18 +217,103 @@ pub fn update(
     }
 
     ReorderWandSlots(from_index, to_index) -> {
-      let slots_list = iv.to_list(model.wand.slots)
-      let reordered = ensaimada.reorder(slots_list, from_index, to_index)
-      let new_slots = iv.from_list(reordered)
-      let new_wand = wand.Wand(..model.wand, slots: new_slots)
-      let new_model = Model(..model, wand: new_wand)
-      #(new_model, effect.none())
+      case get_active_wand(model) {
+        option.Some(active_wand) -> {
+          let slots_list = iv.to_list(active_wand.slots)
+          let reordered = ensaimada.reorder(slots_list, from_index, to_index)
+          let new_slots = iv.from_list(reordered)
+          let new_wand = wand.Wand(..active_wand, slots: new_slots)
+          case
+            iv.set(
+              model.wands,
+              at: model.active_wand_index,
+              to: option.Some(new_wand),
+            )
+          {
+            Ok(new_wands) -> {
+              let new_model = Model(..model, wands: new_wands)
+              #(new_model, effect.none())
+            }
+            Error(_) -> #(model, effect.none())
+          }
+        }
+        option.None -> #(model, effect.none())
+      }
     }
 
     RemoveProjectile(projectile_id) -> {
       let new_projectiles =
         list.filter(model.projectiles, fn(p) { p.id != projectile_id })
       #(Model(..model, projectiles: new_projectiles), effect.none())
+    }
+
+    SwitchWand(wand_index) -> {
+      case wand_index >= 0 && wand_index <= 3 {
+        True -> #(Model(..model, active_wand_index: wand_index), effect.none())
+        False -> #(model, effect.none())
+      }
+    }
+
+    SwitchWandRelative(delta) -> {
+      // Wrap around: 0->3->0 or 3->0->3
+      let new_index = { model.active_wand_index + delta + 4 } % 4
+      #(Model(..model, active_wand_index: new_index), effect.none())
+    }
+
+    PickUpWand(new_wand) -> {
+      // Find first empty slot, or replace current wand if all slots full
+      let slot_to_use =
+        find_empty_wand_slot(model.wands)
+        |> option.unwrap(model.active_wand_index)
+
+      case iv.set(model.wands, at: slot_to_use, to: option.Some(new_wand)) {
+        Ok(new_wands) -> #(
+          Model(..model, wands: new_wands, active_wand_index: slot_to_use),
+          effect.none(),
+        )
+        Error(_) -> #(model, effect.none())
+      }
+    }
+
+    RemoveSpellFromSlot(slot_index) -> {
+      case get_active_wand(model) {
+        option.Some(active_wand) -> {
+          case wand.get_spell(active_wand, slot_index) {
+            Ok(option.Some(spell_to_remove)) -> {
+              // Remove spell from wand slot (set to None)
+              case
+                iv.set(active_wand.slots, at: slot_index, to: option.None)
+              {
+                Ok(new_slots) -> {
+                  let new_wand = wand.Wand(..active_wand, slots: new_slots)
+
+                  // Add spell back to spell bag
+                  let updated_bag =
+                    spell_bag.add_spell(model.spell_bag, spell_to_remove)
+
+                  // Update wand in wands array
+                  case
+                    iv.set(
+                      model.wands,
+                      at: model.active_wand_index,
+                      to: option.Some(new_wand),
+                    )
+                  {
+                    Ok(new_wands) -> #(
+                      Model(..model, wands: new_wands, spell_bag: updated_bag),
+                      effect.none(),
+                    )
+                    Error(_) -> #(model, effect.none())
+                  }
+                }
+                Error(_) -> #(model, effect.none())
+              }
+            }
+            _ -> #(model, effect.none())
+          }
+        }
+        option.None -> #(model, effect.none())
+      }
     }
   }
 }
@@ -200,63 +326,26 @@ pub fn update(
 fn tick(model: Model, ctx: tiramisu.Context) -> Model {
   let dt = ctx.delta_time
 
-  // Handle spell slot selection (1-4 keys)
-  let model = update_spell_selection(model, ctx)
-
   // Handle spell casting (left click)
   let model = update_casting(model, ctx)
 
   // Update projectiles
   let model = update_projectiles(model, dt)
 
-  // Recharge wand mana
-  let new_wand = wand.recharge_mana(model.wand, dt)
+  // Recharge mana for all wands
+  let new_wands = recharge_all_wands(model.wands, dt)
 
-  // Reduce cast cooldown
-  let new_cooldown = reduce_cooldown(model.cast_cooldown, dt)
+  // Reduce cooldown for all wand states
+  let new_wand_states = reduce_all_cooldowns(model.wand_states, dt)
 
-  Model(..model, wand: new_wand, cast_cooldown: new_cooldown)
-}
-
-fn update_spell_selection(model: Model, ctx: tiramisu.Context) -> Model {
-  let key1 = input.is_key_just_pressed(ctx.input, input.Digit1)
-  let key2 = input.is_key_just_pressed(ctx.input, input.Digit2)
-  let key3 = input.is_key_just_pressed(ctx.input, input.Digit3)
-  let key4 = input.is_key_just_pressed(ctx.input, input.Digit4)
-
-  let selected = case key1, key2, key3, key4 {
-    True, _, _, _ -> option.Some(0)
-    _, True, _, _ -> option.Some(1)
-    _, _, True, _ -> option.Some(2)
-    _, _, _, True -> option.Some(3)
-    _, _, _, _ -> model.selected_spell_slot
-  }
-
-  let key_e = input.is_key_just_pressed(ctx.input, input.KeyE)
-  let model = case selected, key_e {
-    option.Some(slot_index), True -> add_next_spell_to_slot(model, slot_index)
-    _, _ -> model
-  }
-
-  Model(..model, selected_spell_slot: selected)
-}
-
-fn add_next_spell_to_slot(model: Model, slot_index: Int) -> Model {
-  case model.available_spells {
-    [first_spell, ..] -> {
-      case wand.set_spell(model.wand, slot_index, first_spell) {
-        Ok(new_wand) -> Model(..model, wand: new_wand)
-        Error(_) -> model
-      }
-    }
-    [] -> model
-  }
+  Model(..model, wands: new_wands, wand_states: new_wand_states)
 }
 
 fn update_casting(model: Model, ctx: tiramisu.Context) -> Model {
+  let active_state = get_active_wand_state(model)
   let can_cast =
     input.is_left_button_pressed(ctx.input)
-    && duration.to_seconds(model.cast_cooldown) <=. 0.0
+    && duration.to_seconds(active_state.cast_cooldown) <=. 0.0
 
   case can_cast {
     True -> try_cast_spell(model, ctx)
@@ -265,65 +354,93 @@ fn update_casting(model: Model, ctx: tiramisu.Context) -> Model {
 }
 
 fn try_cast_spell(model: Model, ctx: tiramisu.Context) -> Model {
-  let mouse_pos = input.mouse_position(ctx.input)
-  let target_pos =
-    screen_to_world_ground(
-      mouse_pos,
-      ctx.canvas_size,
-      model.player_pos.x,
-      model.player_pos.z,
-      model.zoom,
-    )
+  case get_active_wand(model) {
+    option.None -> model
+    option.Some(active_wand) -> {
+      let active_state = get_active_wand_state(model)
 
-  let direction =
-    vec3f.subtract(target_pos, model.player_pos) |> vec3f.normalize()
+      let mouse_pos = input.mouse_position(ctx.input)
+      let target_pos =
+        screen_to_world_ground(
+          mouse_pos,
+          ctx.canvas_size,
+          model.player_pos.x,
+          model.player_pos.z,
+          model.zoom,
+        )
 
-  let #(result, new_wand) =
-    wand.cast(
-      model.wand,
-      model.wand_cast_index,
-      model.player_pos,
-      direction,
-      model.next_projectile_id,
-      option.None,
-      option.Some(model.player_pos),
-      model.projectiles,
-    )
+      let direction =
+        vec3f.subtract(target_pos, model.player_pos) |> vec3f.normalize()
 
-  case result {
-    wand.CastSuccess(
-      projectiles: new_projectiles,
-      next_cast_index: next_index,
-      total_cast_delay_addition: delay,
-      total_recharge_time_addition: recharge_addition,
-      did_wrap: wrapped,
-      ..,
-    ) -> {
-      let total_projectiles = list.append(new_projectiles, model.projectiles)
-      let new_id = model.next_projectile_id + list.length(new_projectiles)
+      let #(result, new_wand) =
+        wand.cast(
+          active_wand,
+          active_state.wand_cast_index,
+          model.player_pos,
+          direction,
+          model.next_projectile_id,
+          option.None,
+          option.Some(model.player_pos),
+          model.projectiles,
+        )
 
-      let total_delay = duration.add(model.wand.cast_delay, delay)
+      case result {
+        wand.CastSuccess(
+          projectiles: new_projectiles,
+          next_cast_index: next_index,
+          total_cast_delay_addition: delay,
+          total_recharge_time_addition: recharge_addition,
+          did_wrap: wrapped,
+          ..,
+        ) -> {
+          let total_projectiles =
+            list.append(new_projectiles, model.projectiles)
+          let new_id = model.next_projectile_id + list.length(new_projectiles)
 
-      let final_cooldown = case wrapped {
-        True -> {
-          let recharge =
-            duration.add(model.wand.recharge_time, recharge_addition)
-          duration.add(total_delay, recharge)
+          let total_delay = duration.add(active_wand.cast_delay, delay)
+
+          let final_cooldown = case wrapped {
+            True -> {
+              let recharge =
+                duration.add(active_wand.recharge_time, recharge_addition)
+              duration.add(total_delay, recharge)
+            }
+            False -> total_delay
+          }
+
+          // Update wand in wands array
+          let assert Ok(new_wands) =
+            iv.set(
+              model.wands,
+              at: model.active_wand_index,
+              to: option.Some(new_wand),
+            )
+
+          // Update wand state
+          let new_state =
+            WandState(cast_cooldown: final_cooldown, wand_cast_index: next_index)
+          let assert Ok(new_wand_states) =
+            iv.set(model.wand_states, at: model.active_wand_index, to: new_state)
+
+          Model(
+            ..model,
+            wands: new_wands,
+            wand_states: new_wand_states,
+            projectiles: total_projectiles,
+            next_projectile_id: new_id,
+          )
         }
-        False -> total_delay
+        wand.NotEnoughMana(..) | wand.NoSpellToCast | wand.WandEmpty -> {
+          // Update wand mana even on failure
+          let assert Ok(new_wands) =
+            iv.set(
+              model.wands,
+              at: model.active_wand_index,
+              to: option.Some(new_wand),
+            )
+          Model(..model, wands: new_wands)
+        }
       }
-
-      Model(
-        ..model,
-        wand: new_wand,
-        projectiles: total_projectiles,
-        next_projectile_id: new_id,
-        cast_cooldown: final_cooldown,
-        wand_cast_index: next_index,
-      )
-    }
-    wand.NotEnoughMana(..) | wand.NoSpellToCast | wand.WandEmpty -> {
-      Model(..model, wand: new_wand)
     }
   }
 }
@@ -358,6 +475,72 @@ fn reduce_cooldown(
     }
     False -> duration.milliseconds(0)
   }
+}
+
+// =============================================================================
+// WAND HELPERS
+// =============================================================================
+
+/// Get the currently active wand (if any)
+fn get_active_wand(model: Model) -> Option(wand.Wand) {
+  case iv.get(model.wands, model.active_wand_index) {
+    Ok(wand_opt) -> wand_opt
+    Error(_) -> option.None
+  }
+}
+
+/// Get the state for the active wand
+fn get_active_wand_state(model: Model) -> WandState {
+  case iv.get(model.wand_states, model.active_wand_index) {
+    Ok(state) -> state
+    Error(_) ->
+      WandState(
+        cast_cooldown: duration.milliseconds(0),
+        wand_cast_index: 0,
+      )
+  }
+}
+
+/// Find the first empty wand slot (returns index)
+fn find_empty_wand_slot(wands: iv.Array(Option(wand.Wand))) -> Option(Int) {
+  find_empty_slot_loop(wands, 0)
+}
+
+fn find_empty_slot_loop(
+  wands: iv.Array(Option(wand.Wand)),
+  index: Int,
+) -> Option(Int) {
+  case iv.get(wands, index) {
+    Ok(option.None) -> option.Some(index)
+    Ok(option.Some(_)) -> find_empty_slot_loop(wands, index + 1)
+    Error(_) -> option.None
+  }
+}
+
+/// Recharge mana for all wands
+fn recharge_all_wands(
+  wands: iv.Array(Option(wand.Wand)),
+  dt: duration.Duration,
+) -> iv.Array(Option(wand.Wand)) {
+  iv.index_map(wands, fn(wand_opt, _index) {
+    case wand_opt {
+      option.Some(w) -> option.Some(wand.recharge_mana(w, dt))
+      option.None -> option.None
+    }
+  })
+}
+
+/// Reduce cooldowns for all wand states
+fn reduce_all_cooldowns(
+  wand_states: iv.Array(WandState),
+  dt: duration.Duration,
+) -> iv.Array(WandState) {
+  iv.index_map(wand_states, fn(state, _index) {
+    WandState(
+      ..state,
+      cast_cooldown: reduce_cooldown(state.cast_cooldown, dt),
+    )
+  })
 }
 
 /// Convert screen coordinates to world ground plane coordinates
@@ -464,7 +647,7 @@ fn get_spell_color(spell_type: spell.Spell) -> Int {
 // STATE HELPERS
 // =============================================================================
 
-/// Get wand state for UI synchronization
+/// Get wand state for UI synchronization (for active wand)
 pub fn get_wand_ui_state(
   model: Model,
 ) -> #(
@@ -472,24 +655,48 @@ pub fn get_wand_ui_state(
   option.Option(Int),
   Float,
   Float,
-  List(spell.Spell),
+  spell_bag.SpellBag,
 ) {
-  let slots =
-    list.range(0, 3)
-    |> list.map(fn(i) {
-      case wand.get_spell(model.wand, i) {
-        Ok(spell_opt) -> spell_opt
-        Error(_) -> option.None
-      }
-    })
+  case get_active_wand(model) {
+    option.Some(active_wand) -> {
+      let slot_count = iv.size(active_wand.slots)
+      let slots =
+        list.range(0, slot_count - 1)
+        |> list.map(fn(i) {
+          case wand.get_spell(active_wand, i) {
+            Ok(spell_opt) -> spell_opt
+            Error(_) -> option.None
+          }
+        })
 
-  #(
-    slots,
-    model.selected_spell_slot,
-    model.wand.current_mana,
-    model.wand.max_mana,
-    model.available_spells,
-  )
+      #(
+        slots,
+        model.selected_spell_slot,
+        active_wand.current_mana,
+        active_wand.max_mana,
+        model.spell_bag,
+      )
+    }
+    option.None -> {
+      #(
+        [],
+        option.None,
+        0.0,
+        0.0,
+        model.spell_bag,
+      )
+    }
+  }
+}
+
+/// Get wand inventory state for UI
+pub fn get_wand_inventory(model: Model) -> List(Option(wand.Wand)) {
+  iv.to_list(model.wands)
+}
+
+/// Get the active wand index
+pub fn get_active_wand_index(model: Model) -> Int {
+  model.active_wand_index
 }
 
 /// Get current projectiles for collision detection

@@ -4,6 +4,7 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option}
 import gleam/result
+import gleam/string
 import lustre
 import lustre/attribute.{attribute, class}
 import lustre/effect
@@ -11,33 +12,72 @@ import lustre/element.{type Element}
 import lustre/element/html
 import tiramisu/ui
 
-import pondering_my_orb/game_msg
 import pondering_my_orb/health
 import pondering_my_orb/magic_system/spell
-import pondering_my_orb/player
-import pondering_my_orb/player/magic
+import pondering_my_orb/magic_system/spell_bag
 
 // =============================================================================
 // TYPES
 // =============================================================================
 
+/// Wand info for UI display when near an altar
+pub type WandDisplayInfo {
+  WandDisplayInfo(
+    name: String,
+    slot_count: Int,
+    spells_per_cast: Int,
+    cast_delay_ms: Int,
+    recharge_time_ms: Int,
+    max_mana: Float,
+    mana_recharge_rate: Float,
+    spread: Float,
+    spell_names: List(String),
+  )
+}
+
 /// Internal message type for UI - wraps game messages and ensaimada messages
-type Msg {
-  GameMsg(game_msg.ToUI)
+pub type Msg {
+  SlotClicked(Int)
+  PlayerStateUpdated(
+    wand_slots: List(Option(spell.Spell)),
+    selected: Option(Int),
+    mana: Float,
+    max_mana: Float,
+    spell_bag: spell_bag.SpellBag,
+    health: health.Health,
+    // Wand inventory info
+    wand_names: List(Option(String)),
+    active_wand_index: Int,
+    // Altar pickup prompt with full wand info
+    altar_nearby: Option(WandDisplayInfo),
+  )
   DndMsg(ensaimada.Msg(Nil))
+  ToggleEditMode
 }
 
 /// Lustre model - stores UI state and the bridge
-pub type Model {
+pub type Model(game_msg) {
   Model(
-    bridge: ui.Bridge(game_msg.ToUI, game_msg.ToGame),
+    bridge: ui.Bridge(Msg, game_msg),
     wand_slots: List(Option(spell.Spell)),
     selected_slot: Option(Int),
     mana: Float,
     max_mana: Float,
-    available_spells: List(spell.Spell),
+    spell_bag: spell_bag.SpellBag,
     drag_state: ensaimada.DragState,
     health: health.Health,
+    // Wand inventory
+    wand_names: List(Option(String)),
+    active_wand_index: Int,
+    // Altar pickup prompt with full wand info
+    altar_nearby: Option(WandDisplayInfo),
+    // Edit mode (Tab to toggle)
+    edit_mode_active: Bool,
+    // taggers
+    select_slot_message: fn(Int) -> game_msg,
+    place_in_slot_message: fn(spell.Id, Int) -> game_msg,
+    remove_from_slot_message: fn(Int) -> game_msg,
+    reorder_wand_slots_message: fn(Int, Int) -> game_msg,
   )
 }
 
@@ -54,10 +94,20 @@ const wand_slots_id = "wand-slots"
 // =============================================================================
 
 pub fn start(
-  bridge: ui.Bridge(game_msg.ToUI, game_msg.ToGame),
+  bridge: ui.Bridge(Msg, game_msg),
+  select_slot_message: fn(Int) -> game_msg,
+  place_in_slot_message: fn(spell.Id, Int) -> game_msg,
+  remove_from_slot_message: fn(Int) -> game_msg,
+  reorder_wand_slots_message: fn(Int, Int) -> game_msg,
 ) -> Result(Nil, lustre.Error) {
   lustre.application(init, update, view)
-  |> lustre.start("#ui", bridge)
+  |> lustre.start("#ui", #(
+    bridge,
+    select_slot_message,
+    place_in_slot_message,
+    remove_from_slot_message,
+    reorder_wand_slots_message,
+  ))
   |> result.map(fn(_) { Nil })
 }
 
@@ -66,8 +116,21 @@ pub fn start(
 // =============================================================================
 
 fn init(
-  bridge: ui.Bridge(game_msg.ToUI, game_msg.ToGame),
-) -> #(Model, effect.Effect(Msg)) {
+  flags: #(
+    ui.Bridge(Msg, game_msg),
+    fn(Int) -> game_msg,
+    fn(spell.Id, Int) -> game_msg,
+    fn(Int) -> game_msg,
+    fn(Int, Int) -> game_msg,
+  ),
+) -> #(Model(game_msg), effect.Effect(Msg)) {
+  let #(
+    bridge,
+    select_slot_message,
+    place_in_slot_message,
+    remove_from_slot_message,
+    reorder_wand_slots_message,
+  ) = flags
   #(
     Model(
       bridge: bridge,
@@ -75,11 +138,19 @@ fn init(
       selected_slot: option.None,
       mana: 100.0,
       max_mana: 100.0,
-      available_spells: [],
+      spell_bag: spell_bag.new(),
       drag_state: ensaimada.NoDrag,
       health: health.new(100.0),
+      wand_names: [option.None, option.None, option.None, option.None],
+      active_wand_index: 0,
+      altar_nearby: option.None,
+      edit_mode_active: False,
+      select_slot_message:,
+      place_in_slot_message:,
+      remove_from_slot_message:,
+      reorder_wand_slots_message:,
     ),
-    ui.register_lustre(bridge) |> effect.map(GameMsg),
+    ui.register_lustre(bridge),
   )
 }
 
@@ -87,34 +158,44 @@ fn init(
 // UPDATE
 // =============================================================================
 
-fn update(model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
+fn update(
+  model: Model(game_msg),
+  msg: Msg,
+) -> #(Model(game_msg), effect.Effect(Msg)) {
   case msg {
-    GameMsg(game_msg.SlotClicked(slot)) -> #(
+    SlotClicked(slot) -> #(
       Model(..model, selected_slot: option.Some(slot)),
-      ui.to_tiramisu(
-        model.bridge,
-        game_msg.PlayerMsg(player.MagicMsg(magic.SelectSlot(slot))),
-      )
-        |> effect.map(GameMsg),
+      ui.to_tiramisu(model.bridge, model.select_slot_message(slot)),
     )
 
-    GameMsg(game_msg.PlayerStateUpdated(
+    PlayerStateUpdated(
       slots,
       selected,
       mana,
       max_mana,
-      available,
+      bag,
       player_health,
-    )) -> #(
+      wand_names,
+      active_wand_idx,
+      altar_nearby_wand,
+    ) -> #(
       Model(
         ..model,
         wand_slots: slots,
         selected_slot: selected,
         mana: mana,
         max_mana: max_mana,
-        available_spells: available,
+        spell_bag: bag,
         health: player_health,
+        wand_names: wand_names,
+        active_wand_index: active_wand_idx,
+        altar_nearby: altar_nearby_wand,
       ),
+      effect.none(),
+    )
+
+    ToggleEditMode -> #(
+      Model(..model, edit_mode_active: !model.edit_mode_active),
       effect.none(),
     )
 
@@ -132,67 +213,99 @@ fn update(model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
           accept_from: [spell_library_id],
         )
 
+      // Create config for the spell library (accepts from wand-slots)
+      let library_config =
+        ensaimada.Config(
+          on_reorder: fn(_, _) { Nil },
+          container_id: spell_library_id,
+          container_class: "",
+          item_class: "",
+          dragging_class: "opacity-50",
+          drag_over_class: "ring-2 ring-purple-400",
+          ghost_class: "",
+          accept_from: [wand_slots_id],
+        )
+
+      // Try wand config first
       let #(new_drag_state, maybe_action) =
         ensaimada.update(dnd_msg, model.drag_state, wand_config)
 
-      case maybe_action {
+      // If no action from wand config, try library config
+      let #(final_drag_state, final_action) = case maybe_action {
+        option.Some(_) -> #(new_drag_state, maybe_action)
+        option.None ->
+          ensaimada.update(dnd_msg, model.drag_state, library_config)
+      }
+
+      case final_action {
         option.Some(ensaimada.CrossContainer(
           from_container,
           from_index,
           to_container,
-          to_index,
+          _to_index,
         )) -> {
-          // Get spell from library
+          // Spell Library → Wand: Place spell in slot
           case
             from_container == spell_library_id && to_container == wand_slots_id
           {
             True -> {
-              case list.drop(model.available_spells, from_index) {
+              let available_spells = spell_bag.list_spells(model.spell_bag)
+              case list.drop(available_spells, from_index) {
                 [spell, ..] -> {
-                  let spell_id = get_spell_id(spell)
+                  let spell_id = spell.id
+                  // Find first empty slot in wand
+                  let target_slot =
+                    find_first_empty_slot(model.wand_slots)
+                    |> option.unwrap(0)
                   #(
-                    Model(..model, drag_state: new_drag_state),
+                    Model(..model, drag_state: final_drag_state),
                     ui.to_tiramisu(
                       model.bridge,
-                      game_msg.PlayerMsg(
-                        player.MagicMsg(magic.PlaceSpellInSlot(
-                          spell_id,
-                          to_index,
-                        )),
-                      ),
-                    )
-                      |> effect.map(GameMsg),
+                      model.place_in_slot_message(spell_id, target_slot),
+                    ),
                   )
                 }
                 [] -> #(
-                  Model(..model, drag_state: new_drag_state),
+                  Model(..model, drag_state: final_drag_state),
                   effect.none(),
                 )
               }
             }
-            False -> #(
-              Model(..model, drag_state: new_drag_state),
-              effect.none(),
-            )
+            False -> {
+              // Wand → Spell Library: Remove spell from slot
+              case
+                from_container == wand_slots_id
+                && to_container == spell_library_id
+              {
+                True -> #(
+                  Model(..model, drag_state: final_drag_state),
+                  ui.to_tiramisu(
+                    model.bridge,
+                    model.remove_from_slot_message(from_index),
+                  ),
+                )
+                False -> #(
+                  Model(..model, drag_state: final_drag_state),
+                  effect.none(),
+                )
+              }
+            }
           }
         }
 
         option.Some(ensaimada.SameContainer(from_index, to_index)) -> {
           // Send reorder to game
           #(
-            Model(..model, drag_state: new_drag_state),
+            Model(..model, drag_state: final_drag_state),
             ui.to_tiramisu(
               model.bridge,
-              game_msg.PlayerMsg(
-                player.MagicMsg(magic.ReorderWandSlots(from_index, to_index)),
-              ),
-            )
-              |> effect.map(GameMsg),
+              model.reorder_wand_slots_message(from_index, to_index),
+            ),
           )
         }
 
         option.None -> #(
-          Model(..model, drag_state: new_drag_state),
+          Model(..model, drag_state: final_drag_state),
           effect.none(),
         )
       }
@@ -200,11 +313,19 @@ fn update(model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
   }
 }
 
-fn get_spell_id(spell: spell.Spell) -> spell.Id {
-  case spell {
-    spell.DamageSpell(id, _) -> id
-    spell.ModifierSpell(id, _) -> id
-    spell.MulticastSpell(id, _) -> id
+/// Find first empty slot index in wand slots
+fn find_first_empty_slot(slots: List(Option(spell.Spell))) -> Option(Int) {
+  find_empty_slot_loop(slots, 0)
+}
+
+fn find_empty_slot_loop(
+  slots: List(Option(spell.Spell)),
+  index: Int,
+) -> Option(Int) {
+  case slots {
+    [] -> option.None
+    [option.None, ..] -> option.Some(index)
+    [option.Some(_), ..rest] -> find_empty_slot_loop(rest, index + 1)
   }
 }
 
@@ -212,90 +333,87 @@ fn get_spell_id(spell: spell.Spell) -> spell.Id {
 // VIEW
 // =============================================================================
 
-fn view(model: Model) -> Element(Msg) {
+fn view(model: Model(game_msg)) -> Element(Msg) {
   html.div([class("pointer-events-none")], [
-    // Top: Health bar
+    // Top-left: Health bar
     view_health_bar(model.health),
-    // Bottom: Spell library and wand bar
-    html.div(
-      [
-        class(
-          "fixed bottom-0 left-0 right-0 flex items-end gap-4 p-4 pointer-events-auto",
-        ),
-      ],
-      [
-        // Left: Spell library
-        view_spell_library(model),
-        // Right: Wand slots and mana bar
-        html.div([class("flex-1 flex justify-center")], [
-          view_wand_bar(model),
-        ]),
-      ],
-    ),
+    // Top-right: Wand inventory
+    view_wand_inventory(model),
+    // Center: Altar pickup prompt (if near altar)
+    view_altar_prompt(model),
+    // Conditional: Edit mode overlay OR just mana bar
+    case model.edit_mode_active {
+      True -> view_edit_mode_overlay(model)
+      False -> view_mana_bar_standalone(model.mana, model.max_mana)
+    },
   ])
 }
 
-fn view_spell_library(model: Model) -> Element(Msg) {
-  let library_config =
-    ensaimada.Config(
-      on_reorder: fn(_, _) { Nil },
-      container_id: spell_library_id,
-      container_class: "flex flex-col gap-1 bg-black/70 rounded-lg p-2 max-h-48 overflow-y-auto",
-      item_class: "",
-      dragging_class: "opacity-50",
-      drag_over_class: "",
-      ghost_class: "",
-      accept_from: [],
-    )
-
-  let items =
-    model.available_spells
-    |> list.index_map(fn(spell, i) {
-      ensaimada.item(
-        spell_id_to_string(get_spell_id(spell)) <> "-" <> int.to_string(i),
-        spell,
-      )
-    })
-
-  html.div([class("w-32")], [
-    html.div([class("text-white text-xs mb-1 font-mono")], [
-      element.text("Spells"),
+/// Standalone mana bar shown in bottom-right when not in edit mode
+fn view_mana_bar_standalone(mana: Float, max_mana: Float) -> Element(Msg) {
+  html.div([class("fixed bottom-4 right-4 pointer-events-auto")], [
+    html.div([class("bg-black/70 rounded-lg p-3")], [
+      view_mana_bar(mana, max_mana),
     ]),
-    ensaimada.container(
-      library_config,
-      model.drag_state,
-      items,
-      render_library_spell,
-    )
-      |> element.map(DndMsg),
   ])
 }
 
-fn render_library_spell(
-  item: ensaimada.Item(spell.Spell),
-  _index: Int,
-  _drag_state: ensaimada.DragState,
-) -> Element(Nil) {
-  let spell = ensaimada.item_data(item)
-  let name = spell.name(spell)
-  let color = get_spell_color_class(spell)
-
+/// Edit mode overlay - shows spell bag and wand slots for editing
+fn view_edit_mode_overlay(model: Model(game_msg)) -> Element(Msg) {
   html.div(
     [
       class(
-        "px-2 py-1 text-xs font-mono text-white rounded cursor-grab " <> color,
+        "fixed inset-0 bg-black/50 flex items-center justify-center pointer-events-auto",
       ),
     ],
-    [element.text(name)],
+    [
+      html.div([class("bg-gray-900/95 rounded-lg p-6 flex gap-8")], [
+        // Left: Spell Bag
+        html.div([class("flex flex-col")], [
+          html.div([class("text-white font-mono text-sm mb-2")], [
+            element.text("Spell Bag"),
+          ]),
+          view_spell_library(model),
+        ]),
+        // Right: Active Wand Slots
+        html.div([class("flex flex-col")], [
+          html.div([class("text-white font-mono text-sm mb-2")], [
+            element.text("Wand: " <> get_active_wand_name(model)),
+          ]),
+          view_wand_slots_for_edit(model),
+          html.div([class("mt-4")], [
+            view_mana_bar(model.mana, model.max_mana),
+          ]),
+        ]),
+      ]),
+      // I to close hint
+      html.div(
+        [
+          class(
+            "fixed bottom-8 left-1/2 -translate-x-1/2 text-white/70 font-mono text-sm",
+          ),
+        ],
+        [element.text("Press I to close")],
+      ),
+    ],
   )
 }
 
-fn view_wand_bar(model: Model) -> Element(Msg) {
+/// Get the name of the active wand
+fn get_active_wand_name(model: Model(game_msg)) -> String {
+  case list.drop(model.wand_names, model.active_wand_index) {
+    [option.Some(name), ..] -> name
+    _ -> "No Wand"
+  }
+}
+
+/// Wand slots view for edit mode overlay
+fn view_wand_slots_for_edit(model: Model(game_msg)) -> Element(Msg) {
   let wand_config =
     ensaimada.Config(
       on_reorder: fn(_, _) { Nil },
       container_id: wand_slots_id,
-      container_class: "flex gap-2.5 p-2.5 bg-black/70 rounded-lg font-mono text-white",
+      container_class: "flex flex-col gap-2 min-w-48",
       item_class: "",
       dragging_class: "opacity-50",
       drag_over_class: "ring-2 ring-cyan-400",
@@ -313,14 +431,17 @@ fn view_wand_bar(model: Model) -> Element(Msg) {
       ))
     })
 
-  html.div([class("flex items-center gap-4")], [
-    ensaimada.container(wand_config, model.drag_state, items, render_wand_slot)
-      |> element.map(DndMsg),
-    view_mana_bar(model.mana, model.max_mana),
-  ])
+  ensaimada.container(
+    wand_config,
+    model.drag_state,
+    items,
+    render_wand_slot_edit,
+  )
+  |> element.map(DndMsg)
 }
 
-fn render_wand_slot(
+/// Render a wand slot for edit mode (horizontal layout)
+fn render_wand_slot_edit(
   item: ensaimada.Item(#(Int, Option(spell.Spell), Bool)),
   _index: Int,
   _drag_state: ensaimada.DragState,
@@ -328,29 +449,113 @@ fn render_wand_slot(
   let #(slot_index, spell_opt, selected) = ensaimada.item_data(item)
 
   let border_color = case selected {
-    True -> "border-[#4ecdc4]"
+    True -> "border-cyan-400"
     False -> "border-gray-600"
   }
 
-  let spell_name = case spell_opt {
-    option.Some(spell) -> spell.name(spell)
-    option.None -> "Empty"
+  let #(spell_name, spell_color) = case spell_opt {
+    option.Some(spell) -> #(spell.name(spell), get_spell_color_class(spell))
+    option.None -> #("Empty", "bg-gray-800")
   }
 
   html.div(
     [
       class(
-        "w-16 h-16 border-2 rounded flex flex-col items-center justify-center text-xs cursor-grab bg-black/50 hover:bg-black/30 "
+        "flex items-center gap-3 px-3 py-2 border-2 rounded cursor-grab bg-black/50 hover:bg-black/30 "
         <> border_color,
       ),
     ],
     [
-      html.div([class("text-sm font-bold")], [
+      html.div([class("text-yellow-400 font-bold text-lg w-6")], [
         element.text(int.to_string(slot_index + 1)),
       ]),
-      html.div([class("text-[8px] mt-1")], [element.text(spell_name)]),
+      html.div(
+        [
+          class(
+            "flex-1 px-2 py-1 rounded text-white text-sm font-mono "
+            <> spell_color,
+          ),
+        ],
+        [element.text(spell_name)],
+      ),
     ],
   )
+}
+
+fn view_spell_library(model: Model(game_msg)) -> Element(Msg) {
+  let library_config =
+    ensaimada.Config(
+      on_reorder: fn(_, _) { Nil },
+      container_id: spell_library_id,
+      container_class: "flex flex-col gap-1 bg-black/70 rounded-lg p-2 max-h-64 overflow-y-auto min-w-40 min-h-16",
+      item_class: "",
+      dragging_class: "opacity-50",
+      drag_over_class: "ring-2 ring-purple-400",
+      ghost_class: "",
+      accept_from: [wand_slots_id],
+    )
+
+  // Convert spell_bag to list for display, using Option(Spell) to allow placeholder
+  let available_spells = spell_bag.list_spells(model.spell_bag)
+
+  // If empty, add a placeholder item so ensaimada has something to drop onto
+  let items = case list.is_empty(available_spells) {
+    True -> [ensaimada.item("placeholder-drop-zone", option.None)]
+    False ->
+      available_spells
+      |> list.index_map(fn(spell_item, i) {
+        ensaimada.item(
+          spell_id_to_string(spell_item.id) <> "-" <> int.to_string(i),
+          option.Some(spell_item),
+        )
+      })
+  }
+
+  html.div([class("w-32")], [
+    html.div([class("text-white text-xs mb-1 font-mono")], [
+      element.text("Spells"),
+    ]),
+    ensaimada.container(
+      library_config,
+      model.drag_state,
+      items,
+      render_library_spell,
+    )
+      |> element.map(DndMsg),
+  ])
+}
+
+fn render_library_spell(
+  item: ensaimada.Item(Option(spell.Spell)),
+  _index: Int,
+  _drag_state: ensaimada.DragState,
+) -> Element(Nil) {
+  case ensaimada.item_data(item) {
+    option.Some(spell_item) -> {
+      let name = spell.name(spell_item)
+      let color = get_spell_color_class(spell_item)
+
+      html.div(
+        [
+          class(
+            "px-2 py-1 text-xs font-mono text-white rounded cursor-grab "
+            <> color,
+          ),
+        ],
+        [element.text(name)],
+      )
+    }
+    // Placeholder for empty spell bag - acts as drop zone
+    option.None ->
+      html.div(
+        [
+          class(
+            "px-2 py-4 text-xs font-mono text-gray-500 rounded border-2 border-dashed border-gray-600 text-center italic",
+          ),
+        ],
+        [element.text("Drop spells here")],
+      )
+  }
 }
 
 fn view_health_bar(player_health: health.Health) -> Element(Msg) {
@@ -442,4 +647,151 @@ fn spell_id_to_string(id: spell.Id) -> String {
     spell.RapidFire -> "rapid-fire"
     spell.AddTrigger -> "add-trigger"
   }
+}
+
+/// Display the 4-wand inventory in top-right corner
+fn view_wand_inventory(model: Model(game_msg)) -> Element(Msg) {
+  let wand_slots =
+    list.index_map(model.wand_names, fn(wand_opt, i) {
+      view_wand_slot_inventory(wand_opt, i, model.active_wand_index)
+    })
+
+  html.div([class("fixed top-4 right-4 pointer-events-auto")], [
+    html.div([class("bg-black/70 rounded-lg p-3")], [
+      html.div([class("text-xs mb-2 text-white font-mono")], [
+        element.text("Wands"),
+      ]),
+      html.div([class("flex gap-2")], wand_slots),
+    ]),
+  ])
+}
+
+fn view_wand_slot_inventory(
+  wand_name_opt: Option(String),
+  index: Int,
+  active_index: Int,
+) -> Element(Msg) {
+  let is_active = index == active_index
+  let border_class = case is_active {
+    True -> "border-yellow-400 bg-yellow-900/30"
+    False -> "border-gray-600 bg-black/50"
+  }
+
+  // Truncate name if too long (max 8 chars)
+  let display_name = case wand_name_opt {
+    option.Some(name) -> {
+      case string.length(name) > 8 {
+        True -> string.slice(name, 0, 7) <> ".."
+        False -> name
+      }
+    }
+    option.None -> "Empty"
+  }
+
+  html.div(
+    [
+      class(
+        "w-16 h-16 border-2 rounded flex flex-col items-center justify-center text-xs font-mono text-white cursor-pointer hover:bg-black/30 "
+        <> border_class,
+      ),
+    ],
+    [
+      // Keyboard shortcut
+      html.div([class("text-lg font-bold text-yellow-400")], [
+        element.text(int.to_string(index + 1)),
+      ]),
+      // Wand name (truncated)
+      html.div([class("text-[8px] mt-1 text-center truncate w-14")], [
+        element.text(display_name),
+      ]),
+    ],
+  )
+}
+
+/// Display altar pickup prompt when near an altar
+fn view_altar_prompt(model: Model(game_msg)) -> Element(Msg) {
+  case model.altar_nearby {
+    option.Some(wand_info) ->
+      html.div([class("fixed bottom-32 left-1/2 -translate-x-1/2")], [
+        html.div(
+          [
+            class(
+              "bg-black/90 border-2 border-yellow-400 rounded-lg px-4 py-3 text-white font-mono min-w-64",
+            ),
+          ],
+          [
+            // Header with pickup prompt
+            html.div([class("text-center mb-2 pb-2 border-b border-gray-600")], [
+              html.span([class("text-yellow-400 font-bold")], [
+                element.text("E"),
+              ]),
+              element.text(" - Pick up: "),
+              html.span([class("text-cyan-400 font-bold")], [
+                element.text(wand_info.name),
+              ]),
+            ]),
+            // Stats grid
+            html.div([class("grid grid-cols-2 gap-x-4 gap-y-1 text-xs")], [
+              view_stat_row("Slots", int.to_string(wand_info.slot_count)),
+              view_stat_row(
+                "Spells/Cast",
+                int.to_string(wand_info.spells_per_cast),
+              ),
+              view_stat_row(
+                "Cast Delay",
+                int.to_string(wand_info.cast_delay_ms) <> "ms",
+              ),
+              view_stat_row(
+                "Recharge",
+                int.to_string(wand_info.recharge_time_ms) <> "ms",
+              ),
+              view_stat_row(
+                "Mana",
+                int.to_string(float.round(wand_info.max_mana)),
+              ),
+              view_stat_row(
+                "Mana/sec",
+                float.to_precision(wand_info.mana_recharge_rate, 1)
+                  |> float.to_string,
+              ),
+              view_stat_row(
+                "Spread",
+                float.to_precision(wand_info.spread, 1) |> float.to_string
+                  <> "°",
+              ),
+            ]),
+            // Spells section
+            case wand_info.spell_names {
+              [] -> html.div([], [])
+              spells ->
+                html.div([class("mt-2 pt-2 border-t border-gray-600")], [
+                  html.div([class("text-xs text-gray-400 mb-1")], [
+                    element.text("Spells:"),
+                  ]),
+                  html.div(
+                    [class("flex flex-wrap gap-1")],
+                    list.map(spells, fn(spell_name) {
+                      html.span(
+                        [class("px-1.5 py-0.5 bg-purple-800 rounded text-xs")],
+                        [
+                          element.text(spell_name),
+                        ],
+                      )
+                    }),
+                  ),
+                ])
+            },
+          ],
+        ),
+      ])
+    option.None -> html.div([], [])
+  }
+}
+
+/// Helper to render a stat row
+fn view_stat_row(label: String, value: String) -> Element(Msg) {
+  html.div([class("contents")], [
+    html.span([class("text-gray-400")], [element.text(label <> ":")]),
+    html.span([class("text-white")], [element.text(value)]),
+  ])
 }

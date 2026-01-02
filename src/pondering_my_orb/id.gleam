@@ -8,6 +8,7 @@ pub type Id {
   Projectile(Int)
   Wall(Int)
   Floor(Int)
+  Altar(Int)
 }
 
 pub fn to_string(body_id: Id) -> String {
@@ -18,6 +19,7 @@ pub fn to_string(body_id: Id) -> String {
     Projectile(n) -> "projectile_" <> int.to_string(n)
     Wall(n) -> "wall_" <> int.to_string(n)
     Floor(n) -> "floor_" <> int.to_string(n)
+    Altar(n) -> "altar_" <> int.to_string(n)
     _ -> panic as "Unknown Id"
   }
 }
@@ -50,7 +52,12 @@ pub fn from_string(s: String) -> Id {
         ["floor", id_str] ->
           case int.parse(id_str) {
             Ok(id) -> Floor(id)
-            Error(_) -> panic as "Unknown fortified wall Id"
+            Error(_) -> panic as "Unknown floor Id"
+          }
+        ["altar", id_str] ->
+          case int.parse(id_str) {
+            Ok(id) -> Altar(id)
+            Error(_) -> panic as "Unknown altar Id"
           }
         _ -> panic as "Unknown Id"
       }
