@@ -1,8 +1,9 @@
 import gleam/list
 import gleam/set
+import tote/bag
+
 import pondering_my_orb/magic_system/spell
 import pondering_my_orb/magic_system/wand
-import tote/bag
 
 pub opaque type SpellBag {
   SpellBag(spells: bag.Bag(spell.Spell))
