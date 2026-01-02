@@ -4,6 +4,7 @@ import gleam/list
 import gleam/option
 import gleam/result
 import gleam_community/colour
+import pondering_my_orb/game_physics/layer
 import pondering_my_orb/id
 import tiramisu/effect
 import tiramisu/geometry
@@ -15,7 +16,6 @@ import tiramisu/scene
 import tiramisu/transform
 import vec/vec3
 
-import pondering_my_orb/game_physics
 import pondering_my_orb/map/generator
 
 // =============================================================================
@@ -227,16 +227,18 @@ fn render_element(
 
 /// Create a physics body for wall elements
 /// Layer 2 = Ground/Walls, collides with Player (0) and Enemies (1)
+/// Zero friction to allow smooth sliding along walls
 fn create_wall_physics() -> physics.RigidBody {
   physics.new_rigid_body(physics.Fixed)
   |> physics.with_collider(physics.Box(
     offset: transform.identity,
     size: vec3.Vec3(10.0, 10.0, 10.0),
   ))
-  |> physics.with_collision_groups(
-    membership: [game_physics.map_layer],
-    can_collide_with: [game_physics.player_layer, game_physics.enemies_layer],
-  )
+  |> physics.with_collision_groups(membership: [layer.map], can_collide_with: [
+    layer.player,
+    layer.enemy,
+  ])
+  |> physics.with_friction(0.0)
   |> physics.build()
 }
 

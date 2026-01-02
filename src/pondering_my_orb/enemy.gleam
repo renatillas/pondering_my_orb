@@ -18,6 +18,7 @@ import tiramisu/transform
 import vec/vec3.{type Vec3, Vec3}
 import vec/vec3f
 
+import pondering_my_orb/game_physics/layer
 import pondering_my_orb/health
 import pondering_my_orb/id
 
@@ -314,8 +315,6 @@ fn view_enemy(enemy: Enemy, physics_world: physics.PhysicsWorld) -> scene.Node {
 
   let body_id = id.to_string(id.Enemy(enemy.id))
 
-  // Physics body for collision detection and separation
-  // Layer 1 = Enemies, collides with Player (0), other Enemies (1), Walls (2), Projectiles (3)
   let physics_body =
     physics.new_rigid_body(physics.Dynamic)
     |> physics.with_collider(physics.Capsule(
@@ -324,12 +323,15 @@ fn view_enemy(enemy: Enemy, physics_world: physics.PhysicsWorld) -> scene.Node {
       radius: 0.75,
     ))
     |> physics.with_mass(50.0)
-    |> physics.with_collision_groups(membership: [1], can_collide_with: [
-      0,
-      1,
-      2,
-      3,
-    ])
+    |> physics.with_collision_groups(
+      membership: [layer.enemy],
+      can_collide_with: [
+        layer.player,
+        layer.map,
+        layer.projectile,
+        layer.enemy,
+      ],
+    )
     |> physics.with_collision_events()
     |> physics.with_lock_translation_y()
     |> physics.with_lock_rotation_x()

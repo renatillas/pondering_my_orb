@@ -1,7 +1,6 @@
 import gleam/float
 import gleam/option.{type Option}
 import gleam/time/duration
-import pondering_my_orb/game_physics
 import tiramisu
 import tiramisu/camera
 import tiramisu/effect
@@ -15,6 +14,7 @@ import vec/vec2.{type Vec2, Vec2}
 import vec/vec2f
 import vec/vec3.{Vec3}
 
+import pondering_my_orb/game_physics/layer
 import pondering_my_orb/health
 import pondering_my_orb/id
 import pondering_my_orb/magic_system/spell
@@ -243,16 +243,16 @@ pub fn view(model: Model, ctx: tiramisu.Context) -> List(scene.Node) {
       radius: 0.5,
     ))
     |> physics.with_collision_groups(
-      membership: [game_physics.player_layer],
-      can_collide_with: [game_physics.enemies_layer, game_physics.map_layer],
+      membership: [layer.player],
+      can_collide_with: [layer.enemy, layer.map],
     )
     |> physics.with_character_controller(
-      offset: 0.01,
+      offset: 1.0,
       up_vector: Vec3(0.0, 1.0, 0.0),
       slide_enabled: True,
     )
     |> physics.with_collision_events()
-    |> physics.with_body_ccd_enabled()
+    |> physics.with_friction(0.0)
     |> physics.build()
 
   let camera_node = create_camera(model, ctx)
