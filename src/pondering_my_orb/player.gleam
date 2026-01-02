@@ -1,6 +1,7 @@
 import gleam/float
 import gleam/option.{type Option}
 import gleam/time/duration
+import pondering_my_orb/game_physics
 import tiramisu
 import tiramisu/camera
 import tiramisu/effect
@@ -130,18 +131,50 @@ fn update_movement(model: Model, ctx: tiramisu.Context) -> Model {
   // Mouse wheel for zoom
   let wheel_delta = input.mouse_wheel_delta(ctx.input)
   let zoom_change = wheel_delta *. zoom_speed *. dt
-
-  // Update player position
-  let new_x = model.position.x +. world_movement.x *. move_speed *. dt
-  let new_z = model.position.z +. world_movement.y *. move_speed *. dt
   let new_zoom =
     float.clamp(model.zoom +. zoom_change, min: min_zoom, max: max_zoom)
 
-  Model(
-    ..model,
-    position: vec3.Vec3(x: new_x, y: model.position.y, z: new_z),
-    zoom: new_zoom,
-  )
+  // Calculate desired movement
+  let desired_x = world_movement.x *. move_speed *. dt
+  let desired_z = world_movement.y *. move_speed *. dt
+  let desired_translation = Vec3(desired_x, 0.0, desired_z)
+
+  // Use character controller for collision-aware movement
+  let new_position = case ctx.physics_world {
+    option.Some(physics_world) -> {
+      let player_id = id.to_string(id.Player)
+      case
+        physics.compute_character_movement(
+          physics_world,
+          player_id,
+          desired_translation,
+        )
+      {
+        Ok(safe_movement) ->
+          Vec3(
+            model.position.x +. safe_movement.x,
+            model.position.y,
+            model.position.z +. safe_movement.z,
+          )
+        Error(_) ->
+          // Fallback if character controller not ready yet
+          Vec3(
+            model.position.x +. desired_x,
+            model.position.y,
+            model.position.z +. desired_z,
+          )
+      }
+    }
+    option.None ->
+      // No physics world, use direct movement
+      Vec3(
+        model.position.x +. desired_x,
+        model.position.y,
+        model.position.z +. desired_z,
+      )
+  }
+
+  Model(..model, position: new_position, zoom: new_zoom)
 }
 
 fn get_screen_input(ctx: tiramisu.Context) -> Vec2(Float) {
@@ -199,8 +232,9 @@ pub fn view(model: Model, ctx: tiramisu.Context) -> List(scene.Node) {
     |> material.with_color(0x4ecdc4)
     |> material.build()
 
-  // Physics body for collision with enemies
-  // Layer 0 = Player, collides with layer 1 = Enemies
+  // Physics body for collision with enemies and walls
+  // Layer 0 = Player, collides with layer 1 = Enemies, layer 2 = Walls
+  // Character controller enables collision-aware movement
   let physics_body =
     physics.new_rigid_body(physics.Kinematic)
     |> physics.with_collider(physics.Capsule(
@@ -208,7 +242,17 @@ pub fn view(model: Model, ctx: tiramisu.Context) -> List(scene.Node) {
       half_height: 1.0,
       radius: 0.5,
     ))
-    |> physics.with_collision_groups(membership: [0], can_collide_with: [1])
+    |> physics.with_collision_groups(
+      membership: [game_physics.player_layer],
+      can_collide_with: [game_physics.enemies_layer, game_physics.map_layer],
+    )
+    |> physics.with_character_controller(
+      offset: 0.01,
+      up_vector: Vec3(0.0, 1.0, 0.0),
+      slide_enabled: True,
+    )
+    |> physics.with_collision_events()
+    |> physics.with_body_ccd_enabled()
     |> physics.build()
 
   let camera_node = create_camera(model, ctx)

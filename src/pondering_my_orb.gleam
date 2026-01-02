@@ -213,8 +213,13 @@ fn update(
         )
 
       // Apply physics positions to enemies (preserves spawns from enemy tick)
+      // Also updates player_pos so attack calculations use correct position
       let updated_enemy =
-        enemy.apply_physics_positions(model.enemy, new_physics.enemy_positions)
+        enemy.apply_physics_positions(
+          model.enemy,
+          new_physics.enemy_positions,
+          model.player.position,
+        )
 
       // Schedule next physics tick with fresh player data
       let projectiles = player.get_projectiles(model.player)

@@ -1,5 +1,6 @@
 import gleam/int
 import gleam/list
+import pondering_my_orb/id
 import vec/vec2.{type Vec2, Vec2}
 import vec/vec3.{type Vec3, Vec3}
 
@@ -7,18 +8,9 @@ import vec/vec3.{type Vec3, Vec3}
 // ELEMENT TYPES
 // =============================================================================
 
-pub type ElementType {
-  FloorStone
-  WallFortified
-  WallFortifiedGate
-}
-
 pub type StructureElement {
-  StructureElement(
-    position: Vec3(Float),
-    element_type: ElementType,
-    rotation: Float,
-  )
+  Floor(position: Vec3(Float), rotation: Float)
+  Wall(position: Vec3(Float), rotation: Float)
 }
 
 pub type Arena {
@@ -80,11 +72,7 @@ pub fn floor(size: Vec2(Int), position: Vec3(Float)) -> List(StructureElement) {
         +. { int.to_float(z) *. tile_size }
         +. { tile_size /. 2.0 }
 
-      StructureElement(
-        position: Vec3(tile_x, position.y, tile_z),
-        element_type: FloorStone,
-        rotation: 0.0,
-      )
+      Floor(position: Vec3(tile_x, position.y, tile_z), rotation: 0.0)
     })
   })
 }
@@ -103,27 +91,15 @@ pub fn wall(
   list.range(0, length - 1)
   |> list.map(fn(i) {
     let offset = int.to_float(i) *. tile_size
-    StructureElement(
+    Wall(
       position: Vec3(
         position.x +. dx *. offset,
         position.y,
         position.z +. dz *. offset,
       ),
-      element_type: WallFortified,
       rotation: rotation,
     )
   })
-}
-
-/// Generate a single gate
-pub fn gate(position: Vec3(Float), rotation: Float) -> List(StructureElement) {
-  [
-    StructureElement(
-      position: position,
-      element_type: WallFortifiedGate,
-      rotation: rotation,
-    ),
-  ]
 }
 
 // =============================================================================
@@ -148,17 +124,10 @@ fn direction_from_rotation(rotation: Float) -> vec2.Vec2(Float) {
 }
 
 /// Get the rendering layer for proper depth ordering
-pub fn get_render_layer(element: ElementType) -> Int {
+pub fn get_render_layer(element: id.Id) -> Int {
   case element {
-    FloorStone -> 0
-    WallFortified | WallFortifiedGate -> 2
-  }
-}
-
-pub fn element_type_to_string(element_type: ElementType) -> String {
-  case element_type {
-    FloorStone -> "floor-stone"
-    WallFortified -> "wall-fortified"
-    WallFortifiedGate -> "wall-fortified-gate"
+    id.Floor(_) -> 0
+    id.Wall(_) -> 2
+    _ -> -1
   }
 }

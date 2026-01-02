@@ -398,7 +398,7 @@ fn view_projectile(
   projectile: spell.Projectile,
   physics_world: physics.PhysicsWorld,
 ) -> scene.Node {
-  let size = float.max(projectile.spell.final_size, 0.5)
+  let size = projectile.spell.final_size
   let assert Ok(proj_geo) = geometry.box(Vec3(size, size, size))
 
   let color = get_spell_color(projectile.spell.base)
@@ -412,6 +412,7 @@ fn view_projectile(
 
   // Physics body for collision detection
   // Layer 3 = Projectiles, collides with layer 1 = Enemies
+  // Sensor mode: detects collisions but doesn't bounce/deflect
   let physics_body =
     physics.new_rigid_body(physics.Dynamic)
     |> physics.with_collider(physics.Sphere(
@@ -420,6 +421,8 @@ fn view_projectile(
     ))
     |> physics.with_collision_groups(membership: [3], can_collide_with: [1])
     |> physics.with_collision_events()
+    |> physics.with_sensor()
+    |> physics.with_body_ccd_enabled()
     |> physics.with_lock_translation_y()
     |> physics.build()
 

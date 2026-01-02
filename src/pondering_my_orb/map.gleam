@@ -4,15 +4,18 @@ import gleam/list
 import gleam/option
 import gleam/result
 import gleam_community/colour
+import pondering_my_orb/id
 import tiramisu/effect
 import tiramisu/geometry
 import tiramisu/light
 import tiramisu/material
 import tiramisu/model
+import tiramisu/physics
 import tiramisu/scene
 import tiramisu/transform
 import vec/vec3
 
+import pondering_my_orb/game_physics
 import pondering_my_orb/map/generator
 
 // =============================================================================
@@ -35,7 +38,7 @@ pub type Model {
 
 pub type Msg {
   ModelLoaded(String, model.FBXData)
-  LoadFailed(String)
+  LoadFailed
 }
 
 // =============================================================================
@@ -48,19 +51,8 @@ const model_scale = 0.1
 fn model_paths() -> List(#(String, String)) {
   [
     // Floor
-    #(
-      generator.FloorStone |> generator.element_type_to_string,
-      "medieval/Models/floor.fbx",
-    ),
-    // Fortified Walls
-    #(
-      generator.WallFortified |> generator.element_type_to_string,
-      "medieval/Models/wall-fortified.fbx",
-    ),
-    #(
-      generator.WallFortifiedGate |> generator.element_type_to_string,
-      "medieval/Models/wall-fortified-gate.fbx",
-    ),
+    #("floor", "medieval/Models/floor.fbx"),
+    #("wall", "medieval/Models/wall-fortified.fbx"),
   ]
 }
 
@@ -85,7 +77,7 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
     model_paths()
     |> list.map(fn(entry) {
       let #(key, path) = entry
-      model.load_fbx(path, ModelLoaded(key, _), LoadFailed(key))
+      model.load_fbx(path, ModelLoaded(key, _), LoadFailed)
     })
     |> effect.batch
 
@@ -110,9 +102,9 @@ pub fn update(map_model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
         effect.none(),
       )
     }
-    LoadFailed(key) -> {
+    LoadFailed -> {
       #(
-        Model(..map_model, load_state: Failed("Failed to load: " <> key)),
+        Model(..map_model, load_state: Failed("Failed to load models")),
         effect.none(),
       )
     }
@@ -183,7 +175,12 @@ fn render_arena(map_model: Model) -> List(scene.Node) {
   let element_nodes =
     map_model.arena.elements
     |> list.index_map(fn(element, index) {
-      render_element(map_model, element, index)
+      case element {
+        generator.Floor(..) ->
+          render_element("floor", id.Floor, map_model, element, index)
+        generator.Wall(..) ->
+          render_element("wall", id.Wall, map_model, element, index)
+      }
     })
     |> list.filter_map(fn(x) { x })
 
@@ -194,22 +191,23 @@ fn render_arena(map_model: Model) -> List(scene.Node) {
 }
 
 fn render_element(
+  key: String,
+  id_constructor,
   map_model: Model,
   element: generator.StructureElement,
   index: Int,
 ) -> Result(scene.Node, Nil) {
-  let model_key = generator.element_type_to_string(element.element_type)
-
-  case dict.get(map_model.models, model_key) {
+  case dict.get(map_model.models, key) {
     Error(Nil) -> Error(Nil)
     Ok(fbx) -> {
-      let id =
-        generator.element_type_to_string(element.element_type)
-        <> "-"
-        <> int.to_string(index)
+      // Create physics body for walls
+      let physics_body = case id_constructor(index) {
+        id.Wall(..) -> option.Some(create_wall_physics())
+        _ -> option.None
+      }
 
       Ok(scene.object_3d(
-        id: id,
+        id: id.to_string(id_constructor(index)),
         object: model.get_fbx_scene(fbx),
         transform: transform.at(position: element.position)
           |> transform.with_scale(vec3.Vec3(
@@ -219,12 +217,27 @@ fn render_element(
           ))
           |> transform.with_euler_rotation(vec3.Vec3(0.0, element.rotation, 0.0)),
         animation: option.None,
-        physics: option.None,
+        physics: physics_body,
         material: option.None,
         transparent: False,
       ))
     }
   }
+}
+
+/// Create a physics body for wall elements
+/// Layer 2 = Ground/Walls, collides with Player (0) and Enemies (1)
+fn create_wall_physics() -> physics.RigidBody {
+  physics.new_rigid_body(physics.Fixed)
+  |> physics.with_collider(physics.Box(
+    offset: transform.identity,
+    size: vec3.Vec3(10.0, 10.0, 10.0),
+  ))
+  |> physics.with_collision_groups(
+    membership: [game_physics.map_layer],
+    can_collide_with: [game_physics.player_layer, game_physics.enemies_layer],
+  )
+  |> physics.build()
 }
 
 // =============================================================================

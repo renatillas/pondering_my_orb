@@ -61,7 +61,7 @@ pub type Msg {
 // CONSTANTS
 // =============================================================================
 
-const default_enemy_health = 30.0
+const default_enemy_health = 10.0
 
 const default_enemy_damage = 10.0
 
@@ -315,7 +315,7 @@ fn view_enemy(enemy: Enemy, physics_world: physics.PhysicsWorld) -> scene.Node {
   let body_id = id.to_string(id.Enemy(enemy.id))
 
   // Physics body for collision detection and separation
-  // Layer 1 = Enemies, collides with Player (0), other Enemies (1), Projectiles (3)
+  // Layer 1 = Enemies, collides with Player (0), other Enemies (1), Walls (2), Projectiles (3)
   let physics_body =
     physics.new_rigid_body(physics.Dynamic)
     |> physics.with_collider(physics.Capsule(
@@ -327,6 +327,7 @@ fn view_enemy(enemy: Enemy, physics_world: physics.PhysicsWorld) -> scene.Node {
     |> physics.with_collision_groups(membership: [1], can_collide_with: [
       0,
       1,
+      2,
       3,
     ])
     |> physics.with_collision_events()
@@ -436,9 +437,11 @@ pub fn get_enemy_ids(model: Model) -> List(Int) {
 }
 
 /// Update enemy positions from physics synchronously (no effects)
+/// Also updates player_pos so attack calculations use correct position
 pub fn apply_physics_positions(
   model: Model,
   positions: List(#(id.Id, Vec3(Float))),
+  player_pos: Vec3(Float),
 ) -> Model {
   let updated_enemies =
     list.map(model.enemies, fn(enemy) {
@@ -447,5 +450,5 @@ pub fn apply_physics_positions(
         Error(_) -> enemy
       }
     })
-  Model(..model, enemies: updated_enemies)
+  Model(..model, enemies: updated_enemies, player_pos: player_pos)
 }
