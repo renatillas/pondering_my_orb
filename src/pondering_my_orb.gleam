@@ -43,7 +43,7 @@ pub fn main() -> Nil {
   let assert Ok(Nil) =
     tiramisu.run(
       bridge: option.Some(bridge),
-      dimensions: option.None,
+      dimensions: tiramisu.FullScreen,
       selector: "#game",
       init: init(bridge, _),
       update: update,
