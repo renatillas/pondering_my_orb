@@ -12,6 +12,7 @@ import lustre/element/html
 import tiramisu/ui
 
 import pondering_my_orb/game_msg
+import pondering_my_orb/health
 import pondering_my_orb/magic_system/spell
 import pondering_my_orb/player
 import pondering_my_orb/player/magic
@@ -36,6 +37,7 @@ pub type Model {
     max_mana: Float,
     available_spells: List(spell.Spell),
     drag_state: ensaimada.DragState,
+    health: health.Health,
   )
 }
 
@@ -75,6 +77,7 @@ fn init(
       max_mana: 100.0,
       available_spells: [],
       drag_state: ensaimada.NoDrag,
+      health: health.new(100.0),
     ),
     ui.register_lustre(bridge) |> effect.map(GameMsg),
   )
@@ -95,7 +98,14 @@ fn update(model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
         |> effect.map(GameMsg),
     )
 
-    GameMsg(game_msg.WandUpdated(slots, selected, mana, max_mana, available)) -> #(
+    GameMsg(game_msg.PlayerStateUpdated(
+      slots,
+      selected,
+      mana,
+      max_mana,
+      available,
+      player_health,
+    )) -> #(
       Model(
         ..model,
         wand_slots: slots,
@@ -103,6 +113,7 @@ fn update(model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
         mana: mana,
         max_mana: max_mana,
         available_spells: available,
+        health: player_health,
       ),
       effect.none(),
     )
@@ -202,21 +213,26 @@ fn get_spell_id(spell: spell.Spell) -> spell.Id {
 // =============================================================================
 
 fn view(model: Model) -> Element(Msg) {
-  html.div(
-    [
-      class(
-        "fixed bottom-0 left-0 right-0 flex items-end gap-4 p-4 pointer-events-auto",
-      ),
-    ],
-    [
-      // Left: Spell library
-      view_spell_library(model),
-      // Right: Wand slots and mana bar
-      html.div([class("flex-1 flex justify-center")], [
-        view_wand_bar(model),
-      ]),
-    ],
-  )
+  html.div([class("pointer-events-none")], [
+    // Top: Health bar
+    view_health_bar(model.health),
+    // Bottom: Spell library and wand bar
+    html.div(
+      [
+        class(
+          "fixed bottom-0 left-0 right-0 flex items-end gap-4 p-4 pointer-events-auto",
+        ),
+      ],
+      [
+        // Left: Spell library
+        view_spell_library(model),
+        // Right: Wand slots and mana bar
+        html.div([class("flex-1 flex justify-center")], [
+          view_wand_bar(model),
+        ]),
+      ],
+    ),
+  ])
 }
 
 fn view_spell_library(model: Model) -> Element(Msg) {
@@ -337,6 +353,42 @@ fn render_wand_slot(
   )
 }
 
+fn view_health_bar(player_health: health.Health) -> Element(Msg) {
+  let percentage = health.percentage(player_health) *. 100.0
+  let percentage_str = float.to_string(percentage)
+
+  // Color changes based on health percentage
+  let bar_color = case health.percentage(player_health) {
+    p if p >. 0.6 -> "bg-green-500"
+    p if p >. 0.3 -> "bg-yellow-500"
+    _ -> "bg-red-500"
+  }
+
+  html.div([class("fixed top-4 left-4 pointer-events-auto")], [
+    html.div([class("bg-black/70 rounded-lg p-3")], [
+      html.div([class("text-xs mb-1 text-white font-mono")], [
+        element.text("Health"),
+      ]),
+      html.div([class("w-32 h-4 bg-gray-700 rounded overflow-hidden")], [
+        html.div(
+          [
+            class("h-full  " <> bar_color),
+            attribute("style", "width: " <> percentage_str <> "%"),
+          ],
+          [],
+        ),
+      ]),
+      html.div([class("text-xs mt-1 text-center text-white font-mono")], [
+        element.text(
+          int.to_string(float.round(health.current(player_health)))
+          <> "/"
+          <> int.to_string(float.round(health.max(player_health))),
+        ),
+      ]),
+    ]),
+  ])
+}
+
 fn view_mana_bar(mana: Float, max_mana: Float) -> Element(Msg) {
   let percentage = mana /. max_mana *. 100.0
   let percentage_str = float.to_string(percentage)
@@ -348,7 +400,7 @@ fn view_mana_bar(mana: Float, max_mana: Float) -> Element(Msg) {
     html.div([class("w-24 h-3 bg-gray-700 rounded overflow-hidden")], [
       html.div(
         [
-          class("h-full bg-blue-500 transition-all"),
+          class("h-full bg-blue-500"),
           attribute("style", "width: " <> percentage_str <> "%"),
         ],
         [],

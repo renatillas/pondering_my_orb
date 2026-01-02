@@ -7,12 +7,15 @@ import tiramisu/effect
 import tiramisu/geometry
 import tiramisu/input
 import tiramisu/material
+import tiramisu/physics
 import tiramisu/scene
 import tiramisu/transform
 import vec/vec2.{type Vec2, Vec2}
 import vec/vec2f
 import vec/vec3.{Vec3}
 
+import pondering_my_orb/health
+import pondering_my_orb/id
 import pondering_my_orb/magic_system/spell
 import pondering_my_orb/player/magic
 
@@ -21,12 +24,18 @@ import pondering_my_orb/player/magic
 // =============================================================================
 
 pub type Model {
-  Model(position: vec3.Vec3(Float), zoom: Float, magic: magic.Model)
+  Model(
+    position: vec3.Vec3(Float),
+    zoom: Float,
+    magic: magic.Model,
+    health: health.Health,
+  )
 }
 
 pub type Msg {
   Tick
   MagicMsg(magic.Msg)
+  TakeDamage(Float)
 }
 
 // =============================================================================
@@ -45,6 +54,8 @@ const initial_zoom = 30.0
 
 const camera_distance = 50.0
 
+const initial_health = 100.0
+
 // Isometric direction vectors (screen -> world)
 const isometric_up = Vec2(-0.7071, -0.7071)
 
@@ -62,6 +73,7 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
       position: vec3.Vec3(x: 0.0, y: 1.0, z: 0.0),
       zoom: initial_zoom,
       magic: magic_model,
+      health: health.new(initial_health),
     ),
     effect.batch([
       effect.tick(Tick),
@@ -93,6 +105,10 @@ pub fn update(
       let #(new_magic, magic_effect) = magic.update(model.magic, magic_msg, ctx)
       let new_model = Model(..model, magic: new_magic)
       #(new_model, effect.map(magic_effect, MagicMsg))
+    }
+    TakeDamage(amount) -> {
+      let new_health = health.damage(model.health, amount)
+      #(Model(..model, health: new_health), effect.none())
     }
   }
 }
@@ -176,26 +192,39 @@ fn screen_to_world_movement(screen_input: Vec2(Float)) -> Vec2(Float) {
 // =============================================================================
 
 pub fn view(model: Model, ctx: tiramisu.Context) -> List(scene.Node) {
+  let assert option.Some(physics_world) = ctx.physics_world
   let assert Ok(player_geo) = geometry.box(Vec3(1.0, 2.0, 1.0))
   let assert Ok(player_mat) =
     material.new()
     |> material.with_color(0x4ecdc4)
     |> material.build()
 
+  // Physics body for collision with enemies
+  // Layer 0 = Player, collides with layer 1 = Enemies
+  let physics_body =
+    physics.new_rigid_body(physics.Kinematic)
+    |> physics.with_collider(physics.Capsule(
+      offset: transform.identity,
+      half_height: 1.0,
+      radius: 0.5,
+    ))
+    |> physics.with_collision_groups(membership: [0], can_collide_with: [1])
+    |> physics.build()
+
   let camera_node = create_camera(model, ctx)
 
   let player_node =
     scene.mesh(
-      id: "player",
+      id: id.to_string(id.Player),
       geometry: player_geo,
       material: player_mat,
       transform: transform.at(position: model.position),
-      physics: option.None,
+      physics: option.Some(physics_body),
     )
     |> scene.with_children([camera_node])
 
   // Projectiles from magic module
-  let projectile_nodes = magic.view(model.magic)
+  let projectile_nodes = magic.view(model.magic, physics_world)
 
   [player_node, ..projectile_nodes]
 }
@@ -251,4 +280,9 @@ pub fn get_wand_ui_state(
   model: Model,
 ) -> #(List(Option(spell.Spell)), Option(Int), Float, Float, List(spell.Spell)) {
   magic.get_wand_ui_state(model.magic)
+}
+
+/// Get current projectiles for collision detection
+pub fn get_projectiles(model: Model) -> List(spell.Projectile) {
+  magic.get_projectiles(model.magic)
 }

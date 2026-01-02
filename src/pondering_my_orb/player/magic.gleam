@@ -1,6 +1,5 @@
 import ensaimada
 import gleam/float
-import gleam/int
 import gleam/list
 import gleam/option.{type Option}
 import gleam/order
@@ -11,12 +10,14 @@ import tiramisu/effect
 import tiramisu/geometry
 import tiramisu/input
 import tiramisu/material
+import tiramisu/physics
 import tiramisu/scene
 import tiramisu/transform
 import vec/vec2.{type Vec2, Vec2}
 import vec/vec3.{type Vec3, Vec3}
 import vec/vec3f
 
+import pondering_my_orb/id
 import pondering_my_orb/magic_system/spell
 import pondering_my_orb/magic_system/wand
 
@@ -45,6 +46,7 @@ pub type Msg {
   PlaceSpellInSlot(spell_id: spell.Id, slot_index: Int)
   SelectSlot(Int)
   ReorderWandSlots(from_index: Int, to_index: Int)
+  RemoveProjectile(Int)
 }
 
 // =============================================================================
@@ -179,6 +181,12 @@ pub fn update(
       let new_wand = wand.Wand(..model.wand, slots: new_slots)
       let new_model = Model(..model, wand: new_wand)
       #(new_model, effect.none())
+    }
+
+    RemoveProjectile(projectile_id) -> {
+      let new_projectiles =
+        list.filter(model.projectiles, fn(p) { p.id != projectile_id })
+      #(Model(..model, projectiles: new_projectiles), effect.none())
     }
   }
 }
@@ -320,21 +328,12 @@ fn try_cast_spell(model: Model, ctx: tiramisu.Context) -> Model {
 }
 
 fn update_projectiles(model: Model, delta_time: duration.Duration) -> Model {
-  let dt = duration.to_seconds(delta_time)
-
+  // Physics drives movement, we only update time_alive and filter expired projectiles
   let updated_projectiles =
     model.projectiles
     |> list.map(fn(proj) {
-      let velocity =
-        vec3f.scale(proj.direction, by: proj.spell.final_speed *. dt)
-      let new_position = vec3f.add(proj.position, velocity)
       let new_time_alive = duration.add(proj.time_alive, delta_time)
-
-      spell.Projectile(
-        ..proj,
-        position: new_position,
-        time_alive: new_time_alive,
-      )
+      spell.Projectile(..proj, time_alive: new_time_alive)
     })
     |> list.filter(fn(proj) {
       duration.compare(proj.time_alive, proj.spell.final_lifetime) != order.Gt
@@ -388,11 +387,17 @@ fn screen_to_world_ground(
 // =============================================================================
 
 /// Returns projectile scene nodes
-pub fn view(model: Model) -> List(scene.Node) {
-  list.map(model.projectiles, view_projectile)
+pub fn view(
+  model: Model,
+  physics_world: physics.PhysicsWorld,
+) -> List(scene.Node) {
+  list.map(model.projectiles, fn(p) { view_projectile(p, physics_world) })
 }
 
-fn view_projectile(projectile: spell.Projectile) -> scene.Node {
+fn view_projectile(
+  projectile: spell.Projectile,
+  physics_world: physics.PhysicsWorld,
+) -> scene.Node {
   let size = float.max(projectile.spell.final_size, 0.5)
   let assert Ok(proj_geo) = geometry.box(Vec3(size, size, size))
 
@@ -405,12 +410,33 @@ fn view_projectile(projectile: spell.Projectile) -> scene.Node {
     |> material.with_emissive_intensity(0.8)
     |> material.build()
 
+  // Physics body for collision detection
+  // Layer 3 = Projectiles, collides with layer 1 = Enemies
+  let physics_body =
+    physics.new_rigid_body(physics.Dynamic)
+    |> physics.with_collider(physics.Sphere(
+      offset: transform.identity,
+      radius: size /. 2.0,
+    ))
+    |> physics.with_collision_groups(membership: [3], can_collide_with: [1])
+    |> physics.with_collision_events()
+    |> physics.with_lock_translation_y()
+    |> physics.build()
+
+  let body_id = id.to_string(id.Projectile(projectile.id))
+
+  // Get transform from physics if body exists, otherwise use model position
+  let proj_transform = case physics.get_transform(physics_world, body_id) {
+    Ok(t) -> t
+    Error(_) -> transform.at(position: projectile.position)
+  }
+
   scene.mesh(
-    id: "projectile_" <> int.to_string(projectile.id),
+    id: body_id,
     geometry: proj_geo,
     material: proj_mat,
-    transform: transform.at(position: projectile.position),
-    physics: option.None,
+    transform: proj_transform,
+    physics: option.Some(physics_body),
   )
 }
 
@@ -457,4 +483,9 @@ pub fn get_wand_ui_state(
     model.wand.max_mana,
     model.available_spells,
   )
+}
+
+/// Get current projectiles for collision detection
+pub fn get_projectiles(model: Model) -> List(spell.Projectile) {
+  model.projectiles
 }
