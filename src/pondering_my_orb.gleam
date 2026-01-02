@@ -1,5 +1,6 @@
 import gleam/list
 import gleam/option
+import pondering_my_orb/id
 import tiramisu
 import tiramisu/effect.{type Effect}
 import tiramisu/physics
@@ -182,7 +183,10 @@ fn update(
             game_physics.ProjectileHitEnemy(proj_id, enemy_id, damage) ->
               effect.batch([
                 effect.dispatch(
-                  game_msg.EnemyMsg(enemy.TakeProjectileDamage(enemy_id, damage)),
+                  game_msg.EnemyMsg(enemy.TakeProjectileDamage(
+                    id.Enemy(enemy_id),
+                    damage,
+                  )),
                 ),
                 effect.dispatch(
                   game_msg.PlayerMsg(
@@ -190,9 +194,6 @@ fn update(
                   ),
                 ),
               ])
-            game_physics.EnemyHitPlayer(_enemy_id) ->
-              // Enemy-player collision is already handled by enemy attacks
-              effect.none()
           }
         })
 

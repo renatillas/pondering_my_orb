@@ -35,7 +35,6 @@ pub type Msg {
 /// Result of processing a collision event
 pub type CollisionResult {
   ProjectileHitEnemy(projectile_id: Int, enemy_id: Int, damage: Float)
-  EnemyHitPlayer(enemy_id: Int)
 }
 
 // =============================================================================
@@ -91,7 +90,8 @@ pub fn update(
         handle_collision_events(collision_events, projectiles)
 
       // Read enemy positions from physics
-      let enemy_ids = enemy.get_enemy_ids(updated_enemy_model)
+      let enemy_ids =
+        list.map(updated_enemy_model.enemies, fn(enemy_model) { enemy_model.id })
       let enemy_positions = get_enemy_positions(stepped_world, enemy_ids)
 
       let new_model =
@@ -138,8 +138,6 @@ fn handle_collision_started(
         Error(_) -> Error(Nil)
       }
     }
-    id.Enemy(enemy_id), id.Player | id.Player, id.Enemy(enemy_id) ->
-      Ok(EnemyHitPlayer(enemy_id))
     _, _ -> Error(Nil)
   }
 }
@@ -173,23 +171,23 @@ fn set_all_projectile_velocities(
 
 fn set_enemy_velocities(
   world: physics.PhysicsWorld,
-  enemies: List(#(Int, Vec3(Float))),
+  enemies: List(#(id.Id, Vec3(Float))),
 ) -> physics.PhysicsWorld {
   list.fold(enemies, world, fn(current_world, enemy_data) {
-    let #(enemy_num, velocity) = enemy_data
-    let body_id = id.to_string(id.Enemy(enemy_num))
+    let #(id, velocity) = enemy_data
+    let body_id = id.to_string(id)
     physics.set_velocity(current_world, body_id, velocity)
   })
 }
 
 fn get_enemy_positions(
   world: physics.PhysicsWorld,
-  enemy_ids: List(Int),
+  enemy_ids: List(id.Id),
 ) -> List(#(id.Id, Vec3(Float))) {
-  list.filter_map(enemy_ids, fn(enemy_num) {
-    let body_id = id.to_string(id.Enemy(enemy_num))
+  list.filter_map(enemy_ids, fn(enemy_id) {
+    let body_id = id.to_string(enemy_id)
     case physics.get_transform(world, body_id) {
-      Ok(trans) -> Ok(#(id.Enemy(enemy_num), transform.position(trans)))
+      Ok(trans) -> Ok(#(enemy_id, transform.position(trans)))
       Error(_) -> Error(Nil)
     }
   })

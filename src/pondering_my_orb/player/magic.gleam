@@ -5,6 +5,7 @@ import gleam/option.{type Option}
 import gleam/order
 import gleam/time/duration
 import iv
+import pondering_my_orb/game_physics/layer
 import tiramisu
 import tiramisu/effect
 import tiramisu/geometry
@@ -419,7 +420,10 @@ fn view_projectile(
       offset: transform.identity,
       radius: size /. 2.0,
     ))
-    |> physics.with_collision_groups(membership: [3], can_collide_with: [1])
+    |> physics.with_collision_groups(
+      membership: [layer.projectile],
+      can_collide_with: [layer.enemy],
+    )
     |> physics.with_collision_events()
     |> physics.with_sensor()
     |> physics.with_body_ccd_enabled()

@@ -28,7 +28,7 @@ import pondering_my_orb/id
 
 pub type Enemy {
   Enemy(
-    id: Int,
+    id: id.Id,
     position: Vec3(Float),
     health: health.Health,
     damage: Float,
@@ -53,9 +53,9 @@ pub type Model {
 pub type Msg {
   Tick
   UpdatePlayerPos(player_pos: Vec3(Float))
-  TakeProjectileDamage(enemy_id: Int, damage: Float)
+  TakeProjectileDamage(enemy_id: id.Id, damage: Float)
   // Physics sends back updated positions after simulation
-  UpdatePositionsFromPhysics(positions: List(#(Int, Vec3(Float))))
+  UpdatePositionsFromPhysics(positions: List(#(id.Id, Vec3(Float))))
 }
 
 // =============================================================================
@@ -211,7 +211,7 @@ fn spawn_enemy(model: Model) -> Enemy {
   let spawn_z = float.clamp(spawn_z, min: arena_min, max: arena_max)
 
   Enemy(
-    id: model.next_enemy_id,
+    id: id.Enemy(model.next_enemy_id),
     position: Vec3(spawn_x, 1.0, spawn_z),
     health: health.new(default_enemy_health),
     damage: default_enemy_damage,
@@ -313,7 +313,7 @@ fn view_enemy(enemy: Enemy, physics_world: physics.PhysicsWorld) -> scene.Node {
     |> material.with_emissive_intensity(0.3)
     |> material.build()
 
-  let body_id = id.to_string(id.Enemy(enemy.id))
+  let body_id = id.to_string(enemy.id)
 
   let physics_body =
     physics.new_rigid_body(physics.Dynamic)
@@ -417,7 +417,7 @@ pub fn get_damage_to_player(model: Model) -> Float {
 }
 
 /// Get enemies with their desired velocities for physics
-pub fn get_enemies_for_physics(model: Model) -> List(#(Int, Vec3(Float))) {
+pub fn get_enemies_for_physics(model: Model) -> List(#(id.Id, Vec3(Float))) {
   list.map(model.enemies, fn(e) { #(e.id, e.desired_velocity) })
 }
 
@@ -426,16 +426,11 @@ pub fn get_enemies_for_physics(model: Model) -> List(#(Int, Vec3(Float))) {
 pub fn update_for_physics(
   model: Model,
   player_pos: Vec3(Float),
-) -> #(Model, List(#(Int, Vec3(Float)))) {
+) -> #(Model, List(#(id.Id, Vec3(Float)))) {
   let model_with_pos = Model(..model, player_pos: player_pos)
   let model_with_velocities = calculate_velocities(model_with_pos)
   let velocities = get_enemies_for_physics(model_with_velocities)
   #(model_with_velocities, velocities)
-}
-
-/// Get enemy IDs for reading positions from physics
-pub fn get_enemy_ids(model: Model) -> List(Int) {
-  list.map(model.enemies, fn(e) { e.id })
 }
 
 /// Update enemy positions from physics synchronously (no effects)
@@ -447,7 +442,7 @@ pub fn apply_physics_positions(
 ) -> Model {
   let updated_enemies =
     list.map(model.enemies, fn(enemy) {
-      case list.find(positions, fn(p) { p.0 == id.Enemy(enemy.id) }) {
+      case list.find(positions, fn(p) { p.0 == enemy.id }) {
         Ok(#(_, new_pos)) -> Enemy(..enemy, position: new_pos)
         Error(_) -> enemy
       }

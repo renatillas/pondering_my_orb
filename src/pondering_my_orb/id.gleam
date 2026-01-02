@@ -4,7 +4,7 @@ import gleam/string
 pub type Id {
   Player
   Enemy(Int)
-  EnemyHealth(Int)
+  EnemyHealth(Id)
   Projectile(Int)
   Wall(Int)
   Floor(Int)
@@ -14,10 +14,11 @@ pub fn to_string(body_id: Id) -> String {
   case body_id {
     Player -> "player"
     Enemy(n) -> "enemy_" <> int.to_string(n)
-    EnemyHealth(n) -> "enemy_health_" <> int.to_string(n)
+    EnemyHealth(Enemy(id)) -> "enemy_health_" <> int.to_string(id)
     Projectile(n) -> "projectile_" <> int.to_string(n)
     Wall(n) -> "wall_" <> int.to_string(n)
     Floor(n) -> "floor_" <> int.to_string(n)
+    _ -> panic as "Unknown Id"
   }
 }
 
@@ -33,7 +34,7 @@ pub fn from_string(s: String) -> Id {
           }
         ["enemy", "health", id_str] ->
           case int.parse(id_str) {
-            Ok(id) -> EnemyHealth(id)
+            Ok(id) -> EnemyHealth(Enemy(id))
             Error(_) -> panic as "Unknown enemy health Id"
           }
         ["projectile", id_str] ->
