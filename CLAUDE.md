@@ -53,21 +53,36 @@ pub fn update(model, msg, ctx) -> #(Model, effect.Effect(Msg)) {
 Messages form a tree structure where parent modules wrap child messages:
 
 ```
-game_msg.ToGame
+Msg (main module)
 ├── PlayerMsg(player.Msg)
 │   ├── Tick
+│   ├── TakeDamage(Float)
 │   └── MagicMsg(magic.Msg)
 │       ├── Tick
 │       ├── UpdatePlayerState(pos, zoom)
 │       ├── PlaceSpellInSlot(spell_id, slot)
 │       ├── SelectSlot(Int)
+│       ├── RemoveProjectile(Int)
+│       ├── PickUpWand(wand.Wand)
 │       └── ReorderWandSlots(from, to)
+├── EnemyMsg(enemy.Msg)
+│   ├── Tick
+│   └── TakeProjectileDamage(id.Id, Float)
+├── AltarMsg(altar.Msg)
+│   ├── Tick
+│   ├── SpawnAltar(Vec3)
+│   └── RemoveAltar(id.Id)
 ├── MapMsg(map.Msg)
-└── PhysicsMsg(PhysicsMsg)
-    ├── PreStep
-    ├── Step
-    └── PostStep
+└── PhysicsMsg(game_physics.Msg)
+    └── Tick
 ```
+
+**Cross-module message flow example** (enemy dies → altar spawns):
+1. `PhysicsMsg(Tick)` detects projectile-enemy collision
+2. Physics dispatches `EnemyMsg(TakeProjectileDamage(id, damage))`
+3. Enemy update reduces health, detects death
+4. Enemy dispatches `AltarMsg(SpawnAltar(position))` via tagger
+5. Altar update creates new altar at position
 
 ### Submodule Pattern
 
@@ -93,7 +108,11 @@ Each submodule exports:
 
 ### Cross-Module Communication
 
-When subsystems need data from siblings/parents, use state-update messages:
+There are two patterns for cross-module communication:
+
+#### Pattern 1: State-Update Messages (Child reads from Parent)
+
+When a child module needs data from a parent/sibling, the parent sends state-update messages:
 
 ```gleam
 // Parent sends state to child
@@ -110,6 +129,141 @@ UpdateParentState(pos, zoom) -> {
   #(Model(..model, parent_pos: pos, parent_zoom: zoom), effect.none())
 }
 ```
+
+#### Pattern 2: Message Taggers (Child dispatches to Sibling)
+
+When a child module needs to dispatch effects to sibling modules (e.g., enemy death spawns altar), use **message taggers**. The parent passes message constructor functions to the child:
+
+```gleam
+// Parent passes taggers to child module
+EnemyMsg(enemy_msg) -> {
+  let #(new_enemy, enemy_effect) =
+    enemy.update(
+      model.enemy,
+      enemy_msg,
+      ctx,
+      // Taggers for cross-module dispatch
+      player_took_damage: fn(dmg) { PlayerMsg(player.TakeDamage(dmg)) },
+      spawn_altar: fn(pos) { AltarMsg(altar.SpawnAltar(pos)) },
+      effect_mapper: EnemyMsg,
+    )
+  #(Model(..model, enemy: new_enemy), enemy_effect, ctx.physics_world)
+}
+
+// Child module uses taggers to dispatch effects
+pub fn update(
+  model: Model,
+  msg: Msg,
+  ctx: tiramisu.Context,
+  player_took_damage player_took_damage,  // Tagger function
+  spawn_altar spawn_altar,                 // Tagger function
+  effect_mapper effect_mapper,             // Maps own Msg to parent Msg
+) -> #(Model, effect.Effect(game_msg)) {
+  case msg {
+    Tick -> {
+      let #(new_model, damage) = tick(model, ctx)
+      // Dispatch to sibling using tagger
+      let damage_effect = case damage >. 0.0 {
+        True -> effect.dispatch(player_took_damage(damage))
+        False -> effect.none()
+      }
+      #(new_model, effect.batch([
+        effect.tick(effect_mapper(Tick)),
+        damage_effect,
+      ]))
+    }
+    // ...
+  }
+}
+```
+
+**Key principles:**
+- **Taggers** are functions that wrap module-specific messages into parent messages
+- **effect_mapper** wraps the module's own messages (e.g., `Tick` → `EnemyMsg(Tick)`)
+- Child modules dispatch effects directly without import cycles
+- Parent module stays clean - just routes messages, doesn't coordinate logic
+
+### Module Responsibility Separation
+
+Each module should own its domain logic and dispatch cross-module effects via taggers:
+
+| Module | Owns | Dispatches to |
+|--------|------|---------------|
+| `player` | Movement, wand switching, UI sync | magic (nested) |
+| `enemy` | Spawning, movement, attacks | player (damage), altar (death spawn) |
+| `altar` | Altar lifecycle, pickup detection | player (wand pickup) |
+| `game_physics` | Physics simulation, collisions | enemy (damage), player (projectile removal) |
+
+### Synchronous Helpers vs Effect Dispatch
+
+Sometimes you need to update sibling state synchronously (same frame) rather than via effect dispatch (next frame). Use helper functions:
+
+```gleam
+// Helper for synchronous updates (no effects needed)
+pub fn set_player_pos(model: Model, player_pos: Vec3(Float)) -> Model {
+  Model(..model, player_pos: player_pos)
+}
+
+// Called synchronously in physics tick
+let final_altar = altar.set_player_pos(altar_model, player_position)
+```
+
+Use synchronous helpers when:
+- Data is needed immediately in the same tick
+- No side effects or UI updates required
+- Avoiding one-frame delays matters
+
+### Physics Coordination Pattern
+
+The physics module coordinates the physics simulation and returns updated state for multiple modules:
+
+```gleam
+pub type TickResult {
+  TickResult(
+    physics: Model,
+    enemy: enemy.Model,      // Updated enemy positions
+    altar: altar.Model,      // Updated player position for proximity
+    stepped_world: option.Option(physics.PhysicsWorld),
+  )
+}
+
+pub fn update(
+  msg msg: Msg,
+  ctx ctx: tiramisu.Context,
+  player_model player_model: player.Model,
+  enemy_model enemy_model: enemy.Model,
+  altar_model altar_model: altar.Model,
+  // Taggers for collision effects
+  enemy_took_projectile_damage enemy_took_projectile_damage,
+  remove_projectile remove_projectile,
+  effect_mapper effect_mapper,
+) -> #(TickResult, effect.Effect(game_msg)) {
+  // PRE-STEP: Set velocities from game state
+  // STEP: Run physics simulation
+  // POST-STEP: Read back positions, process collisions
+}
+```
+
+The physics module:
+1. **Reads** velocities/directions from player (projectiles) and enemy (movement)
+2. **Steps** the physics world simulation
+3. **Returns** updated positions and collision results
+4. **Dispatches** collision effects via taggers
+
+This keeps the physics module focused on simulation while modules own their behavior.
+
+### Input Handling Ownership
+
+Each module handles its own input for the behaviors it owns:
+
+| Input | Module | Behavior |
+|-------|--------|----------|
+| WASD/Arrows | `player` | Movement |
+| Mouse wheel | `player` | Zoom (normal) / Wand switch (shift+scroll) |
+| 1-4 keys | `player` | Direct wand selection |
+| I key | `player` | Toggle edit mode |
+| E key | `altar` | Pick up wand from nearby altar |
+| Left click | `player/magic` | Cast spells |
 
 ### Tiramisu Context
 
