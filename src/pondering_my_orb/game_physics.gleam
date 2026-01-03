@@ -74,6 +74,8 @@ pub fn update(
   // Message taggers for cross-module dispatch
   enemy_took_projectile_damage enemy_took_projectile_damage,
   remove_projectile remove_projectile,
+  update_altar_player_pos update_altar_player_pos,
+  update_enemy_positions update_enemy_positions,
   effect_mapper effect_mapper,
 ) -> #(TickResult, effect.Effect(game_msg)) {
   let assert option.Some(physics_world) = ctx.physics_world
@@ -101,17 +103,8 @@ pub fn update(
 
       let enemy_ids = list.map(updated_enemy.enemies, enemy.id)
       let enemy_positions = read_enemy_positions(stepped_world, enemy_ids)
-      let final_enemy =
-        enemy.apply_physics_positions(
-          updated_enemy,
-          enemy_positions,
-          player_position,
-        )
 
-      // Update altar with player position for pickup detection
-      let final_altar = altar.set_player_pos(altar_model, player_position)
-
-      // Build result
+      // Build result (enemy and altar updated via async dispatch)
       let result =
         TickResult(
           physics: Model(
@@ -119,12 +112,12 @@ pub fn update(
             enemy_positions: enemy_positions,
             stepped_world: option.Some(stepped_world),
           ),
-          enemy: final_enemy,
-          altar: final_altar,
+          enemy: updated_enemy,
+          altar: altar_model,
           stepped_world: option.Some(stepped_world),
         )
 
-      // Build all effects
+      // Build all effects (including async position updates)
       let effects =
         effect.batch([
           build_collision_effects(
@@ -132,7 +125,9 @@ pub fn update(
             enemy_took_projectile_damage,
             remove_projectile,
           ),
-          effect.tick(effect_mapper(Tick)),
+          effect.dispatch(update_altar_player_pos(player_position)),
+          effect.dispatch(update_enemy_positions(enemy_positions, player_position)),
+          effect.dispatch(effect_mapper(Tick)),
         ])
 
       #(result, effects)

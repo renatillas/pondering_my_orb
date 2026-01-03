@@ -54,7 +54,10 @@ pub type Msg {
   UpdatePlayerPos(player_pos: Vec3(Float))
   TakeProjectileDamage(enemy_id: id.Id, damage: Float)
   // Physics sends back updated positions after simulation
-  UpdatePositionsFromPhysics(positions: List(#(id.Id, Vec3(Float))))
+  UpdatePositionsFromPhysics(
+    positions: List(#(id.Id, Vec3(Float))),
+    player_pos: Vec3(Float),
+  )
 }
 
 // =============================================================================
@@ -95,7 +98,7 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
       player_pos: Vec3(0.0, 0.0, 0.0),
     )
 
-  #(model, effect.tick(Tick))
+  #(model, effect.dispatch(Tick))
 }
 
 // =============================================================================
@@ -118,7 +121,7 @@ pub fn update(
         True -> effect.dispatch(player_took_damage(damage))
         False -> effect.none()
       }
-      #(new_model, effect.batch([effect.tick(effect_mapper(Tick)), damage_effect]))
+      #(new_model, effect.batch([effect.dispatch(effect_mapper(Tick)), damage_effect]))
     }
 
     UpdatePlayerPos(player_pos) -> {
@@ -154,7 +157,7 @@ pub fn update(
       #(Model(..model, enemies: updated_enemies), effect.batch(death_effects))
     }
 
-    UpdatePositionsFromPhysics(positions) -> {
+    UpdatePositionsFromPhysics(positions, player_pos) -> {
       let updated_enemies =
         list.map(model.enemies, fn(enemy) {
           case list.find(positions, fn(p) { p.0 == enemy.id }) {
@@ -162,7 +165,10 @@ pub fn update(
             Error(_) -> enemy
           }
         })
-      #(Model(..model, enemies: updated_enemies), effect.none())
+      #(
+        Model(..model, enemies: updated_enemies, player_pos: player_pos),
+        effect.none(),
+      )
     }
   }
 }
@@ -432,23 +438,6 @@ pub fn update_for_physics(
   let model_with_velocities = calculate_velocities(model_with_pos)
   let velocities = get_enemies_for_physics(model_with_velocities)
   #(model_with_velocities, velocities)
-}
-
-/// Update enemy positions from physics synchronously (no effects)
-/// Also updates player_pos so attack calculations use correct position
-pub fn apply_physics_positions(
-  model: Model,
-  positions: List(#(id.Id, Vec3(Float))),
-  player_pos: Vec3(Float),
-) -> Model {
-  let updated_enemies =
-    list.map(model.enemies, fn(enemy) {
-      case list.find(positions, fn(p) { p.0 == enemy.id }) {
-        Ok(#(_, new_pos)) -> Enemy(..enemy, position: new_pos)
-        Error(_) -> enemy
-      }
-    })
-  Model(..model, enemies: updated_enemies, player_pos: player_pos)
 }
 
 pub fn id(enemy: Enemy) -> id.Id {

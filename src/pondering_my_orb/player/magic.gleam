@@ -129,7 +129,7 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
       zoom: 30.0,
     )
 
-  #(model, effect.tick(Tick))
+  #(model, effect.dispatch(Tick))
 }
 
 // =============================================================================
@@ -144,7 +144,7 @@ pub fn update(
   case msg {
     Tick -> {
       let new_model = tick(model, ctx)
-      #(new_model, effect.tick(Tick))
+      #(new_model, effect.dispatch(Tick))
     }
 
     UpdatePlayerState(player_pos, zoom) -> {

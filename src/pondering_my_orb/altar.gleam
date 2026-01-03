@@ -53,7 +53,7 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
   let model =
     Model(altars: [], next_altar_id: 0, player_pos: Vec3(0.0, 0.0, 0.0))
 
-  #(model, effect.tick(Tick))
+  #(model, effect.dispatch(Tick))
 }
 
 // =============================================================================
@@ -84,7 +84,7 @@ pub fn update(
         False -> effect.none()
       }
 
-      #(model, effect.batch([effect.tick(effect_mapper(Tick)), pickup_effect]))
+      #(model, effect.batch([effect.dispatch(effect_mapper(Tick)), pickup_effect]))
     }
 
     UpdatePlayerPos(player_pos) -> {
@@ -178,11 +178,6 @@ fn random_spell() -> spell.Spell {
 // =============================================================================
 // HELPERS
 // =============================================================================
-
-/// Update player position for pickup range detection (synchronous, no effects)
-pub fn set_player_pos(model: Model, player_pos: Vec3(Float)) -> Model {
-  Model(..model, player_pos: player_pos)
-}
 
 /// Find the nearest altar within pickup range
 /// Returns the altar and its distance if found

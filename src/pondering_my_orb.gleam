@@ -13,6 +13,7 @@ import tiramisu/ui
 import vec/vec3
 
 import pondering_my_orb/altar
+import pondering_my_orb/bridge_msg.{type BridgeMsg}
 import pondering_my_orb/enemy
 import pondering_my_orb/game_physics
 import pondering_my_orb/magic_system/wand
@@ -34,6 +35,8 @@ pub type Msg {
   PhysicsMsg(game_physics.Msg)
   /// Altar tick - handles altar spawning and pickup
   AltarMsg(altar.Msg)
+  /// Bridge messages from UI
+  FromBridge(BridgeMsg)
 }
 
 pub type Model {
@@ -43,7 +46,7 @@ pub type Model {
     map: map.Model,
     altar: altar.Model,
     physics: game_physics.Model,
-    bridge: ui.Bridge(game_ui.Msg, Msg),
+    bridge: ui.Bridge(BridgeMsg),
   )
 }
 
@@ -56,28 +59,15 @@ pub fn main() -> Nil {
   let bridge = ui.new_bridge()
 
   // 2. Start Lustre UI on #ui
-  let assert Ok(_) =
-    game_ui.start(
-      bridge,
-      fn(index) { PlayerMsg(player.MagicMsg(magic.SelectSlot(index))) },
-      fn(id, index) {
-        PlayerMsg(player.MagicMsg(magic.PlaceSpellInSlot(id, index)))
-      },
-      fn(index) { PlayerMsg(player.MagicMsg(magic.RemoveSpellFromSlot(index))) },
-      fn(from, to) {
-        PlayerMsg(player.MagicMsg(magic.ReorderWandSlots(from, to)))
-      },
-    )
+  let assert Ok(_) = game_ui.start(bridge)
 
   // 3. Start Tiramisu game on #game with the bridge
   let assert Ok(Nil) =
-    tiramisu.run(
-      bridge: option.Some(bridge),
-      dimensions: tiramisu.FullScreen,
-      selector: "#game",
-      init: init(bridge, _),
-      update: update,
-      view: view,
+    tiramisu.application(init(bridge, _), update, view)
+    |> tiramisu.start(
+      "#game",
+      tiramisu.FullScreen,
+      option.Some(#(bridge, FromBridge)),
     )
   Nil
 }
@@ -87,7 +77,7 @@ pub fn main() -> Nil {
 // =============================================================================
 
 fn init(
-  bridge: ui.Bridge(game_ui.Msg, Msg),
+  bridge: ui.Bridge(BridgeMsg),
   _ctx: tiramisu.Context,
 ) -> #(Model, Effect(Msg), option.Option(physics.PhysicsWorld)) {
   let #(player_model, player_effect) = player.init()
@@ -125,9 +115,9 @@ fn init(
   let wand_names = player.get_wand_names(player_model)
   let active_wand_index = player.get_active_wand_index(player_model)
   let ui_effect =
-    ui.to_lustre(
+    ui.send_to_ui(
       bridge,
-      game_ui.PlayerStateUpdated(
+      bridge_msg.PlayerStateUpdated(
         slots,
         selected,
         mana,
@@ -141,7 +131,7 @@ fn init(
     )
 
   // Start independent cycles: player tick, enemy tick, and physics tick
-  let physics_tick_effect = effect.tick(PhysicsMsg(game_physics.Tick))
+  let physics_tick_effect = effect.dispatch(PhysicsMsg(game_physics.Tick))
 
   let effects =
     effect.batch([
@@ -166,11 +156,50 @@ fn update(
   ctx: tiramisu.Context,
 ) -> #(Model, Effect(Msg), option.Option(physics.PhysicsWorld)) {
   case msg {
+    // Handle bridge messages from UI
+    FromBridge(bridge_msg_value) -> {
+      case bridge_msg_value {
+        // UI → Game actions: dispatch to player module
+        bridge_msg.SelectSlot(index) -> #(
+          model,
+          effect.dispatch(PlayerMsg(player.MagicMsg(magic.SelectSlot(index)))),
+          ctx.physics_world,
+        )
+        bridge_msg.PlaceSpellInSlot(spell_id, slot_index) -> #(
+          model,
+          effect.dispatch(
+            PlayerMsg(
+              player.MagicMsg(magic.PlaceSpellInSlot(spell_id, slot_index)),
+            ),
+          ),
+          ctx.physics_world,
+        )
+        bridge_msg.RemoveSpellFromSlot(slot_index) -> #(
+          model,
+          effect.dispatch(
+            PlayerMsg(player.MagicMsg(magic.RemoveSpellFromSlot(slot_index))),
+          ),
+          ctx.physics_world,
+        )
+        bridge_msg.ReorderWandSlots(from, to) -> #(
+          model,
+          effect.dispatch(
+            PlayerMsg(player.MagicMsg(magic.ReorderWandSlots(from, to))),
+          ),
+          ctx.physics_world,
+        )
+        // Game → UI messages: ignore on game side
+        bridge_msg.PlayerStateUpdated(..) | bridge_msg.ToggleEditMode -> #(
+          model,
+          effect.none(),
+          ctx.physics_world,
+        )
+      }
+    }
+
     PlayerMsg(player_msg) -> {
-      // Update altar with player position for proximity detection
-      let altar_with_player_pos =
-        altar.set_player_pos(model.altar, model.player.position)
-      let altar_nearby = get_nearby_altar_info(altar_with_player_pos)
+      // Use current altar model for proximity check (one frame delay - async update)
+      let altar_nearby = get_nearby_altar_info(model.altar)
 
       let #(new_player, player_effect) =
         player.update(
@@ -178,12 +207,19 @@ fn update(
           player_msg,
           ctx,
           bridge: model.bridge,
-          toggle_edit_mode: game_ui.ToggleEditMode,
-          player_state_updated: game_ui.PlayerStateUpdated,
           altar_nearby: altar_nearby,
           effect_mapper: PlayerMsg,
         )
-      #(Model(..model, player: new_player), player_effect, ctx.physics_world)
+
+      // Dispatch async update of altar player position with NEW position
+      let altar_pos_effect =
+        effect.dispatch(AltarMsg(altar.UpdatePlayerPos(new_player.position)))
+
+      #(
+        Model(..model, player: new_player),
+        effect.batch([player_effect, altar_pos_effect]),
+        ctx.physics_world,
+      )
     }
 
     EnemyMsg(enemy_msg) -> {
@@ -212,6 +248,12 @@ fn update(
           },
           remove_projectile: fn(id) {
             PlayerMsg(player.MagicMsg(magic.RemoveProjectile(id)))
+          },
+          update_altar_player_pos: fn(pos) {
+            AltarMsg(altar.UpdatePlayerPos(pos))
+          },
+          update_enemy_positions: fn(positions, player_pos) {
+            EnemyMsg(enemy.UpdatePositionsFromPhysics(positions, player_pos))
           },
           effect_mapper: PhysicsMsg,
         )
@@ -274,11 +316,11 @@ fn view(model: Model, ctx: tiramisu.Context) -> scene.Node {
 
 fn get_nearby_altar_info(
   altar_model: altar.Model,
-) -> option.Option(game_ui.WandDisplayInfo) {
+) -> option.Option(bridge_msg.WandDisplayInfo) {
   case altar.get_nearest_altar(altar_model) {
     option.Some(nearby) -> {
       let w = nearby.wand
-      option.Some(game_ui.WandDisplayInfo(
+      option.Some(bridge_msg.WandDisplayInfo(
         name: w.name,
         slot_count: iv.size(w.slots),
         spells_per_cast: w.spells_per_cast,

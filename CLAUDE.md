@@ -106,82 +106,71 @@ Each submodule exports:
 - `update(model, msg, ctx)` - Returns `#(Model, effect.Effect(Msg))`
 - `view(model)` - Returns `List(scene.Node)` or `scene.Node`
 
-### Cross-Module Communication
+### Cross-Module Communication: Message Taggers
 
-There are two patterns for cross-module communication:
+Child modules cannot import sibling modules (would create cycles). Instead, the **parent passes message taggers** - functions that wrap messages into the parent's message type. This allows children to dispatch effects to any sibling.
 
-#### Pattern 1: State-Update Messages (Child reads from Parent)
-
-When a child module needs data from a parent/sibling, the parent sends state-update messages:
+#### How Taggers Work
 
 ```gleam
-// Parent sends state to child
-Tick -> {
-  let new_model = tick(model, ctx)
-  let update_child = effect.dispatch(
-    ChildMsg(child.UpdateParentState(new_model.position, new_model.zoom))
-  )
-  #(new_model, effect.batch([effect.tick(Tick), update_child]))
-}
-
-// Child stores received state
-UpdateParentState(pos, zoom) -> {
-  #(Model(..model, parent_pos: pos, parent_zoom: zoom), effect.none())
-}
-```
-
-#### Pattern 2: Message Taggers (Child dispatches to Sibling)
-
-When a child module needs to dispatch effects to sibling modules (e.g., enemy death spawns altar), use **message taggers**. The parent passes message constructor functions to the child:
-
-```gleam
-// Parent passes taggers to child module
+// PARENT: Passes taggers when calling child update
 EnemyMsg(enemy_msg) -> {
   let #(new_enemy, enemy_effect) =
     enemy.update(
       model.enemy,
       enemy_msg,
       ctx,
-      // Taggers for cross-module dispatch
+      // Taggers: functions that wrap sibling messages
       player_took_damage: fn(dmg) { PlayerMsg(player.TakeDamage(dmg)) },
       spawn_altar: fn(pos) { AltarMsg(altar.SpawnAltar(pos)) },
+      // effect_mapper: wraps child's own messages
       effect_mapper: EnemyMsg,
     )
   #(Model(..model, enemy: new_enemy), enemy_effect, ctx.physics_world)
 }
+```
 
-// Child module uses taggers to dispatch effects
+```gleam
+// CHILD: Accepts taggers as parameters, uses them to dispatch
 pub fn update(
   model: Model,
   msg: Msg,
   ctx: tiramisu.Context,
-  player_took_damage player_took_damage,  // Tagger function
-  spawn_altar spawn_altar,                 // Tagger function
-  effect_mapper effect_mapper,             // Maps own Msg to parent Msg
+  player_took_damage player_took_damage,  // Tagger for sibling
+  spawn_altar spawn_altar,                 // Tagger for sibling
+  effect_mapper effect_mapper,             // Tagger for self
 ) -> #(Model, effect.Effect(game_msg)) {
   case msg {
     Tick -> {
       let #(new_model, damage) = tick(model, ctx)
-      // Dispatch to sibling using tagger
+      // Use tagger to dispatch to sibling
       let damage_effect = case damage >. 0.0 {
         True -> effect.dispatch(player_took_damage(damage))
         False -> effect.none()
       }
+      // Use effect_mapper to wrap own messages
       #(new_model, effect.batch([
         effect.tick(effect_mapper(Tick)),
         damage_effect,
       ]))
     }
-    // ...
+
+    TakeProjectileDamage(enemy_id, damage) -> {
+      // When enemy dies, dispatch to altar module via tagger
+      let spawn_effect = effect.dispatch(spawn_altar(enemy.position))
+      // ...
+    }
   }
 }
 ```
 
-**Key principles:**
-- **Taggers** are functions that wrap module-specific messages into parent messages
-- **effect_mapper** wraps the module's own messages (e.g., `Tick` → `EnemyMsg(Tick)`)
-- Child modules dispatch effects directly without import cycles
-- Parent module stays clean - just routes messages, doesn't coordinate logic
+#### Key Principles
+
+1. **Parent is the router** - Only the parent knows about all siblings and their message types
+2. **Taggers are functions** - `fn(args) -> ParentMsg` that wrap child-specific data into parent messages
+3. **effect_mapper for self** - Every module needs a tagger to wrap its own `Tick` and other self-referential messages
+4. **No sibling imports** - Children never import siblings; they only know about tagger function signatures
+5. **Effects bubble up** - Child returns `effect.Effect(game_msg)` (parent's type), parent routes them
 
 ### Module Responsibility Separation
 
@@ -194,24 +183,35 @@ Each module should own its domain logic and dispatch cross-module effects via ta
 | `altar` | Altar lifecycle, pickup detection | player (wand pickup) |
 | `game_physics` | Physics simulation, collisions | enemy (damage), player (projectile removal) |
 
-### Synchronous Helpers vs Effect Dispatch
+### Async vs Sync Updates
 
-Sometimes you need to update sibling state synchronously (same frame) rather than via effect dispatch (next frame). Use helper functions:
+**Prefer async dispatch** for cross-module state updates. The one-frame delay is usually acceptable and keeps modules decoupled:
 
 ```gleam
-// Helper for synchronous updates (no effects needed)
-pub fn set_player_pos(model: Model, player_pos: Vec3(Float)) -> Model {
-  Model(..model, player_pos: player_pos)
-}
-
-// Called synchronously in physics tick
-let final_altar = altar.set_player_pos(altar_model, player_position)
+// Physics dispatches position updates asynchronously
+let effects = effect.batch([
+  effect.dispatch(update_altar_player_pos(player_position)),
+  effect.dispatch(update_enemy_positions(enemy_positions, player_position)),
+  effect.tick(effect_mapper(Tick)),
+])
 ```
 
-Use synchronous helpers when:
-- Data is needed immediately in the same tick
-- No side effects or UI updates required
-- Avoiding one-frame delays matters
+**When sync is required** (same-frame data needed):
+- Use `update_for_physics` pattern: module returns data needed for physics calculations
+- The caller uses the data immediately, then dispatches async updates for other state
+
+```gleam
+// Sync: Get velocities for physics step (needed this frame)
+let #(updated_enemy, enemy_velocities) =
+  enemy.update_for_physics(enemy_model, player_position)
+
+// Physics step uses velocities immediately
+let world_with_velocities = set_enemy_velocities(physics_world, enemy_velocities)
+let stepped_world = physics.step(world_with_velocities, ctx.delta_time)
+
+// Async: Dispatch position updates (can be next frame)
+effect.dispatch(update_enemy_positions(enemy_positions, player_position))
+```
 
 ### Physics Coordination Pattern
 

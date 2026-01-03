@@ -12,6 +12,7 @@ import tiramisu/physics
 import tiramisu/scene
 import tiramisu/transform
 import tiramisu/ui
+import pondering_my_orb/bridge_msg.{type BridgeMsg, type WandDisplayInfo}
 import vec/vec2.{type Vec2, Vec2}
 import vec/vec2f
 import vec/vec3.{Vec3}
@@ -81,7 +82,7 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
       health: health.new(initial_health),
     ),
     effect.batch([
-      effect.tick(Tick),
+      effect.dispatch(Tick),
       effect.map(magic_effect, MagicMsg),
     ]),
   )
@@ -91,15 +92,13 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
 // UPDATE
 // =============================================================================
 
-/// Update player. Accepts taggers for cross-module dispatch.
+/// Update player. Uses bridge to communicate with UI.
 pub fn update(
   model: Model,
   msg: Msg,
   ctx: tiramisu.Context,
-  bridge bridge: ui.Bridge(ui_msg, game_msg),
-  toggle_edit_mode toggle_edit_mode,
-  player_state_updated player_state_updated,
-  altar_nearby altar_nearby,
+  bridge bridge: ui.Bridge(BridgeMsg),
+  altar_nearby altar_nearby: option.Option(WandDisplayInfo),
   effect_mapper effect_mapper,
 ) -> #(Model, effect.Effect(game_msg)) {
   case msg {
@@ -117,17 +116,17 @@ pub fn update(
 
       // Check for edit mode toggle (I key)
       let edit_mode_effect = case input.is_key_just_pressed(ctx.input, input.KeyI) {
-        True -> ui.to_lustre(bridge, toggle_edit_mode)
+        True -> ui.send_to_ui(bridge, bridge_msg.ToggleEditMode)
         False -> effect.none()
       }
 
       // Sync player state to UI
-      let ui_sync_effect = build_ui_sync_effect(new_model, bridge, player_state_updated, altar_nearby)
+      let ui_sync_effect = build_ui_sync_effect(new_model, bridge, altar_nearby)
 
       #(
         new_model,
         effect.batch([
-          effect.tick(effect_mapper(Tick)),
+          effect.dispatch(effect_mapper(Tick)),
           update_magic_effect,
           wand_switch_effect,
           edit_mode_effect,
@@ -299,15 +298,14 @@ fn get_wand_switch_effect(ctx: tiramisu.Context, effect_mapper) -> effect.Effect
 
 fn build_ui_sync_effect(
   model: Model,
-  bridge: ui.Bridge(ui_msg, game_msg),
-  player_state_updated,
-  altar_nearby,
+  bridge: ui.Bridge(BridgeMsg),
+  altar_nearby: option.Option(WandDisplayInfo),
 ) -> effect.Effect(game_msg) {
   let #(slots, selected, mana, max_mana, spell_bag) = magic.get_wand_ui_state(model.magic)
 
-  ui.to_lustre(
+  ui.send_to_ui(
     bridge,
-    player_state_updated(
+    bridge_msg.PlayerStateUpdated(
       slots,
       selected,
       mana,
