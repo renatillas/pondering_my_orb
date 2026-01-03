@@ -4,6 +4,7 @@ import gleam/option.{type Option}
 import tiramisu
 import tiramisu/effect
 import tiramisu/geometry
+import tiramisu/input
 import tiramisu/material
 import tiramisu/scene
 import tiramisu/transform
@@ -59,14 +60,31 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
 // UPDATE
 // =============================================================================
 
+/// Update altars. Accepts taggers for cross-module dispatch.
 pub fn update(
   model: Model,
   msg: Msg,
-  _ctx: tiramisu.Context,
-) -> #(Model, effect.Effect(Msg)) {
+  ctx: tiramisu.Context,
+  pick_up_wand pick_up_wand,
+  effect_mapper effect_mapper,
+) -> #(Model, effect.Effect(game_msg)) {
   case msg {
     Tick -> {
-      #(model, effect.tick(Tick))
+      // Check for wand pickup (E key)
+      let pickup_effect = case input.is_key_just_pressed(ctx.input, input.KeyE) {
+        True ->
+          case get_nearest_altar(model) {
+            option.Some(nearby) ->
+              effect.batch([
+                effect.dispatch(pick_up_wand(nearby.wand)),
+                effect.dispatch(effect_mapper(RemoveAltar(nearby.id))),
+              ])
+            option.None -> effect.none()
+          }
+        False -> effect.none()
+      }
+
+      #(model, effect.batch([effect.tick(effect_mapper(Tick)), pickup_effect]))
     }
 
     UpdatePlayerPos(player_pos) -> {
@@ -160,6 +178,11 @@ fn random_spell() -> spell.Spell {
 // =============================================================================
 // HELPERS
 // =============================================================================
+
+/// Update player position for pickup range detection (synchronous, no effects)
+pub fn set_player_pos(model: Model, player_pos: Vec3(Float)) -> Model {
+  Model(..model, player_pos: player_pos)
+}
 
 /// Find the nearest altar within pickup range
 /// Returns the altar and its distance if found

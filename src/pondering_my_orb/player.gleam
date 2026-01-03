@@ -11,6 +11,7 @@ import tiramisu/material
 import tiramisu/physics
 import tiramisu/scene
 import tiramisu/transform
+import tiramisu/ui
 import vec/vec2.{type Vec2, Vec2}
 import vec/vec2f
 import vec/vec3.{Vec3}
@@ -90,11 +91,17 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
 // UPDATE
 // =============================================================================
 
+/// Update player. Accepts taggers for cross-module dispatch.
 pub fn update(
   model: Model,
   msg: Msg,
   ctx: tiramisu.Context,
-) -> #(Model, effect.Effect(Msg)) {
+  bridge bridge: ui.Bridge(ui_msg, game_msg),
+  toggle_edit_mode toggle_edit_mode,
+  player_state_updated player_state_updated,
+  altar_nearby altar_nearby,
+  effect_mapper effect_mapper,
+) -> #(Model, effect.Effect(game_msg)) {
   case msg {
     Tick -> {
       let new_model = tick(model, ctx)
@@ -102,21 +109,36 @@ pub fn update(
       // Send player state to magic module
       let update_magic_effect =
         effect.dispatch(
-          MagicMsg(magic.UpdatePlayerState(new_model.position, new_model.zoom)),
+          effect_mapper(MagicMsg(magic.UpdatePlayerState(new_model.position, new_model.zoom))),
         )
 
       // Check for wand switching input
-      let wand_switch_effect = get_wand_switch_effect(ctx)
+      let wand_switch_effect = get_wand_switch_effect(ctx, effect_mapper)
+
+      // Check for edit mode toggle (I key)
+      let edit_mode_effect = case input.is_key_just_pressed(ctx.input, input.KeyI) {
+        True -> ui.to_lustre(bridge, toggle_edit_mode)
+        False -> effect.none()
+      }
+
+      // Sync player state to UI
+      let ui_sync_effect = build_ui_sync_effect(new_model, bridge, player_state_updated, altar_nearby)
 
       #(
         new_model,
-        effect.batch([effect.tick(Tick), update_magic_effect, wand_switch_effect]),
+        effect.batch([
+          effect.tick(effect_mapper(Tick)),
+          update_magic_effect,
+          wand_switch_effect,
+          edit_mode_effect,
+          ui_sync_effect,
+        ]),
       )
     }
     MagicMsg(magic_msg) -> {
       let #(new_magic, magic_effect) = magic.update(model.magic, magic_msg, ctx)
       let new_model = Model(..model, magic: new_magic)
-      #(new_model, effect.map(magic_effect, MagicMsg))
+      #(new_model, effect.map(magic_effect, fn(m) { effect_mapper(MagicMsg(m)) }))
     }
     TakeDamage(amount) -> {
       let new_health = health.damage(model.health, amount)
@@ -241,7 +263,7 @@ fn screen_to_world_movement(screen_input: Vec2(Float)) -> Vec2(Float) {
 // =============================================================================
 
 /// Check for wand switch inputs and return appropriate effect
-fn get_wand_switch_effect(ctx: tiramisu.Context) -> effect.Effect(Msg) {
+fn get_wand_switch_effect(ctx: tiramisu.Context, effect_mapper) -> effect.Effect(game_msg) {
   // Number keys 1-4 for direct wand selection
   let key_effect = case
     input.is_key_just_pressed(ctx.input, input.Digit1),
@@ -249,10 +271,10 @@ fn get_wand_switch_effect(ctx: tiramisu.Context) -> effect.Effect(Msg) {
     input.is_key_just_pressed(ctx.input, input.Digit3),
     input.is_key_just_pressed(ctx.input, input.Digit4)
   {
-    True, _, _, _ -> effect.dispatch(MagicMsg(magic.SwitchWand(0)))
-    _, True, _, _ -> effect.dispatch(MagicMsg(magic.SwitchWand(1)))
-    _, _, True, _ -> effect.dispatch(MagicMsg(magic.SwitchWand(2)))
-    _, _, _, True -> effect.dispatch(MagicMsg(magic.SwitchWand(3)))
+    True, _, _, _ -> effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWand(0))))
+    _, True, _, _ -> effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWand(1))))
+    _, _, True, _ -> effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWand(2))))
+    _, _, _, True -> effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWand(3))))
     _, _, _, _ -> effect.none()
   }
 
@@ -263,12 +285,40 @@ fn get_wand_switch_effect(ctx: tiramisu.Context) -> effect.Effect(Msg) {
   let wheel_delta = input.mouse_wheel_delta(ctx.input)
 
   let scroll_effect = case shift_held, wheel_delta {
-    True, d if d >. 0.0 -> effect.dispatch(MagicMsg(magic.SwitchWandRelative(-1)))
-    True, d if d <. 0.0 -> effect.dispatch(MagicMsg(magic.SwitchWandRelative(1)))
+    True, d if d >. 0.0 -> effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWandRelative(-1))))
+    True, d if d <. 0.0 -> effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWandRelative(1))))
     _, _ -> effect.none()
   }
 
   effect.batch([key_effect, scroll_effect])
+}
+
+// =============================================================================
+// UI SYNC
+// =============================================================================
+
+fn build_ui_sync_effect(
+  model: Model,
+  bridge: ui.Bridge(ui_msg, game_msg),
+  player_state_updated,
+  altar_nearby,
+) -> effect.Effect(game_msg) {
+  let #(slots, selected, mana, max_mana, spell_bag) = magic.get_wand_ui_state(model.magic)
+
+  ui.to_lustre(
+    bridge,
+    player_state_updated(
+      slots,
+      selected,
+      mana,
+      max_mana,
+      spell_bag,
+      model.health,
+      get_wand_names(model),
+      get_active_wand_index(model),
+      altar_nearby,
+    ),
+  )
 }
 
 // =============================================================================

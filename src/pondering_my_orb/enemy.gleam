@@ -46,8 +46,6 @@ pub type Model {
     spawn_timer: duration.Duration,
     spawn_interval: duration.Duration,
     player_pos: Vec3(Float),
-    // Positions where enemies died this frame (for altar spawning)
-    death_positions: List(Vec3(Float)),
   )
 }
 
@@ -95,7 +93,6 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
       spawn_timer: duration.milliseconds(0),
       spawn_interval: duration.milliseconds(spawn_interval_ms),
       player_pos: Vec3(0.0, 0.0, 0.0),
-      death_positions: [],
     )
 
   #(model, effect.tick(Tick))
@@ -111,6 +108,7 @@ pub fn update(
   msg: Msg,
   ctx: tiramisu.Context,
   player_took_damage player_took_damage,
+  spawn_altar spawn_altar,
   effect_mapper effect_mapper,
 ) -> #(Model, effect.Effect(game_msg)) {
   case msg {
@@ -130,33 +128,30 @@ pub fn update(
     }
 
     TakeProjectileDamage(enemy_id, damage) -> {
-      let #(updated_enemies, new_death_positions) =
-        list.fold(model.enemies, #([], model.death_positions), fn(acc, enemy) {
-          let #(enemies_acc, deaths_acc) = acc
+      let #(updated_enemies, death_effects) =
+        list.fold(model.enemies, #([], []), fn(acc, enemy) {
+          let #(enemies_acc, effects_acc) = acc
           case enemy.id == enemy_id {
             True -> {
               let new_health = health.damage(enemy.health, damage)
               case health.is_dead(new_health) {
-                True -> #(enemies_acc, [enemy.position, ..deaths_acc])
+                True -> {
+                  // Enemy died - spawn altar at death position
+                  let spawn_effect = effect.dispatch(spawn_altar(enemy.position))
+                  #(enemies_acc, [spawn_effect, ..effects_acc])
+                }
                 False -> {
                   #(
                     [Enemy(..enemy, health: new_health), ..enemies_acc],
-                    deaths_acc,
+                    effects_acc,
                   )
                 }
               }
             }
-            False -> #([enemy, ..enemies_acc], deaths_acc)
+            False -> #([enemy, ..enemies_acc], effects_acc)
           }
         })
-      #(
-        Model(
-          ..model,
-          enemies: updated_enemies,
-          death_positions: new_death_positions,
-        ),
-        effect.none(),
-      )
+      #(Model(..model, enemies: updated_enemies), effect.batch(death_effects))
     }
 
     UpdatePositionsFromPhysics(positions) -> {
@@ -454,16 +449,6 @@ pub fn apply_physics_positions(
       }
     })
   Model(..model, enemies: updated_enemies, player_pos: player_pos)
-}
-
-/// Get positions where enemies died (for altar spawning)
-pub fn get_death_positions(model: Model) -> List(Vec3(Float)) {
-  model.death_positions
-}
-
-/// Clear death positions after they've been processed
-pub fn clear_death_positions(model: Model) -> Model {
-  Model(..model, death_positions: [])
 }
 
 pub fn id(enemy: Enemy) -> id.Id {

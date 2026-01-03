@@ -1,14 +1,9 @@
-import gleam/float
 import gleam/list
 import gleam/option
-import gleam/time/duration
-import iv
 import tiramisu
 import tiramisu/effect
-import tiramisu/input
 import tiramisu/physics
 import tiramisu/transform
-import tiramisu/ui
 import vec/vec3.{type Vec3}
 import vec/vec3f
 
@@ -16,7 +11,6 @@ import pondering_my_orb/altar
 import pondering_my_orb/enemy
 import pondering_my_orb/id
 import pondering_my_orb/magic_system/spell
-import pondering_my_orb/magic_system/wand
 import pondering_my_orb/player
 
 // =============================================================================
@@ -77,16 +71,9 @@ pub fn update(
   player_model player_model: player.Model,
   enemy_model enemy_model: enemy.Model,
   altar_model altar_model: altar.Model,
-  bridge bridge: ui.Bridge(ui_msg, game_msg),
   // Message taggers for cross-module dispatch
-  spawn_altar spawn_altar,
   enemy_took_projectile_damage enemy_took_projectile_damage,
   remove_projectile remove_projectile,
-  player_state_updated player_state_updated,
-  pick_up_wand pick_up_wand,
-  remove_altar remove_altar,
-  constructor_wand_display_info constructor_wand_display_info,
-  toggle_edit_mode toggle_edit_mode,
   effect_mapper effect_mapper,
 ) -> #(TickResult, effect.Effect(game_msg)) {
   let assert option.Some(physics_world) = ctx.physics_world
@@ -114,18 +101,15 @@ pub fn update(
 
       let enemy_ids = list.map(updated_enemy.enemies, enemy.id)
       let enemy_positions = read_enemy_positions(stepped_world, enemy_ids)
-      let enemy_with_positions =
+      let final_enemy =
         enemy.apply_physics_positions(
           updated_enemy,
           enemy_positions,
           player_position,
         )
 
-      // Handle deaths and altar updates
-      let #(final_enemy, death_effects) =
-        build_death_effects(enemy_with_positions, spawn_altar)
-      let #(final_altar, _) =
-        altar.update(altar_model, altar.UpdatePlayerPos(player_position), ctx)
+      // Update altar with player position for pickup detection
+      let final_altar = altar.set_player_pos(altar_model, player_position)
 
       // Build result
       let result =
@@ -148,16 +132,6 @@ pub fn update(
             enemy_took_projectile_damage,
             remove_projectile,
           ),
-          build_ui_sync_effect(
-            player_model,
-            final_altar,
-            bridge,
-            player_state_updated,
-            constructor_wand_display_info,
-          ),
-          death_effects,
-          build_pickup_effect(ctx, final_altar, pick_up_wand, remove_altar),
-          build_edit_mode_effect(ctx, bridge, toggle_edit_mode),
           effect.tick(effect_mapper(Tick)),
         ])
 
@@ -184,99 +158,6 @@ fn build_collision_effects(
     ])
   })
   |> effect.batch
-}
-
-fn build_ui_sync_effect(
-  player_model: player.Model,
-  altar_model: altar.Model,
-  bridge,
-  player_state_updated,
-  constructor_wand_display_info,
-) -> effect.Effect(game_msg) {
-  let #(slots, selected, mana, max_mana, spell_bag) =
-    player.get_wand_ui_state(player_model)
-
-  ui.to_lustre(
-    bridge,
-    player_state_updated(
-      slots,
-      selected,
-      mana,
-      max_mana,
-      spell_bag,
-      player_model.health,
-      player.get_wand_names(player_model),
-      player.get_active_wand_index(player_model),
-      get_nearby_altar_info(altar_model, constructor_wand_display_info),
-    ),
-  )
-}
-
-fn build_death_effects(
-  enemy_model: enemy.Model,
-  spawn_altar,
-) -> #(enemy.Model, effect.Effect(game_msg)) {
-  let effects =
-    enemy_model
-    |> enemy.get_death_positions
-    |> list.map(fn(pos) { effect.dispatch(spawn_altar(pos)) })
-    |> effect.batch
-
-  #(enemy.clear_death_positions(enemy_model), effects)
-}
-
-fn build_pickup_effect(
-  ctx: tiramisu.Context,
-  altar_model: altar.Model,
-  pick_up_wand,
-  remove_altar,
-) -> effect.Effect(game_msg) {
-  case input.is_key_just_pressed(ctx.input, input.KeyE) {
-    True ->
-      case altar.get_nearest_altar(altar_model) {
-        option.Some(nearby) ->
-          effect.batch([
-            effect.dispatch(pick_up_wand(nearby.wand)),
-            effect.dispatch(remove_altar(nearby.id)),
-          ])
-        option.None -> effect.none()
-      }
-    False -> effect.none()
-  }
-}
-
-fn build_edit_mode_effect(
-  ctx: tiramisu.Context,
-  bridge: ui.Bridge(ui_msg, game_msg),
-  toggle_edit_mode,
-) -> effect.Effect(game_msg) {
-  case input.is_key_just_pressed(ctx.input, input.KeyI) {
-    True -> ui.to_lustre(bridge, toggle_edit_mode)
-    False -> effect.none()
-  }
-}
-
-fn get_nearby_altar_info(
-  altar_model: altar.Model,
-  constructor_wand_display_info,
-) -> option.Option(game_msg) {
-  case altar.get_nearest_altar(altar_model) {
-    option.Some(nearby) -> {
-      let w = nearby.wand
-      option.Some(constructor_wand_display_info(
-        w.name,
-        iv.size(w.slots),
-        w.spells_per_cast,
-        float.round(duration.to_seconds(w.cast_delay) *. 1000.0),
-        float.round(duration.to_seconds(w.recharge_time) *. 1000.0),
-        w.max_mana,
-        w.mana_recharge_rate,
-        w.spread,
-        wand.get_spell_names(w),
-      ))
-    }
-    option.None -> option.None
-  }
 }
 
 // =============================================================================

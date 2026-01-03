@@ -1,5 +1,8 @@
+import gleam/float
 import gleam/list
 import gleam/option
+import gleam/time/duration
+import iv
 import pondering_my_orb/player/magic
 import tiramisu
 import tiramisu/effect.{type Effect}
@@ -12,6 +15,7 @@ import vec/vec3
 import pondering_my_orb/altar
 import pondering_my_orb/enemy
 import pondering_my_orb/game_physics
+import pondering_my_orb/magic_system/wand
 import pondering_my_orb/map
 import pondering_my_orb/player
 import pondering_my_orb/ui as game_ui
@@ -163,13 +167,23 @@ fn update(
 ) -> #(Model, Effect(Msg), option.Option(physics.PhysicsWorld)) {
   case msg {
     PlayerMsg(player_msg) -> {
+      // Update altar with player position for proximity detection
+      let altar_with_player_pos =
+        altar.set_player_pos(model.altar, model.player.position)
+      let altar_nearby = get_nearby_altar_info(altar_with_player_pos)
+
       let #(new_player, player_effect) =
-        player.update(model.player, player_msg, ctx)
-      #(
-        Model(..model, player: new_player),
-        effect.map(player_effect, PlayerMsg),
-        ctx.physics_world,
-      )
+        player.update(
+          model.player,
+          player_msg,
+          ctx,
+          bridge: model.bridge,
+          toggle_edit_mode: game_ui.ToggleEditMode,
+          player_state_updated: game_ui.PlayerStateUpdated,
+          altar_nearby: altar_nearby,
+          effect_mapper: PlayerMsg,
+        )
+      #(Model(..model, player: new_player), player_effect, ctx.physics_world)
     }
 
     EnemyMsg(enemy_msg) -> {
@@ -179,6 +193,7 @@ fn update(
           enemy_msg,
           ctx,
           player_took_damage: fn(dmg) { PlayerMsg(player.TakeDamage(dmg)) },
+          spawn_altar: fn(pos) { AltarMsg(altar.SpawnAltar(pos)) },
           effect_mapper: EnemyMsg,
         )
       #(Model(..model, enemy: new_enemy), enemy_effect, ctx.physics_world)
@@ -192,19 +207,12 @@ fn update(
           player_model: model.player,
           enemy_model: model.enemy,
           altar_model: model.altar,
-          bridge: model.bridge,
-          spawn_altar: fn(pos) { AltarMsg(altar.SpawnAltar(pos)) },
           enemy_took_projectile_damage: fn(id, dmg) {
             EnemyMsg(enemy.TakeProjectileDamage(id, dmg))
           },
           remove_projectile: fn(id) {
             PlayerMsg(player.MagicMsg(magic.RemoveProjectile(id)))
           },
-          player_state_updated: game_ui.PlayerStateUpdated,
-          pick_up_wand: fn(w) { PlayerMsg(player.MagicMsg(magic.PickUpWand(w))) },
-          remove_altar: fn(id) { AltarMsg(altar.RemoveAltar(id)) },
-          constructor_wand_display_info: game_ui.WandDisplayInfo,
-          toggle_edit_mode: game_ui.ToggleEditMode,
           effect_mapper: PhysicsMsg,
         )
 
@@ -228,10 +236,17 @@ fn update(
     }
 
     AltarMsg(altar_msg) -> {
-      let #(new_altar, altar_effect) = altar.update(model.altar, altar_msg, ctx)
-      let wrapped_effect = effect.map(altar_effect, AltarMsg)
-      let new_model = Model(..model, altar: new_altar)
-      #(new_model, wrapped_effect, ctx.physics_world)
+      let #(new_altar, altar_effect) =
+        altar.update(
+          model.altar,
+          altar_msg,
+          ctx,
+          pick_up_wand: fn(w) {
+            PlayerMsg(player.MagicMsg(magic.PickUpWand(w)))
+          },
+          effect_mapper: AltarMsg,
+        )
+      #(Model(..model, altar: new_altar), altar_effect, ctx.physics_world)
     }
   }
 }
@@ -251,4 +266,32 @@ fn view(model: Model, ctx: tiramisu.Context) -> scene.Node {
     transform: transform.identity,
     children: list.flatten([player_nodes, enemy_nodes, map_nodes, altar_nodes]),
   )
+}
+
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+fn get_nearby_altar_info(
+  altar_model: altar.Model,
+) -> option.Option(game_ui.WandDisplayInfo) {
+  case altar.get_nearest_altar(altar_model) {
+    option.Some(nearby) -> {
+      let w = nearby.wand
+      option.Some(game_ui.WandDisplayInfo(
+        name: w.name,
+        slot_count: iv.size(w.slots),
+        spells_per_cast: w.spells_per_cast,
+        cast_delay_ms: float.round(duration.to_seconds(w.cast_delay) *. 1000.0),
+        recharge_time_ms: float.round(
+          duration.to_seconds(w.recharge_time) *. 1000.0,
+        ),
+        max_mana: w.max_mana,
+        mana_recharge_rate: w.mana_recharge_rate,
+        spread: w.spread,
+        spell_names: wand.get_spell_names(w),
+      ))
+    }
+    option.None -> option.None
+  }
 }
