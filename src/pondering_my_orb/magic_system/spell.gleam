@@ -385,7 +385,7 @@ pub fn spark(visuals: SpellVisuals) -> Spell {
       projectile_size: 1.0,
       cast_delay_addition: duration.milliseconds(50),
       critical_chance: 0.05,
-      spread: 0.0,
+      spread: 5.0,
       visuals:,
       ui_sprite: "spell_icons/spark.png",
       is_beam: False,
