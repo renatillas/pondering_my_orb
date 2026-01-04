@@ -132,7 +132,11 @@ fn update(model: Model, msg: Msg) -> #(Model, effect.Effect(Msg)) {
         option.Some(_) -> model.hovered_spell
       }
       #(
-        Model(..model, hovered_wand: wand_index, hovered_spell: new_hovered_spell),
+        Model(
+          ..model,
+          hovered_wand: wand_index,
+          hovered_spell: new_hovered_spell,
+        ),
         effect.none(),
       )
     }
@@ -341,63 +345,75 @@ fn view_wand_tooltip_content(wand_info: WandInfo) -> Element(Msg) {
       ])
 
     option.Some(w) -> {
-        let cast_delay_ms = float.round(duration.to_seconds(w.cast_delay) *. 1000.0)
-        let recharge_ms = float.round(duration.to_seconds(w.recharge_time) *. 1000.0)
+      let cast_delay_ms =
+        float.round(duration.to_seconds(w.cast_delay) *. 1000.0)
+      let recharge_ms =
+        float.round(duration.to_seconds(w.recharge_time) *. 1000.0)
 
-        html.div([class("flex flex-col gap-3")], [
-          // Wand name
-          html.div([class("text-white font-bold text-lg border-b border-gray-700 pb-2")], [
+      html.div([class("flex flex-col gap-3")], [
+        // Wand name
+        html.div(
+          [class("text-white font-bold text-lg border-b border-gray-700 pb-2")],
+          [
             html.text(w.name),
-          ]),
-          // Stats
-          html.div([class("flex flex-col gap-2 text-sm")], [
-            // Mana
-            view_tooltip_stat(
-              "Mana",
-              int.to_string(float.round(w.max_mana)),
-              "text-blue-400",
-            ),
-            // Mana recharge
-            view_tooltip_stat(
-              "Mana Recharge",
-              float.to_string(w.mana_recharge_rate) <> "/s",
-              "text-blue-300",
-            ),
-            // Cast delay
-            view_tooltip_stat(
-              "Cast Delay",
-              int.to_string(cast_delay_ms) <> "ms",
-              "text-yellow-400",
-            ),
-            // Recharge time
-            view_tooltip_stat(
-              "Recharge Time",
-              int.to_string(recharge_ms) <> "ms",
-              "text-orange-400",
-            ),
-            // Spells per cast
-            view_tooltip_stat(
-              "Spells/Cast",
-              int.to_string(w.spells_per_cast),
-              "text-purple-400",
-            ),
-            // Spread
-            view_tooltip_stat(
-              "Spread",
-              float.to_string(w.spread) <> "°",
-              "text-gray-400",
-            ),
-          ]),
-          // Slot count
-          html.div([class("text-gray-500 text-xs mt-2 pt-2 border-t border-gray-700")], [
+          ],
+        ),
+        // Stats
+        html.div([class("flex flex-col gap-2 text-sm")], [
+          // Mana
+          view_tooltip_stat(
+            "Mana",
+            int.to_string(float.round(w.max_mana)),
+            "text-blue-400",
+          ),
+          // Mana recharge
+          view_tooltip_stat(
+            "Mana Recharge",
+            float.to_string(w.mana_recharge_rate) <> "/s",
+            "text-blue-300",
+          ),
+          // Cast delay
+          view_tooltip_stat(
+            "Cast Delay",
+            int.to_string(cast_delay_ms) <> "ms",
+            "text-yellow-400",
+          ),
+          // Recharge time
+          view_tooltip_stat(
+            "Recharge Time",
+            int.to_string(recharge_ms) <> "ms",
+            "text-orange-400",
+          ),
+          // Spells per cast
+          view_tooltip_stat(
+            "Spells/Cast",
+            int.to_string(w.spells_per_cast),
+            "text-purple-400",
+          ),
+          // Spread
+          view_tooltip_stat(
+            "Spread",
+            float.to_string(w.spread) <> "°",
+            "text-gray-400",
+          ),
+        ]),
+        // Slot count
+        html.div(
+          [class("text-gray-500 text-xs mt-2 pt-2 border-t border-gray-700")],
+          [
             html.text(int.to_string(iv.size(w.slots)) <> " spell slots"),
-          ]),
-        ])
-      }
+          ],
+        ),
+      ])
+    }
   }
 }
 
-fn view_tooltip_stat(label: String, value: String, color: String) -> Element(Msg) {
+fn view_tooltip_stat(
+  label: String,
+  value: String,
+  color: String,
+) -> Element(Msg) {
   html.div([class("flex justify-between")], [
     html.span([class("text-gray-400")], [html.text(label)]),
     html.span([class(color <> " font-mono")], [html.text(value)]),
@@ -516,7 +532,11 @@ fn view_damage_spell_tooltip(s: spell.DamageSpell) -> Element(Msg) {
         int.to_string(float.round(s.projectile_speed)),
         "text-cyan-400",
       ),
-      view_tooltip_stat("Lifetime", int.to_string(lifetime_ms) <> "ms", "text-gray-400"),
+      view_tooltip_stat(
+        "Lifetime",
+        int.to_string(lifetime_ms) <> "ms",
+        "text-gray-400",
+      ),
       view_tooltip_stat(
         "Cast Delay",
         int.to_string(cast_delay_ms) <> "ms",
@@ -527,14 +547,21 @@ fn view_damage_spell_tooltip(s: spell.DamageSpell) -> Element(Msg) {
         float.to_string(s.critical_chance *. 100.0) <> "%",
         "text-orange-400",
       ),
-      view_tooltip_stat("Spread", float.to_string(s.spread) <> "°", "text-gray-400"),
+      view_tooltip_stat(
+        "Spread",
+        float.to_string(s.spread) <> "°",
+        "text-gray-400",
+      ),
     ]),
     // Special properties
     case s.has_trigger {
       True ->
-        html.div([class("text-purple-400 text-xs mt-2 pt-2 border-t border-gray-700")], [
-          html.text("Has Trigger"),
-        ])
+        html.div(
+          [class("text-purple-400 text-xs mt-2 pt-2 border-t border-gray-700")],
+          [
+            html.text("Has Trigger"),
+          ],
+        )
       False -> html.text("")
     },
   ])
@@ -620,9 +647,12 @@ fn view_modifier_spell_tooltip(s: spell.ModifierSpell) -> Element(Msg) {
     ]),
     case s.adds_trigger {
       True ->
-        html.div([class("text-purple-400 text-xs mt-2 pt-2 border-t border-gray-700")], [
-          html.text("Adds Trigger to next spell"),
-        ])
+        html.div(
+          [class("text-purple-400 text-xs mt-2 pt-2 border-t border-gray-700")],
+          [
+            html.text("Adds Trigger to next spell"),
+          ],
+        )
       False -> html.text("")
     },
   ])
@@ -653,7 +683,11 @@ fn view_multicast_spell_tooltip(s: spell.MulticastSpell) -> Element(Msg) {
       view_tooltip_stat("Casts", spell_count_text, "text-purple-400"),
       case s.draw_add > 0 {
         True ->
-          view_tooltip_stat("Extra Draw", "+" <> int.to_string(s.draw_add), "text-green-400")
+          view_tooltip_stat(
+            "Extra Draw",
+            "+" <> int.to_string(s.draw_add),
+            "text-green-400",
+          )
         False -> html.text("")
       },
     ]),

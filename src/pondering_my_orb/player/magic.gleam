@@ -365,7 +365,8 @@ fn try_cast_spell(model: Model, ctx: tiramisu.Context) -> Model {
         )
 
       // Set target Y to player Y to get horizontal direction (no downward angle)
-      let target_pos = Vec3(target_ground.x, model.player_pos.y, target_ground.z)
+      let target_pos =
+        Vec3(target_ground.x, model.player_pos.y, target_ground.z)
 
       let direction =
         vec3f.subtract(target_pos, model.player_pos) |> vec3f.normalize()
@@ -612,7 +613,8 @@ fn screen_to_world_ground(
   // up = (-0.408, 0.816, -0.408)
   // To project screen coords to player's Y level, we need these coefficients:
   let right_coef = 0.7071
-  let up_coef = 1.2247  // = sqrt(1.5), accounts for camera elevation angle
+  let up_coef = 1.2247
+  // = sqrt(1.5), accounts for camera elevation angle
 
   let world_x = player_x +. ortho_x *. right_coef +. ortho_y *. up_coef
   let world_z = player_z -. ortho_x *. right_coef +. ortho_y *. up_coef
