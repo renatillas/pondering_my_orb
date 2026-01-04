@@ -252,18 +252,6 @@ The physics module:
 
 This keeps the physics module focused on simulation while modules own their behavior.
 
-### Input Handling Ownership
-
-Each module handles its own input for the behaviors it owns:
-
-| Input | Module | Behavior |
-|-------|--------|----------|
-| WASD/Arrows | `player` | Movement |
-| Mouse wheel | `player` | Zoom (normal) / Wand switch (shift+scroll) |
-| 1-4 keys | `player` | Direct wand selection |
-| I key | `player` | Toggle edit mode |
-| E key | `altar` | Pick up wand from nearby altar |
-| Left click | `player/magic` | Cast spells |
 
 ### Tiramisu Context
 
@@ -318,21 +306,6 @@ let final_cooldown = case wrapped {
   True -> duration.add(total_delay, duration.add(wand.recharge_time, recharge_addition))
   False -> total_delay
 }
-```
-
-### UI Bridge (Tiramisu ↔ Lustre)
-
-```gleam
-// In main module
-let bridge = ui.new_bridge()
-game_ui.start(bridge)
-tiramisu.run(bridge: option.Some(bridge), ...)
-
-// Send to Lustre UI
-ui.to_lustre(bridge, game_msg.WandUpdated(...))
-
-// Send to Tiramisu game
-ui.to_tiramisu(bridge, game_msg.PlayerMsg(player.MagicMsg(magic.SelectSlot(0))))
 ```
 
 ## Code Patterns

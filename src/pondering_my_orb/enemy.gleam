@@ -46,15 +46,18 @@ pub type Model {
     spawn_timer: duration.Duration,
     spawn_interval: duration.Duration,
     player_pos: Vec3(Float),
+    // Shared rendering resources (created once in init)
+    enemy_geometry: geometry.Geometry,
   )
 }
 
 pub type Msg {
   Tick
-  UpdatePlayerPos(player_pos: Vec3(Float))
-  TakeProjectileDamage(enemy_id: id.Id, damage: Float)
-  // Physics sends back updated positions after simulation
-  UpdatePositionsFromPhysics(
+  PlayerPositionUpdated(player_pos: Vec3(Float))
+  /// Event: Enemy was hit by a projectile
+  ProjectileHasHitEnemy(enemy_id: id.Id, damage: Float)
+  /// Event: Physics simulation updated enemy positions
+  PhysicsUpdatedPosition(
     positions: List(#(id.Id, Vec3(Float))),
     player_pos: Vec3(Float),
   )
@@ -89,6 +92,9 @@ const spawn_distance_max = 30.0
 // =============================================================================
 
 pub fn init() -> #(Model, effect.Effect(Msg)) {
+  // Create shared rendering resources once
+  let assert Ok(enemy_geo) = geometry.box(Vec3(1.5, 2.0, 1.5))
+
   let model =
     Model(
       enemies: [],
@@ -96,6 +102,7 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
       spawn_timer: duration.milliseconds(0),
       spawn_interval: duration.milliseconds(spawn_interval_ms),
       player_pos: Vec3(0.0, 0.0, 0.0),
+      enemy_geometry: enemy_geo,
     )
 
   #(model, effect.dispatch(Tick))
@@ -110,9 +117,9 @@ pub fn update(
   model: Model,
   msg: Msg,
   ctx: tiramisu.Context,
-  player_took_damage player_took_damage,
-  spawn_altar spawn_altar,
-  effect_mapper effect_mapper,
+  player_took_damage player_took_damage: fn(Float) -> game_msg,
+  spawn_altar spawn_altar: fn(Vec3(Float)) -> game_msg,
+  effect_mapper effect_mapper: fn(Msg) -> game_msg,
 ) -> #(Model, effect.Effect(game_msg)) {
   case msg {
     Tick -> {
@@ -121,16 +128,19 @@ pub fn update(
         True -> effect.dispatch(player_took_damage(damage))
         False -> effect.none()
       }
-      #(new_model, effect.batch([effect.dispatch(effect_mapper(Tick)), damage_effect]))
+      #(
+        new_model,
+        effect.batch([effect.dispatch(effect_mapper(Tick)), damage_effect]),
+      )
     }
 
-    UpdatePlayerPos(player_pos) -> {
+    PlayerPositionUpdated(player_pos) -> {
       let model_with_pos = Model(..model, player_pos: player_pos)
       let model_with_velocities = calculate_velocities(model_with_pos)
       #(model_with_velocities, effect.none())
     }
 
-    TakeProjectileDamage(enemy_id, damage) -> {
+    ProjectileHasHitEnemy(enemy_id, damage) -> {
       let #(updated_enemies, death_effects) =
         list.fold(model.enemies, #([], []), fn(acc, enemy) {
           let #(enemies_acc, effects_acc) = acc
@@ -140,7 +150,8 @@ pub fn update(
               case health.is_dead(new_health) {
                 True -> {
                   // Enemy died - spawn altar at death position
-                  let spawn_effect = effect.dispatch(spawn_altar(enemy.position))
+                  let spawn_effect =
+                    effect.dispatch(spawn_altar(enemy.position))
                   #(enemies_acc, [spawn_effect, ..effects_acc])
                 }
                 False -> {
@@ -157,7 +168,7 @@ pub fn update(
       #(Model(..model, enemies: updated_enemies), effect.batch(death_effects))
     }
 
-    UpdatePositionsFromPhysics(positions, player_pos) -> {
+    PhysicsUpdatedPosition(positions, player_pos) -> {
       let updated_enemies =
         list.map(model.enemies, fn(enemy) {
           case list.find(positions, fn(p) { p.0 == enemy.id }) {
@@ -304,12 +315,16 @@ fn update_attacks(model: Model, dt: duration.Duration) -> #(Model, Float) {
 
 pub fn view(model: Model, ctx: tiramisu.Context) -> List(scene.Node) {
   let assert option.Some(physics_world) = ctx.physics_world
-  list.map(model.enemies, fn(enemy) { view_enemy(enemy, physics_world) })
+  list.map(model.enemies, fn(enemy) {
+    view_enemy(enemy, physics_world, model.enemy_geometry)
+  })
 }
 
-fn view_enemy(enemy: Enemy, physics_world: physics.PhysicsWorld) -> scene.Node {
-  let assert Ok(enemy_geo) = geometry.box(Vec3(1.5, 2.0, 1.5))
-
+fn view_enemy(
+  enemy: Enemy,
+  physics_world: physics.PhysicsWorld,
+  enemy_geo: geometry.Geometry,
+) -> scene.Node {
   // Color based on health percentage
   let health_pct = health.percentage(enemy.health)
   let color = case health_pct {

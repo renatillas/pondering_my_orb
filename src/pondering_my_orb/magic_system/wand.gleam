@@ -970,17 +970,4 @@ fn apply_spread(
     }
   }
 }
-
 /// Get the names of all spells in a wand's slots
-pub fn get_spell_names(wand: Wand) -> List(String) {
-  wand.slots
-  |> iv.to_list()
-  |> list.filter_map(fn(slot) {
-    case slot {
-      option.Some(spell.DamageSpell(_, kind)) -> Ok(kind.name)
-      option.Some(spell.ModifierSpell(_, kind)) -> Ok(kind.name)
-      option.Some(spell.MulticastSpell(_, kind)) -> Ok(kind.name)
-      option.None -> Error(Nil)
-    }
-  })
-}

@@ -107,10 +107,7 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
 
   // Per-wand state (cooldown and cast index for each slot)
   let initial_wand_state =
-    WandState(
-      cast_cooldown: duration.milliseconds(0),
-      wand_cast_index: 0,
-    )
+    WandState(cast_cooldown: duration.milliseconds(0), wand_cast_index: 0)
   let wand_states = iv.repeat(initial_wand_state, 4)
 
   // Start with an empty spell bag
@@ -281,9 +278,7 @@ pub fn update(
           case wand.get_spell(active_wand, slot_index) {
             Ok(option.Some(spell_to_remove)) -> {
               // Remove spell from wand slot (set to None)
-              case
-                iv.set(active_wand.slots, at: slot_index, to: option.None)
-              {
+              case iv.set(active_wand.slots, at: slot_index, to: option.None) {
                 Ok(new_slots) -> {
                   let new_wand = wand.Wand(..active_wand, slots: new_slots)
 
@@ -360,7 +355,7 @@ fn try_cast_spell(model: Model, ctx: tiramisu.Context) -> Model {
       let active_state = get_active_wand_state(model)
 
       let mouse_pos = input.mouse_position(ctx.input)
-      let target_pos =
+      let target_ground =
         screen_to_world_ground(
           mouse_pos,
           ctx.canvas_size,
@@ -368,6 +363,9 @@ fn try_cast_spell(model: Model, ctx: tiramisu.Context) -> Model {
           model.player_pos.z,
           model.zoom,
         )
+
+      // Set target Y to player Y to get horizontal direction (no downward angle)
+      let target_pos = Vec3(target_ground.x, model.player_pos.y, target_ground.z)
 
       let direction =
         vec3f.subtract(target_pos, model.player_pos) |> vec3f.normalize()
@@ -418,9 +416,16 @@ fn try_cast_spell(model: Model, ctx: tiramisu.Context) -> Model {
 
           // Update wand state
           let new_state =
-            WandState(cast_cooldown: final_cooldown, wand_cast_index: next_index)
+            WandState(
+              cast_cooldown: final_cooldown,
+              wand_cast_index: next_index,
+            )
           let assert Ok(new_wand_states) =
-            iv.set(model.wand_states, at: model.active_wand_index, to: new_state)
+            iv.set(
+              model.wand_states,
+              at: model.active_wand_index,
+              to: new_state,
+            )
 
           Model(
             ..model,
@@ -482,10 +487,59 @@ fn reduce_cooldown(
 // =============================================================================
 
 /// Get the currently active wand (if any)
-fn get_active_wand(model: Model) -> Option(wand.Wand) {
+pub fn get_active_wand(model: Model) -> Option(wand.Wand) {
   case iv.get(model.wands, model.active_wand_index) {
     Ok(wand_opt) -> wand_opt
     Error(_) -> option.None
+  }
+}
+
+/// Get the wand cast index for the active wand (for UI display)
+/// Returns the index of the next spell that will actually be cast,
+/// not just the raw cast index (which might point to an empty slot)
+pub fn get_wand_cast_index(model: Model) -> Int {
+  case
+    iv.get(model.wand_states, model.active_wand_index),
+    get_active_wand(model)
+  {
+    Ok(state), option.Some(active_wand) ->
+      find_next_spell_index(active_wand.slots, state.wand_cast_index)
+    _, _ -> 0
+  }
+}
+
+/// Find the index of the next non-empty spell slot starting from start_index
+/// Wraps around if needed
+fn find_next_spell_index(
+  slots: iv.Array(option.Option(spell.Spell)),
+  start_index: Int,
+) -> Int {
+  let slot_count = iv.size(slots)
+  find_next_spell_loop(slots, start_index, slot_count, 0)
+}
+
+fn find_next_spell_loop(
+  slots: iv.Array(option.Option(spell.Spell)),
+  current_index: Int,
+  slot_count: Int,
+  iterations: Int,
+) -> Int {
+  // Prevent infinite loop - if we've checked all slots, return 0
+  case iterations >= slot_count {
+    True -> 0
+    False -> {
+      let wrapped_index = current_index % slot_count
+      case iv.get(slots, wrapped_index) {
+        Ok(option.Some(_)) -> wrapped_index
+        _ ->
+          find_next_spell_loop(
+            slots,
+            current_index + 1,
+            slot_count,
+            iterations + 1,
+          )
+      }
+    }
   }
 }
 
@@ -494,10 +548,7 @@ fn get_active_wand_state(model: Model) -> WandState {
   case iv.get(model.wand_states, model.active_wand_index) {
     Ok(state) -> state
     Error(_) ->
-      WandState(
-        cast_cooldown: duration.milliseconds(0),
-        wand_cast_index: 0,
-      )
+      WandState(cast_cooldown: duration.milliseconds(0), wand_cast_index: 0)
   }
 }
 
@@ -536,14 +587,12 @@ fn reduce_all_cooldowns(
   dt: duration.Duration,
 ) -> iv.Array(WandState) {
   iv.index_map(wand_states, fn(state, _index) {
-    WandState(
-      ..state,
-      cast_cooldown: reduce_cooldown(state.cast_cooldown, dt),
-    )
+    WandState(..state, cast_cooldown: reduce_cooldown(state.cast_cooldown, dt))
   })
 }
 
-/// Convert screen coordinates to world ground plane coordinates
+/// Convert screen coordinates to world coordinates at player's Y level
+/// Uses proper isometric unprojection based on camera at (d,d,d) looking at origin
 fn screen_to_world_ground(
   screen_pos: Vec2(Float),
   canvas_size: Vec2(Float),
@@ -558,10 +607,15 @@ fn screen_to_world_ground(
   let ortho_x = norm_x *. zoom *. 2.0 *. aspect
   let ortho_y = norm_y *. zoom *. 2.0
 
-  let diagonal = 0.7071
+  // Camera basis vectors for isometric view from (d,d,d):
+  // right = (0.7071, 0, -0.7071)
+  // up = (-0.408, 0.816, -0.408)
+  // To project screen coords to player's Y level, we need these coefficients:
+  let right_coef = 0.7071
+  let up_coef = 1.2247  // = sqrt(1.5), accounts for camera elevation angle
 
-  let world_x = { ortho_x +. ortho_y } *. diagonal +. player_x
-  let world_z = { ortho_y -. ortho_x } *. diagonal +. player_z
+  let world_x = player_x +. ortho_x *. right_coef +. ortho_y *. up_coef
+  let world_z = player_z -. ortho_x *. right_coef +. ortho_y *. up_coef
 
   Vec3(world_x, 0.0, world_z)
 }
@@ -678,13 +732,7 @@ pub fn get_wand_ui_state(
       )
     }
     option.None -> {
-      #(
-        [],
-        option.None,
-        0.0,
-        0.0,
-        model.spell_bag,
-      )
+      #([], option.None, 0.0, 0.0, model.spell_bag)
     }
   }
 }
@@ -702,4 +750,19 @@ pub fn get_active_wand_index(model: Model) -> Int {
 /// Get current projectiles for collision detection
 pub fn get_projectiles(model: Model) -> List(spell.Projectile) {
   model.projectiles
+}
+
+/// Get all wands with their cast indices for inventory display
+pub fn get_all_wands_with_cast_indices(
+  model: Model,
+) -> List(#(Option(wand.Wand), Int)) {
+  iv.to_list(model.wands)
+  |> list.index_map(fn(wand_opt, index) {
+    let cast_index = case iv.get(model.wand_states, index), wand_opt {
+      Ok(state), option.Some(w) ->
+        find_next_spell_index(w.slots, state.wand_cast_index)
+      _, _ -> 0
+    }
+    #(wand_opt, cast_index)
+  })
 }

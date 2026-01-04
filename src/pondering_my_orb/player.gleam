@@ -11,8 +11,6 @@ import tiramisu/material
 import tiramisu/physics
 import tiramisu/scene
 import tiramisu/transform
-import tiramisu/ui
-import pondering_my_orb/bridge_msg.{type BridgeMsg, type WandDisplayInfo}
 import vec/vec2.{type Vec2, Vec2}
 import vec/vec2f
 import vec/vec3.{Vec3}
@@ -35,13 +33,16 @@ pub type Model {
     zoom: Float,
     magic: magic.Model,
     health: health.Health,
+    // Shared rendering resources (created once in init)
+    player_geometry: geometry.Geometry,
+    player_material: material.Material,
   )
 }
 
 pub type Msg {
   Tick
   MagicMsg(magic.Msg)
-  TakeDamage(Float)
+  DamageReceived(Float)
 }
 
 // =============================================================================
@@ -74,12 +75,21 @@ const isometric_right = Vec2(0.7071, -0.7071)
 pub fn init() -> #(Model, effect.Effect(Msg)) {
   let #(magic_model, magic_effect) = magic.init()
 
+  // Create shared rendering resources once
+  let assert Ok(player_geo) = geometry.box(Vec3(1.0, 2.0, 1.0))
+  let assert Ok(player_mat) =
+    material.new()
+    |> material.with_color(0x4ecdc4)
+    |> material.build()
+
   #(
     Model(
       position: vec3.Vec3(x: 0.0, y: 1.0, z: 0.0),
       zoom: initial_zoom,
       magic: magic_model,
       health: health.new(initial_health),
+      player_geometry: player_geo,
+      player_material: player_mat,
     ),
     effect.batch([
       effect.dispatch(Tick),
@@ -92,13 +102,11 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
 // UPDATE
 // =============================================================================
 
-/// Update player. Uses bridge to communicate with UI.
+/// Update player. Uses callbacks for cross-module communication.
 pub fn update(
   model: Model,
   msg: Msg,
   ctx: tiramisu.Context,
-  bridge bridge: ui.Bridge(BridgeMsg),
-  altar_nearby altar_nearby: option.Option(WandDisplayInfo),
   effect_mapper effect_mapper,
 ) -> #(Model, effect.Effect(game_msg)) {
   case msg {
@@ -108,20 +116,15 @@ pub fn update(
       // Send player state to magic module
       let update_magic_effect =
         effect.dispatch(
-          effect_mapper(MagicMsg(magic.UpdatePlayerState(new_model.position, new_model.zoom))),
+          effect_mapper(
+            MagicMsg(magic.UpdatePlayerState(new_model.position, new_model.zoom)),
+          ),
         )
 
       // Check for wand switching input
       let wand_switch_effect = get_wand_switch_effect(ctx, effect_mapper)
 
-      // Check for edit mode toggle (I key)
-      let edit_mode_effect = case input.is_key_just_pressed(ctx.input, input.KeyI) {
-        True -> ui.send_to_ui(bridge, bridge_msg.ToggleEditMode)
-        False -> effect.none()
-      }
-
-      // Sync player state to UI
-      let ui_sync_effect = build_ui_sync_effect(new_model, bridge, altar_nearby)
+      // Send updated state to UI
 
       #(
         new_model,
@@ -129,19 +132,27 @@ pub fn update(
           effect.dispatch(effect_mapper(Tick)),
           update_magic_effect,
           wand_switch_effect,
-          edit_mode_effect,
-          ui_sync_effect,
         ]),
       )
     }
     MagicMsg(magic_msg) -> {
       let #(new_magic, magic_effect) = magic.update(model.magic, magic_msg, ctx)
       let new_model = Model(..model, magic: new_magic)
-      #(new_model, effect.map(magic_effect, fn(m) { effect_mapper(MagicMsg(m)) }))
+
+      // Send updated state to UI (wand may have changed)
+
+      #(
+        new_model,
+        effect.batch([
+          effect.map(magic_effect, fn(m) { effect_mapper(MagicMsg(m)) }),
+        ]),
+      )
     }
-    TakeDamage(amount) -> {
+    DamageReceived(amount) -> {
       let new_health = health.damage(model.health, amount)
-      #(Model(..model, health: new_health), effect.none())
+      let new_model = Model(..model, health: new_health)
+
+      #(new_model, effect.none())
     }
   }
 }
@@ -161,11 +172,13 @@ fn update_movement(model: Model, ctx: tiramisu.Context) -> Model {
   let world_movement = screen_to_world_movement(screen_input)
 
   // Mouse wheel for zoom (only when Shift is NOT held - Shift+scroll is for wand switching)
-  let shift_held = input.is_key_pressed(ctx.input, input.ShiftLeft)
+  let shift_held =
+    input.is_key_pressed(ctx.input, input.ShiftLeft)
     || input.is_key_pressed(ctx.input, input.ShiftRight)
   let wheel_delta = input.mouse_wheel_delta(ctx.input)
   let zoom_change = case shift_held {
-    True -> 0.0  // Scroll used for wand switching when shift held
+    True -> 0.0
+    // Scroll used for wand switching when shift held
     False -> wheel_delta *. zoom_speed *. dt
   }
   let new_zoom =
@@ -262,7 +275,10 @@ fn screen_to_world_movement(screen_input: Vec2(Float)) -> Vec2(Float) {
 // =============================================================================
 
 /// Check for wand switch inputs and return appropriate effect
-fn get_wand_switch_effect(ctx: tiramisu.Context, effect_mapper) -> effect.Effect(game_msg) {
+fn get_wand_switch_effect(
+  ctx: tiramisu.Context,
+  effect_mapper,
+) -> effect.Effect(game_msg) {
   // Number keys 1-4 for direct wand selection
   let key_effect = case
     input.is_key_just_pressed(ctx.input, input.Digit1),
@@ -270,10 +286,14 @@ fn get_wand_switch_effect(ctx: tiramisu.Context, effect_mapper) -> effect.Effect
     input.is_key_just_pressed(ctx.input, input.Digit3),
     input.is_key_just_pressed(ctx.input, input.Digit4)
   {
-    True, _, _, _ -> effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWand(0))))
-    _, True, _, _ -> effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWand(1))))
-    _, _, True, _ -> effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWand(2))))
-    _, _, _, True -> effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWand(3))))
+    True, _, _, _ ->
+      effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWand(0))))
+    _, True, _, _ ->
+      effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWand(1))))
+    _, _, True, _ ->
+      effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWand(2))))
+    _, _, _, True ->
+      effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWand(3))))
     _, _, _, _ -> effect.none()
   }
 
@@ -284,39 +304,14 @@ fn get_wand_switch_effect(ctx: tiramisu.Context, effect_mapper) -> effect.Effect
   let wheel_delta = input.mouse_wheel_delta(ctx.input)
 
   let scroll_effect = case shift_held, wheel_delta {
-    True, d if d >. 0.0 -> effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWandRelative(-1))))
-    True, d if d <. 0.0 -> effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWandRelative(1))))
+    True, d if d >. 0.0 ->
+      effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWandRelative(-1))))
+    True, d if d <. 0.0 ->
+      effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWandRelative(1))))
     _, _ -> effect.none()
   }
 
   effect.batch([key_effect, scroll_effect])
-}
-
-// =============================================================================
-// UI SYNC
-// =============================================================================
-
-fn build_ui_sync_effect(
-  model: Model,
-  bridge: ui.Bridge(BridgeMsg),
-  altar_nearby: option.Option(WandDisplayInfo),
-) -> effect.Effect(game_msg) {
-  let #(slots, selected, mana, max_mana, spell_bag) = magic.get_wand_ui_state(model.magic)
-
-  ui.send_to_ui(
-    bridge,
-    bridge_msg.PlayerStateUpdated(
-      slots,
-      selected,
-      mana,
-      max_mana,
-      spell_bag,
-      model.health,
-      get_wand_names(model),
-      get_active_wand_index(model),
-      altar_nearby,
-    ),
-  )
 }
 
 // =============================================================================
@@ -325,11 +320,6 @@ fn build_ui_sync_effect(
 
 pub fn view(model: Model, ctx: tiramisu.Context) -> List(scene.Node) {
   let assert option.Some(physics_world) = ctx.physics_world
-  let assert Ok(player_geo) = geometry.box(Vec3(1.0, 2.0, 1.0))
-  let assert Ok(player_mat) =
-    material.new()
-    |> material.with_color(0x4ecdc4)
-    |> material.build()
 
   // Physics body for collision with enemies and walls
   // Layer 0 = Player, collides with layer 1 = Enemies, layer 2 = Walls
@@ -359,8 +349,8 @@ pub fn view(model: Model, ctx: tiramisu.Context) -> List(scene.Node) {
   let player_node =
     scene.mesh(
       id: id.to_string(id.Player),
-      geometry: player_geo,
-      material: player_mat,
+      geometry: model.player_geometry,
+      material: model.player_material,
       transform: transform.at(position: model.position),
       physics: option.Some(physics_body),
     )
@@ -446,7 +436,24 @@ pub fn get_active_wand_index(model: Model) -> Int {
   magic.get_active_wand_index(model.magic)
 }
 
+/// Get the currently active wand (if any)
+pub fn get_active_wand(model: Model) -> Option(wand.Wand) {
+  magic.get_active_wand(model.magic)
+}
+
+/// Get the wand cast index for UI display
+pub fn get_wand_cast_index(model: Model) -> Int {
+  magic.get_wand_cast_index(model.magic)
+}
+
 /// Get current projectiles for collision detection
 pub fn get_projectiles(model: Model) -> List(spell.Projectile) {
   magic.get_projectiles(model.magic)
+}
+
+/// Get all wands with their cast indices for inventory display
+pub fn get_all_wands_with_cast_indices(
+  model: Model,
+) -> List(#(Option(wand.Wand), Int)) {
+  magic.get_all_wands_with_cast_indices(model.magic)
 }

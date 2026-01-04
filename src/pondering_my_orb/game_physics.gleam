@@ -7,7 +7,6 @@ import tiramisu/transform
 import vec/vec3.{type Vec3}
 import vec/vec3f
 
-import pondering_my_orb/altar
 import pondering_my_orb/enemy
 import pondering_my_orb/id
 import pondering_my_orb/magic_system/spell
@@ -22,6 +21,8 @@ pub type Model {
     collision_results: List(CollisionResult),
     enemy_positions: List(#(id.Id, Vec3(Float))),
     stepped_world: option.Option(physics.PhysicsWorld),
+    /// Enemy state updated synchronously during physics tick
+    updated_enemy: option.Option(enemy.Model),
   )
 }
 
@@ -31,15 +32,6 @@ pub type Msg {
 
 pub type CollisionResult {
   ProjectileHitEnemy(projectile_id: Int, enemy_id: Int, damage: Float)
-}
-
-pub type TickResult {
-  TickResult(
-    physics: Model,
-    enemy: enemy.Model,
-    altar: altar.Model,
-    stepped_world: option.Option(physics.PhysicsWorld),
-  )
 }
 
 // =============================================================================
@@ -52,6 +44,7 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
       collision_results: [],
       enemy_positions: [],
       stepped_world: option.None,
+      updated_enemy: option.None,
     )
   #(model, effect.none())
 }
@@ -70,14 +63,12 @@ pub fn update(
   // Module state
   player_model player_model: player.Model,
   enemy_model enemy_model: enemy.Model,
-  altar_model altar_model: altar.Model,
   // Message taggers for cross-module dispatch
   enemy_took_projectile_damage enemy_took_projectile_damage,
   remove_projectile remove_projectile,
-  update_altar_player_pos update_altar_player_pos,
   update_enemy_positions update_enemy_positions,
   effect_mapper effect_mapper,
-) -> #(TickResult, effect.Effect(game_msg)) {
+) -> #(Model, effect.Effect(game_msg)) {
   let assert option.Some(physics_world) = ctx.physics_world
   let player_position = player_model.position
   let projectiles = player.get_projectiles(player_model)
@@ -104,17 +95,12 @@ pub fn update(
       let enemy_ids = list.map(updated_enemy.enemies, enemy.id)
       let enemy_positions = read_enemy_positions(stepped_world, enemy_ids)
 
-      // Build result (enemy and altar updated via async dispatch)
-      let result =
-        TickResult(
-          physics: Model(
-            collision_results: collision_results,
-            enemy_positions: enemy_positions,
-            stepped_world: option.Some(stepped_world),
-          ),
-          enemy: updated_enemy,
-          altar: altar_model,
+      let model =
+        Model(
+          collision_results: collision_results,
+          enemy_positions: enemy_positions,
           stepped_world: option.Some(stepped_world),
+          updated_enemy: option.Some(updated_enemy),
         )
 
       // Build all effects (including async position updates)
@@ -125,12 +111,14 @@ pub fn update(
             enemy_took_projectile_damage,
             remove_projectile,
           ),
-          effect.dispatch(update_altar_player_pos(player_position)),
-          effect.dispatch(update_enemy_positions(enemy_positions, player_position)),
+          effect.dispatch(update_enemy_positions(
+            enemy_positions,
+            player_position,
+          )),
           effect.dispatch(effect_mapper(Tick)),
         ])
 
-      #(result, effects)
+      #(model, effects)
     }
   }
 }

@@ -25,13 +25,12 @@ pub type Altar {
 }
 
 pub type Model {
-  Model(altars: List(Altar), next_altar_id: Int, player_pos: Vec3(Float))
+  Model(altars: List(Altar), next_altar_id: Int)
 }
 
 pub type Msg {
   Tick
-  UpdatePlayerPos(Vec3(Float))
-  SpawnAltar(position: Vec3(Float))
+  EnemyDied(position: Vec3(Float))
   RemoveAltar(id.Id)
 }
 
@@ -50,9 +49,7 @@ const altar_y_offset = 0.5
 // =============================================================================
 
 pub fn init() -> #(Model, effect.Effect(Msg)) {
-  let model =
-    Model(altars: [], next_altar_id: 0, player_pos: Vec3(0.0, 0.0, 0.0))
-
+  let model = Model(altars: [], next_altar_id: 0)
   #(model, effect.dispatch(Tick))
 }
 
@@ -65,15 +62,18 @@ pub fn update(
   model: Model,
   msg: Msg,
   ctx: tiramisu.Context,
+  player_pos player_pos: Vec3(Float),
   pick_up_wand pick_up_wand,
   effect_mapper effect_mapper,
 ) -> #(Model, effect.Effect(game_msg)) {
   case msg {
     Tick -> {
       // Check for wand pickup (E key)
-      let pickup_effect = case input.is_key_just_pressed(ctx.input, input.KeyE) {
+      let pickup_effect = case
+        input.is_key_just_pressed(ctx.input, input.KeyE)
+      {
         True ->
-          case get_nearest_altar(model) {
+          case get_nearest_altar(model, player_pos) {
             option.Some(nearby) ->
               effect.batch([
                 effect.dispatch(pick_up_wand(nearby.wand)),
@@ -84,18 +84,16 @@ pub fn update(
         False -> effect.none()
       }
 
-      #(model, effect.batch([effect.dispatch(effect_mapper(Tick)), pickup_effect]))
+      #(
+        model,
+        effect.batch([effect.dispatch(effect_mapper(Tick)), pickup_effect]),
+      )
     }
 
-    UpdatePlayerPos(player_pos) -> {
-      #(Model(..model, player_pos: player_pos), effect.none())
-    }
-
-    SpawnAltar(position) -> {
+    EnemyDied(position) -> {
       let altar = create_altar(model.next_altar_id, position)
       #(
         Model(
-          ..model,
           altars: [altar, ..model.altars],
           next_altar_id: model.next_altar_id + 1,
         ),
@@ -120,8 +118,7 @@ fn create_altar(altar_num: Int, position: Vec3(Float)) -> Altar {
   let altar_id = id.Altar(altar_num)
 
   // Create a random wand with Noita-inspired stats
-  let random_wand =
-    wand.new_random("Found Wand #" <> int.to_string(altar_num))
+  let random_wand = wand.new_random("Found Wand #" <> int.to_string(altar_num))
 
   // Populate some slots with random spells
   let wand_with_spells = populate_wand_with_spells(random_wand)
@@ -146,7 +143,8 @@ fn add_random_spells(w: wand.Wand, remaining: Int, slot_index: Int) -> wand.Wand
     False -> {
       let spell = random_spell()
       case wand.set_spell(w, slot_index, spell) {
-        Ok(new_wand) -> add_random_spells(new_wand, remaining - 1, slot_index + 1)
+        Ok(new_wand) ->
+          add_random_spells(new_wand, remaining - 1, slot_index + 1)
         Error(_) -> w
       }
     }
@@ -180,10 +178,8 @@ fn random_spell() -> spell.Spell {
 // =============================================================================
 
 /// Find the nearest altar within pickup range
-/// Returns the altar and its distance if found
-pub fn get_nearest_altar(model: Model) -> Option(Altar) {
-  let player_pos = model.player_pos
-
+/// Returns the altar if found
+pub fn get_nearest_altar(model: Model, player_pos: Vec3(Float)) -> Option(Altar) {
   // Find all altars within range with their distances
   let altars_with_distance =
     list.filter_map(model.altars, fn(altar) {
