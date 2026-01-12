@@ -1,28 +1,25 @@
-import client/assets
-import client/game_physics/layer
 import ensaimada
 import gleam/float
+import gleam/int
+import gleam/io
 import gleam/list
 import gleam/option.{type Option}
-import gleam/order
 import gleam/time/duration
 import iv
 import tiramisu
 import tiramisu/effect
 import tiramisu/geometry
-import tiramisu/input
 import tiramisu/material
-import tiramisu/physics
 import tiramisu/scene
 import tiramisu/transform
 import vec/vec2.{type Vec2}
 import vec/vec3.{type Vec3, Vec3}
-import vec/vec3f
 
-import client/id
 import client/magic_system/spell
 import client/magic_system/spell_bag
 import client/magic_system/wand
+import shared/id
+import shared/projectile
 
 // =============================================================================
 // TYPES
@@ -39,8 +36,8 @@ pub type Model {
     wands: iv.Array(Option(wand.Wand)),
     active_wand_index: Int,
     wand_states: iv.Array(WandState),
-    projectiles: List(spell.Projectile),
-    next_projectile_id: Int,
+    // Server-authoritative projectiles (from network)
+    projectiles: List(projectile.Projectile),
     spell_bag: spell_bag.SpellBag,
     selected_spell_slot: Option(Int),
     // Player state needed for casting
@@ -55,7 +52,10 @@ pub type Msg {
   PlaceSpellInSlot(spell_id: spell.Id, slot_index: Int)
   SelectSlot(Int)
   ReorderWandSlots(from_index: Int, to_index: Int)
-  RemoveProjectile(Int)
+  // Server-authoritative projectile messages (from network)
+  SetProjectiles(List(projectile.Projectile))
+  AddProjectiles(List(projectile.Projectile))
+  RemoveProjectiles(List(Int))
   // Wand switching
   SwitchWand(wand_index: Int)
   SwitchWandRelative(delta: Int)
@@ -107,7 +107,6 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
       active_wand_index: 0,
       wand_states: wand_states,
       projectiles: [],
-      next_projectile_id: 0,
       spell_bag: initial_spell_bag,
       selected_spell_slot: option.None,
       player_pos: Vec3(0.0, 1.0, 0.0),
@@ -226,10 +225,44 @@ pub fn update(
       }
     }
 
-    RemoveProjectile(projectile_id) -> {
-      let new_projectiles =
-        list.filter(model.projectiles, fn(p) { p.id != projectile_id })
-      #(Model(..model, projectiles: new_projectiles), effect.none())
+    // Server-authoritative projectile messages
+    SetProjectiles(projectiles) -> {
+      // Debug logging
+      let _ =
+        io.println(
+          "[Magic] SetProjectiles: " <> int.to_string(list.length(projectiles)),
+        )
+      #(Model(..model, projectiles: projectiles), effect.none())
+    }
+
+    AddProjectiles(new_projectiles) -> {
+      // Debug logging
+      let _ =
+        io.println(
+          "[Magic] AddProjectiles: "
+          <> int.to_string(list.length(new_projectiles))
+          <> " (total: "
+          <> int.to_string(
+            list.length(model.projectiles) + list.length(new_projectiles),
+          )
+          <> ")",
+        )
+      let updated_projectiles = list.append(model.projectiles, new_projectiles)
+      #(Model(..model, projectiles: updated_projectiles), effect.none())
+    }
+
+    RemoveProjectiles(projectile_ids) -> {
+      // Debug logging
+      let _ =
+        io.println(
+          "[Magic] RemoveProjectiles: "
+          <> int.to_string(list.length(projectile_ids)),
+        )
+      let updated_projectiles =
+        list.filter(model.projectiles, fn(p) {
+          !list.contains(projectile_ids, p.id)
+        })
+      #(Model(..model, projectiles: updated_projectiles), effect.none())
     }
 
     SwitchWand(wand_index) -> {
@@ -309,149 +342,12 @@ pub fn update(
 fn tick(model: Model, ctx: tiramisu.Context) -> Model {
   let dt = ctx.delta_time
 
-  // Handle spell casting (left click)
-  let model = update_casting(model, ctx)
-
-  // Update projectiles
-  let model = update_projectiles(model, dt)
-
   // Recharge mana for all wands
   let new_wands = recharge_all_wands(model.wands, dt)
 
-  // Reduce cooldown for all wand states
   let new_wand_states = reduce_all_cooldowns(model.wand_states, dt)
 
   Model(..model, wands: new_wands, wand_states: new_wand_states)
-}
-
-fn update_casting(model: Model, ctx: tiramisu.Context) -> Model {
-  let active_state = get_active_wand_state(model)
-  let can_cast =
-    input.is_left_button_pressed(ctx.input)
-    && duration.to_seconds(active_state.cast_cooldown) <=. 0.0
-
-  case can_cast {
-    True -> try_cast_spell(model, ctx)
-    False -> model
-  }
-}
-
-fn try_cast_spell(model: Model, ctx: tiramisu.Context) -> Model {
-  case get_active_wand(model) {
-    option.None -> model
-    option.Some(active_wand) -> {
-      let active_state = get_active_wand_state(model)
-
-      let mouse_pos = input.mouse_position(ctx.input)
-      let target_ground =
-        screen_to_world_ground(
-          mouse_pos,
-          ctx.canvas_size,
-          model.player_pos.x,
-          model.player_pos.z,
-          model.zoom,
-        )
-
-      // Set target Y to player Y to get horizontal direction (no downward angle)
-      let target_pos =
-        Vec3(target_ground.x, model.player_pos.y, target_ground.z)
-
-      let direction =
-        vec3f.subtract(target_pos, model.player_pos) |> vec3f.normalize()
-
-      let #(result, new_wand) =
-        wand.cast(
-          active_wand,
-          active_state.wand_cast_index,
-          model.player_pos,
-          direction,
-          model.next_projectile_id,
-          option.None,
-          option.Some(model.player_pos),
-          model.projectiles,
-        )
-
-      case result {
-        wand.CastSuccess(
-          projectiles: new_projectiles,
-          next_cast_index: next_index,
-          total_cast_delay_addition: delay,
-          total_recharge_time_addition: recharge_addition,
-          did_wrap: wrapped,
-          ..,
-        ) -> {
-          let total_projectiles =
-            list.append(new_projectiles, model.projectiles)
-          let new_id = model.next_projectile_id + list.length(new_projectiles)
-
-          let total_delay = duration.add(active_wand.cast_delay, delay)
-
-          let final_cooldown = case wrapped {
-            True -> {
-              let recharge =
-                duration.add(active_wand.recharge_time, recharge_addition)
-              duration.add(total_delay, recharge)
-            }
-            False -> total_delay
-          }
-
-          // Update wand in wands array
-          let assert Ok(new_wands) =
-            iv.set(
-              model.wands,
-              at: model.active_wand_index,
-              to: option.Some(new_wand),
-            )
-
-          // Update wand state
-          let new_state =
-            WandState(
-              cast_cooldown: final_cooldown,
-              wand_cast_index: next_index,
-            )
-          let assert Ok(new_wand_states) =
-            iv.set(
-              model.wand_states,
-              at: model.active_wand_index,
-              to: new_state,
-            )
-
-          Model(
-            ..model,
-            wands: new_wands,
-            wand_states: new_wand_states,
-            projectiles: total_projectiles,
-            next_projectile_id: new_id,
-          )
-        }
-        wand.NotEnoughMana(..) | wand.NoSpellToCast | wand.WandEmpty -> {
-          // Update wand mana even on failure
-          let assert Ok(new_wands) =
-            iv.set(
-              model.wands,
-              at: model.active_wand_index,
-              to: option.Some(new_wand),
-            )
-          Model(..model, wands: new_wands)
-        }
-      }
-    }
-  }
-}
-
-fn update_projectiles(model: Model, delta_time: duration.Duration) -> Model {
-  // Physics drives movement, we only update time_alive and filter expired projectiles
-  let updated_projectiles =
-    model.projectiles
-    |> list.map(fn(proj) {
-      let new_time_alive = duration.add(proj.time_alive, delta_time)
-      spell.Projectile(..proj, time_alive: new_time_alive)
-    })
-    |> list.filter(fn(proj) {
-      duration.compare(proj.time_alive, proj.spell.final_lifetime) != order.Gt
-    })
-
-  Model(..model, projectiles: updated_projectiles)
 }
 
 fn reduce_cooldown(
@@ -533,12 +429,18 @@ fn find_next_spell_loop(
 }
 
 /// Get the state for the active wand
-fn get_active_wand_state(model: Model) -> WandState {
+pub fn get_active_wand_state(model: Model) -> WandState {
   case iv.get(model.wand_states, model.active_wand_index) {
     Ok(state) -> state
     Error(_) ->
       WandState(cast_cooldown: duration.milliseconds(0), wand_cast_index: 0)
   }
+}
+
+/// Check if wand can cast (cooldown is zero)
+pub fn can_cast(model: Model) -> Bool {
+  let state = get_active_wand_state(model)
+  duration.to_seconds(state.cast_cooldown) <=. 0.0
 }
 
 /// Find the first empty wand slot (returns index)
@@ -582,7 +484,7 @@ fn reduce_all_cooldowns(
 
 /// Convert screen coordinates to world coordinates at player's Y level
 /// Uses proper isometric unprojection based on camera at (d,d,d) looking at origin
-fn screen_to_world_ground(
+pub fn screen_to_world_ground(
   screen_pos: Vec2(Float),
   canvas_size: Vec2(Float),
   player_x: Float,
@@ -615,123 +517,36 @@ fn screen_to_world_ground(
 // =============================================================================
 
 /// Returns projectile scene nodes
-pub fn view(
-  model: Model,
-  physics_world: physics.PhysicsWorld,
-  camera_pos: Vec3(Float),
-  game_assets: assets.Model,
-) -> List(scene.Node) {
-  list.map(model.projectiles, fn(p) {
-    view_projectile(p, physics_world, camera_pos, game_assets)
-  })
+pub fn view(model: Model) -> List(scene.Node) {
+  list.map(model.projectiles, view_projectile)
 }
 
-fn view_projectile(
-  projectile: spell.Projectile,
-  physics_world: physics.PhysicsWorld,
-  camera_pos: Vec3(Float),
-  game_assets: assets.Model,
-) -> scene.Node {
-  let size = projectile.spell.final_size
-
-  // Get sprite size and texture path from visuals
-  let #(sprite_size, texture_path) = case projectile.visuals.projectile {
-    spell.StaticSprite(size: s, texture_path: path) -> #(s, path)
-  }
-
+fn view_projectile(proj: projectile.Projectile) -> scene.Node {
   // Use a plane geometry for billboard sprite
-  let assert Ok(proj_geo) =
-    geometry.plane(size: vec2.Vec2(sprite_size.x *. size, sprite_size.y *. size))
+  let assert Ok(proj_geo) = geometry.box(size: vec3.Vec3(1.0, 1.0, 1.0))
 
-  // Look up texture from assets
-  let maybe_texture = case assets.texture_id_for_path(texture_path) {
-    option.Some(id) -> assets.get_texture(game_assets, id)
-    option.None -> option.None
-  }
+  // Simple colored material for now (can be enhanced with textures later)
+  let color = 0xFFFF00
+  // Yellow projectiles
+  let assert Ok(proj_mat) =
+    material.new()
+    |> material.with_color(color)
+    |> material.with_emissive(color)
+    |> material.with_emissive_intensity(0.8)
+    |> material.with_transparent(True)
+    |> material.with_opacity(1.0)
+    |> material.build()
 
-  // Create material with texture or fallback to emissive color
-  let proj_mat = case maybe_texture {
-    option.Some(tex) -> {
-      let assert Ok(mat) =
-        material.basic(
-          color: 0xFFFFFF,
-          transparent: True,
-          opacity: 1.0,
-          map: option.Some(tex),
-          side: material.DoubleSide,
-          alpha_test: 0.1,
-          depth_write: False,
-        )
-      mat
-    }
-    option.None -> {
-      // Fallback to colored emissive material
-      let color = get_spell_color(projectile.spell.base)
-      let assert Ok(mat) =
-        material.new()
-        |> material.with_color(color)
-        |> material.with_emissive(color)
-        |> material.with_emissive_intensity(0.8)
-        |> material.build()
-      mat
-    }
-  }
+  let body_id = id.to_string(id.Projectile(proj.id))
 
-  // Physics body for collision detection
-  // Layer 3 = Projectiles, collides with layer 1 = Enemies
-  // Sensor mode: detects collisions but doesn't bounce/deflect
-  let physics_body =
-    physics.new_rigid_body(physics.Dynamic)
-    |> physics.with_collider(physics.Sphere(
-      offset: transform.identity,
-      radius: size /. 2.0,
-    ))
-    |> physics.with_collision_groups(
-      membership: [layer.projectile],
-      can_collide_with: [layer.enemy],
-    )
-    |> physics.with_collision_events()
-    |> physics.with_sensor()
-    |> physics.with_body_ccd_enabled()
-    |> physics.with_lock_translation_y()
-    |> physics.build()
-
-  let body_id = id.to_string(id.Projectile(projectile.id))
-
-  // Get position from physics if body exists, otherwise use model position
-  let proj_position = case physics.get_transform(physics_world, body_id) {
-    Ok(t) -> transform.position(t)
-    Error(_) -> projectile.position
-  }
-
-  // Cylindrical billboard - rotates around Y axis to face camera
-  let proj_transform =
-    transform.billboard(
-      at: proj_position,
-      facing: camera_pos,
-      mode: transform.Cylindrical,
-    )
-
+  // Render WITHOUT physics body for now (server handles collision)
   scene.mesh(
     id: body_id,
     geometry: proj_geo,
     material: proj_mat,
-    transform: proj_transform,
-    physics: option.Some(physics_body),
+    transform: transform.at(proj.position),
+    physics: option.None,
   )
-}
-
-fn get_spell_color(spell_type: spell.Spell) -> Int {
-  case spell_type {
-    spell.DamageSpell(id: spell.Spark, ..) -> 0xFFFF00
-    spell.DamageSpell(id: spell.Fireball, ..) -> 0xFF4400
-    spell.DamageSpell(id: spell.LightningBolt, ..) -> 0x00FFFF
-    spell.DamageSpell(id: spell.SparkWithTrigger, ..) -> 0xFFAA00
-    spell.DamageSpell(id: spell.OrbitingSpell, ..) -> 0xFF00FF
-    spell.DamageSpell(..) -> 0xFFFFFF
-    spell.ModifierSpell(..) -> 0x00FF00
-    spell.MulticastSpell(..) -> 0x0000FF
-  }
 }
 
 // =============================================================================
@@ -785,7 +600,7 @@ pub fn get_active_wand_index(model: Model) -> Int {
 }
 
 /// Get current projectiles for collision detection
-pub fn get_projectiles(model: Model) -> List(spell.Projectile) {
+pub fn get_projectiles(model: Model) -> List(projectile.Projectile) {
   model.projectiles
 }
 

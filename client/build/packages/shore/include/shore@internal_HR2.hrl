@@ -1,1 +1,0 @@
--record(h_r2, {color :: shore@style:color()}).

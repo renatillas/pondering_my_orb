@@ -1,1 +1,0 @@
--record(one_node, {node :: iv@internal@node:node_(any())}).

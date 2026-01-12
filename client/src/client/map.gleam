@@ -1,11 +1,11 @@
 import client/game_physics/layer
-import client/id
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option
 import gleam/result
 import gleam_community/colour
+import shared/id
 import tiramisu/effect
 import tiramisu/geometry
 import tiramisu/light

@@ -13,9 +13,9 @@ import lustre/element/html
 import lustre/event
 import tiramisu/ui
 
-import client/health
 import client/magic_system/spell
 import client/magic_system/wand
+import shared/health
 
 // =============================================================================
 // TYPES

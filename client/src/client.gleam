@@ -14,11 +14,11 @@ import tiramisu/transform
 import tiramisu/ui
 import vec/vec3
 
-import client/altar
 import client/assets
 import client/enemy
 import client/game_physics
 import client/map
+import client/network
 import client/player
 import client/ui as game_ui
 
@@ -37,9 +37,10 @@ pub type Msg {
   /// Physics step messages
   PhysicsMsg(game_physics.Msg)
   /// Altar tick - handles altar spawning and pickup
-  AltarMsg(altar.Msg)
   /// Asset loading messages
   AssetsMsg(assets.Msg)
+  /// Network messages for multiplayer
+  NetworkMsg(network.Msg)
   /// Bridge messages from UI
   FromBridge(game_ui.BridgeMsg)
 }
@@ -50,8 +51,8 @@ pub type Model {
     player: player.Model,
     enemy: enemy.Model,
     map: map.Model,
-    altar: altar.Model,
     physics: game_physics.Model,
+    network: network.Model,
     bridge: ui.Bridge(game_ui.BridgeMsg),
     edit_mode: Bool,
   )
@@ -100,11 +101,12 @@ fn init(
   let #(map_model, map_effect) = map.init()
   let map_effect = effect.map(map_effect, MapMsg)
 
-  let #(altar_model, altar_effect) = altar.init()
-  let altar_effect = effect.map(altar_effect, AltarMsg)
-
   // Initialize physics module
   let #(physics_model, _physics_effect) = game_physics.init()
+
+  // Initialize network module (disconnected by default)
+  let #(network_model, network_effect) = network.init()
+  let network_effect = effect.map(network_effect, NetworkMsg)
 
   // Create physics world with no gravity (spells float in air)
   let physics_world =
@@ -116,8 +118,8 @@ fn init(
       player: player_model,
       enemy: enemy_model,
       map: map_model,
-      altar: altar_model,
       physics: physics_model,
+      network: network_model,
       bridge: bridge,
       edit_mode: False,
     )
@@ -153,8 +155,8 @@ fn init(
       player_effect,
       enemy_effect,
       map_effect,
-      altar_effect,
       physics_tick_effect,
+      network_effect,
       health_ui_effect,
       wand_ui_effect,
       active_wand_ui_effect,
@@ -173,8 +175,14 @@ fn update(
   ctx: tiramisu.Context,
 ) -> #(Model, Effect(Msg), option.Option(physics.PhysicsWorld)) {
   case msg {
-    // Main tick - handle global input (I key for inventory)
+    // Main tick - handle global input (I key for inventory, M for multiplayer)
     Tick -> {
+      // Request game tick from server if connected
+      let network_tick_effect = case network.is_connected(model.network) {
+        True -> effect.dispatch(NetworkMsg(network.RequestGameTick))
+        False -> effect.none()
+      }
+
       // Check for I key press to toggle inventory
       let #(new_edit_mode, edit_mode_effect) = case
         input.is_key_just_pressed(ctx.input, input.KeyI)
@@ -200,7 +208,6 @@ fn update(
                 effect.dispatch(PlayerMsg(player.MagicMsg(magic.Tick))),
                 effect.dispatch(EnemyMsg(enemy.Tick)),
                 effect.dispatch(PhysicsMsg(game_physics.Tick)),
-                effect.dispatch(AltarMsg(altar.Tick)),
               ])
             True -> effect.none()
           }
@@ -209,9 +216,39 @@ fn update(
         False -> #(model.edit_mode, effect.none())
       }
 
+      // Check for M key press to toggle multiplayer connection
+      let multiplayer_effect = case
+        input.is_key_just_pressed(ctx.input, input.KeyM)
+      {
+        True -> {
+          case network.is_connected(model.network) {
+            False -> {
+              // Connect to local server (for testing)
+              effect.dispatch(
+                NetworkMsg(network.Connect(
+                  server_url: "ws://localhost:8787",
+                  room_id: "test-room",
+                  player_name: "Player",
+                )),
+              )
+            }
+            True -> {
+              // Disconnect
+              effect.dispatch(NetworkMsg(network.Disconnect))
+            }
+          }
+        }
+        False -> effect.none()
+      }
+
       #(
         Model(..model, edit_mode: new_edit_mode),
-        effect.batch([effect.dispatch(Tick), edit_mode_effect]),
+        effect.batch([
+          network_tick_effect,
+          effect.dispatch(Tick),
+          edit_mode_effect,
+          multiplayer_effect,
+        ]),
         ctx.physics_world,
       )
     }
@@ -227,7 +264,15 @@ fn update(
       ))
 
       let #(new_player, player_effect) =
-        player.update(model.player, player_msg, ctx, effect_mapper: PlayerMsg)
+        player.update(
+          model.player,
+          player_msg,
+          ctx,
+          effect_mapper: PlayerMsg,
+          send_input_update: fn(shoot_pressed, aim_direction) {
+            NetworkMsg(network.SendInputUpdate(shoot_pressed, aim_direction))
+          },
+        )
 
       // Send UI updates for health and wand state
       let health_ui_effect =
@@ -249,12 +294,28 @@ fn update(
           ),
         )
 
+      // Send position updates to network when connected (only on Tick)
+      let network_effect = case
+        player_msg,
+        network.is_connected(model.network)
+      {
+        player.Tick, True ->
+          effect.dispatch(
+            NetworkMsg(network.SendPlayerUpdate(
+              position: new_player.position,
+              rotation: 0.0,
+            )),
+          )
+        _, _ -> effect.none()
+      }
+
       let all_effects =
         effect.batch([
           player_effect,
           health_ui_effect,
           wand_ui_effect,
           active_wand_ui_effect,
+          network_effect,
         ])
 
       #(Model(..model, player: new_player), all_effects, ctx.physics_world)
@@ -268,14 +329,7 @@ fn update(
       ))
 
       let #(new_enemy, enemy_effect) =
-        enemy.update(
-          model.enemy,
-          enemy_msg,
-          ctx,
-          player_took_damage: fn(dmg) { PlayerMsg(player.DamageReceived(dmg)) },
-          spawn_altar: fn(position) { AltarMsg(altar.EnemyDied(position)) },
-          effect_mapper: EnemyMsg,
-        )
+        enemy.update(model.enemy, enemy_msg, ctx, effect_mapper: EnemyMsg)
       #(Model(..model, enemy: new_enemy), enemy_effect, ctx.physics_world)
     }
 
@@ -291,25 +345,17 @@ fn update(
           msg: physics_msg,
           ctx: ctx,
           player_model: model.player,
-          enemy_model: model.enemy,
           enemy_took_projectile_damage: fn(id, dmg) {
             EnemyMsg(enemy.ProjectileHasHitEnemy(id, dmg))
           },
           remove_projectile: fn(id) {
-            PlayerMsg(player.MagicMsg(magic.RemoveProjectile(id)))
-          },
-          update_enemy_positions: fn(positions, player_pos) {
-            EnemyMsg(enemy.PhysicsUpdatedPosition(positions, player_pos))
+            PlayerMsg(player.MagicMsg(magic.RemoveProjectiles([id])))
           },
           effect_mapper: PhysicsMsg,
         )
 
-      // Extract updated enemy from physics model (or keep current if None)
-      let updated_enemy =
-        option.unwrap(physics_model.updated_enemy, model.enemy)
-
       #(
-        Model(..model, physics: physics_model, enemy: updated_enemy),
+        Model(..model, physics: physics_model),
         physics_effect,
         physics_model.stepped_world,
       )
@@ -328,25 +374,43 @@ fn update(
       #(Model(..model, assets: new_assets), wrapped_effect, ctx.physics_world)
     }
 
-    AltarMsg(altar_msg) -> {
-      // Skip altar updates when paused (inventory open)
-      case model.edit_mode {
-        True -> #(model, effect.none(), ctx.physics_world)
-        False -> {
-          let #(new_altar, altar_effect) =
-            altar.update(
-              model.altar,
-              altar_msg,
-              ctx,
-              player_pos: model.player.position,
-              pick_up_wand: fn(w) {
-                PlayerMsg(player.MagicMsg(magic.PickUpWand(w)))
-              },
-              effect_mapper: AltarMsg,
-            )
-          #(Model(..model, altar: new_altar), altar_effect, ctx.physics_world)
-        }
-      }
+    NetworkMsg(network_msg) -> {
+      // Create enemy taggers for routing server game state to enemy module
+      let enemy_taggers =
+        network.EnemyTaggers(
+          on_full_game_state: fn(enemies) {
+            EnemyMsg(enemy.FullGameStateReceived(enemies))
+          },
+          on_enemy_spawned: fn(id, position) {
+            EnemyMsg(enemy.ServerEnemySpawned(id, position))
+          },
+          on_enemies_updated: fn(updates) {
+            EnemyMsg(enemy.ServerEnemiesUpdated(updates))
+          },
+          on_enemy_died: fn(id) { EnemyMsg(enemy.ServerEnemyDied(id)) },
+        )
+      let projectile_taggers =
+        network.ProjectileTaggers(
+          on_set_projectiles: fn(projectiles) {
+            PlayerMsg(player.MagicMsg(magic.SetProjectiles(projectiles)))
+          },
+          on_add_projectiles: fn(projectiles) {
+            PlayerMsg(player.MagicMsg(magic.AddProjectiles(projectiles)))
+          },
+          on_remove_projectiles: fn(ids) {
+            PlayerMsg(player.MagicMsg(magic.RemoveProjectiles(ids)))
+          },
+        )
+      let #(new_network, network_effect) =
+        network.update(
+          model.network,
+          network_msg,
+          NetworkMsg,
+          enemy_taggers,
+          projectile_taggers,
+          ctx,
+        )
+      #(Model(..model, network: new_network), network_effect, ctx.physics_world)
     }
   }
 }
@@ -401,14 +465,19 @@ fn view_loading_screen(model: Model) -> scene.Node {
 }
 
 fn view_game(model: Model, ctx: tiramisu.Context) -> scene.Node {
-  let player_nodes = player.view(model.player, ctx, model.assets)
+  let player_nodes = player.view(model.player, ctx)
   let enemy_nodes = enemy.view(model.enemy, ctx)
   let map_nodes = map.view(model.map)
-  let altar_nodes = altar.view(model.altar, ctx)
+  let remote_player_nodes = network.view(model.network)
 
   scene.empty(
     id: "root",
     transform: transform.identity,
-    children: list.flatten([player_nodes, enemy_nodes, map_nodes, altar_nodes]),
+    children: list.flatten([
+      player_nodes,
+      enemy_nodes,
+      map_nodes,
+      remote_player_nodes,
+    ]),
   )
 }

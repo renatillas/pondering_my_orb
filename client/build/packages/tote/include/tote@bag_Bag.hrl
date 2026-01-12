@@ -1,1 +1,0 @@
--record(bag, {map :: gleam@dict:dict(any(), integer())}).

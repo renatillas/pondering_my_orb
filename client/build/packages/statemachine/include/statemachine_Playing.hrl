@@ -1,1 +1,0 @@
--record(playing, {state :: any(), elapsed :: gleam@time@duration:duration()}).

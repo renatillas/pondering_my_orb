@@ -3,14 +3,12 @@ import gleam/option
 import tiramisu
 import tiramisu/effect
 import tiramisu/physics
-import tiramisu/transform
 import vec/vec3.{type Vec3}
 import vec/vec3f
 
-import client/enemy
-import client/id
-import client/magic_system/spell
 import client/player
+import shared/id
+import shared/projectile
 
 // =============================================================================
 // TYPES
@@ -21,11 +19,10 @@ pub type Model {
     collision_results: List(CollisionResult),
     enemy_positions: List(#(id.Id, Vec3(Float))),
     stepped_world: option.Option(physics.PhysicsWorld),
-    /// Enemy state updated synchronously during physics tick
-    updated_enemy: option.Option(enemy.Model),
   )
 }
 
+/// Enemy state updated synchronously during physics tick
 pub type Msg {
   Tick
 }
@@ -44,7 +41,6 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
       collision_results: [],
       enemy_positions: [],
       stepped_world: option.None,
-      updated_enemy: option.None,
     )
   #(model, effect.none())
 }
@@ -60,31 +56,24 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
 pub fn update(
   msg msg: Msg,
   ctx ctx: tiramisu.Context,
-  // Module state
   player_model player_model: player.Model,
-  enemy_model enemy_model: enemy.Model,
-  // Message taggers for cross-module dispatch
   enemy_took_projectile_damage enemy_took_projectile_damage,
   remove_projectile remove_projectile,
-  update_enemy_positions update_enemy_positions,
   effect_mapper effect_mapper,
 ) -> #(Model, effect.Effect(game_msg)) {
   let assert option.Some(physics_world) = ctx.physics_world
-  let player_position = player_model.position
   let projectiles = player.get_projectiles(player_model)
 
   case msg {
     Tick -> {
-      // PRE-STEP: Set velocities
-      let #(updated_enemy, enemy_velocities) =
-        enemy.update_for_physics(enemy_model, player_position)
-      let world_with_velocities =
+      // PRE-STEP: Set projectile velocities
+      // Note: Enemies no longer have physics bodies (server-authoritative rendering only)
+      let world_with_updates =
         physics_world
         |> set_projectile_velocities(projectiles)
-        |> set_enemy_velocities(enemy_velocities)
 
       // STEP: Run physics simulation
-      let stepped_world = physics.step(world_with_velocities, ctx.delta_time)
+      let stepped_world = physics.step(world_with_updates, ctx.delta_time)
 
       // POST-STEP: Process results
       let collision_results =
@@ -92,18 +81,15 @@ pub fn update(
         |> physics.get_collision_events
         |> process_collisions(projectiles)
 
-      let enemy_ids = list.map(updated_enemy.enemies, enemy.id)
-      let enemy_positions = read_enemy_positions(stepped_world, enemy_ids)
-
       let model =
         Model(
           collision_results: collision_results,
-          enemy_positions: enemy_positions,
+          enemy_positions: [],
+          // No longer tracking enemy physics positions
           stepped_world: option.Some(stepped_world),
-          updated_enemy: option.Some(updated_enemy),
         )
 
-      // Build all effects (including async position updates)
+      // Build collision effects only (no enemy position updates needed)
       let effects =
         effect.batch([
           build_collision_effects(
@@ -111,10 +97,6 @@ pub fn update(
             enemy_took_projectile_damage,
             remove_projectile,
           ),
-          effect.dispatch(update_enemy_positions(
-            enemy_positions,
-            player_position,
-          )),
           effect.dispatch(effect_mapper(Tick)),
         ])
 
@@ -149,7 +131,7 @@ fn build_collision_effects(
 
 fn process_collisions(
   events: List(physics.CollisionEvent),
-  projectiles: List(spell.Projectile),
+  projectiles: List(projectile.Projectile),
 ) -> List(CollisionResult) {
   list.filter_map(events, fn(event) {
     case event {
@@ -163,7 +145,7 @@ fn process_collisions(
 fn match_projectile_enemy_collision(
   body_a: String,
   body_b: String,
-  projectiles: List(spell.Projectile),
+  projectiles: List(projectile.Projectile),
 ) -> Result(CollisionResult, Nil) {
   case id.from_string(body_a), id.from_string(body_b) {
     id.Projectile(proj_id), id.Enemy(enemy_id)
@@ -179,12 +161,12 @@ fn match_projectile_enemy_collision(
 }
 
 fn find_projectile_damage(
-  projectiles: List(spell.Projectile),
+  projectiles: List(projectile.Projectile),
   projectile_id: Int,
 ) -> Result(Float, Nil) {
   list.find_map(projectiles, fn(p) {
     case p.id == projectile_id {
-      True -> Ok(p.spell.final_damage)
+      True -> Ok(p.damage)
       False -> Error(Nil)
     }
   })
@@ -196,32 +178,10 @@ fn find_projectile_damage(
 
 fn set_projectile_velocities(
   world: physics.PhysicsWorld,
-  projectiles: List(spell.Projectile),
+  projectiles: List(projectile.Projectile),
 ) -> physics.PhysicsWorld {
   list.fold(projectiles, world, fn(w, proj) {
-    let velocity = vec3f.scale(proj.direction, by: proj.spell.final_speed)
+    let velocity = vec3f.scale(proj.direction, by: proj.speed)
     physics.set_velocity(w, id.to_string(id.Projectile(proj.id)), velocity)
-  })
-}
-
-fn set_enemy_velocities(
-  world: physics.PhysicsWorld,
-  velocities: List(#(id.Id, Vec3(Float))),
-) -> physics.PhysicsWorld {
-  list.fold(velocities, world, fn(w, data) {
-    let #(enemy_id, velocity) = data
-    physics.set_velocity(w, id.to_string(enemy_id), velocity)
-  })
-}
-
-fn read_enemy_positions(
-  world: physics.PhysicsWorld,
-  enemy_ids: List(id.Id),
-) -> List(#(id.Id, Vec3(Float))) {
-  list.filter_map(enemy_ids, fn(enemy_id) {
-    case physics.get_transform(world, id.to_string(enemy_id)) {
-      Ok(trans) -> Ok(#(enemy_id, transform.position(trans)))
-      Error(_) -> Error(Nil)
-    }
   })
 }

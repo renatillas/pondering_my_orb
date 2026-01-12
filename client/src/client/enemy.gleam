@@ -2,12 +2,11 @@ import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option
-import gleam/order
 import gleam/time/duration
-import gleam_community/maths
 import lustre/attribute.{attribute, class}
 import lustre/element
 import lustre/element/html
+import shared/enemy
 import tiramisu
 import tiramisu/effect
 import tiramisu/geometry
@@ -18,35 +17,22 @@ import tiramisu/transform
 import vec/vec3.{type Vec3, Vec3}
 import vec/vec3f
 
-import client/game_physics/layer
-import client/health
-import client/id
+import shared/health
+import shared/id
 
 // =============================================================================
 // TYPES
 // =============================================================================
 
-pub type Enemy {
-  Enemy(
-    id: id.Id,
-    position: Vec3(Float),
-    health: health.Health,
-    damage: Float,
-    speed: Float,
-    attack_cooldown: duration.Duration,
-    // Desired velocity toward player (set by update, applied by physics)
-    desired_velocity: Vec3(Float),
-  )
+pub type LocalEnemy {
+  LocalEnemy(enemy: enemy.Enemy, position: Vec3(Float))
 }
 
 pub type Model {
   Model(
-    enemies: List(Enemy),
-    next_enemy_id: Int,
-    spawn_timer: duration.Duration,
-    spawn_interval: duration.Duration,
+    enemies: List(LocalEnemy),
     player_pos: Vec3(Float),
-    // Shared rendering resources (created once in init)
+    /// Shared rendering resources (created once in init)
     enemy_geometry: geometry.Geometry,
   )
 }
@@ -54,38 +40,17 @@ pub type Model {
 pub type Msg {
   Tick
   PlayerPositionUpdated(player_pos: Vec3(Float))
-  /// Event: Enemy was hit by a projectile
+  /// Server: Full game state received (on join or reconciliation)
+  FullGameStateReceived(enemies: List(enemy.Enemy))
+  /// Server: New enemy spawned
+  ServerEnemySpawned(id: id.Id, position: Vec3(Float))
+  /// Server: Enemy positions updated
+  ServerEnemiesUpdated(updates: List(enemy.Delta))
+  /// Server: Enemy died
+  ServerEnemyDied(id: Int)
+  /// Local: Enemy was hit by a projectile (for local feedback)
   ProjectileHasHitEnemy(enemy_id: id.Id, damage: Float)
-  /// Event: Physics simulation updated enemy positions
-  PhysicsUpdatedPosition(
-    positions: List(#(id.Id, Vec3(Float))),
-    player_pos: Vec3(Float),
-  )
 }
-
-// =============================================================================
-// CONSTANTS
-// =============================================================================
-
-const default_enemy_health = 10.0
-
-const default_enemy_damage = 10.0
-
-const default_enemy_speed = 8.0
-
-const spawn_interval_ms = 2000
-
-const attack_range = 2.0
-
-const attack_cooldown_ms = 1000
-
-const arena_min = -70.0
-
-const arena_max = 70.0
-
-const spawn_distance_min = 15.0
-
-const spawn_distance_max = 30.0
 
 // =============================================================================
 // INIT
@@ -98,9 +63,6 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
   let model =
     Model(
       enemies: [],
-      next_enemy_id: 0,
-      spawn_timer: duration.milliseconds(0),
-      spawn_interval: duration.milliseconds(spawn_interval_ms),
       player_pos: Vec3(0.0, 0.0, 0.0),
       enemy_geometry: enemy_geo,
     )
@@ -117,69 +79,106 @@ pub fn update(
   model: Model,
   msg: Msg,
   ctx: tiramisu.Context,
-  player_took_damage player_took_damage: fn(Float) -> game_msg,
-  spawn_altar spawn_altar: fn(Vec3(Float)) -> game_msg,
   effect_mapper effect_mapper: fn(Msg) -> game_msg,
 ) -> #(Model, effect.Effect(game_msg)) {
   case msg {
     Tick -> {
-      let #(new_model, damage) = tick(model, ctx)
-      let damage_effect = case damage >. 0.0 {
-        True -> effect.dispatch(player_took_damage(damage))
-        False -> effect.none()
-      }
       #(
-        new_model,
-        effect.batch([effect.dispatch(effect_mapper(Tick)), damage_effect]),
+        tick(model, ctx),
+        effect.batch([
+          effect.dispatch(effect_mapper(Tick)),
+        ]),
       )
     }
 
     PlayerPositionUpdated(player_pos) -> {
-      let model_with_pos = Model(..model, player_pos: player_pos)
-      let model_with_velocities = calculate_velocities(model_with_pos)
-      #(model_with_velocities, effect.none())
+      #(Model(..model, player_pos: player_pos), effect.none())
+    }
+
+    FullGameStateReceived(enemy_states) -> {
+      let enemies =
+        list.map(enemy_states, fn(enemy_state) {
+          LocalEnemy(enemy: enemy_state, position: enemy_state.position)
+        })
+      #(Model(..model, enemies: enemies), effect.none())
+    }
+
+    ServerEnemySpawned(server_id, position) -> {
+      // Create new enemy from server data - no local velocity calculation
+      let new_enemy = LocalEnemy(enemy: enemy.new(server_id), position:)
+      #(Model(..model, enemies: [new_enemy, ..model.enemies]), effect.none())
+    }
+
+    ServerEnemiesUpdated(updates) -> {
+      // Update target positions from server updates
+      // Actual position will be interpolated in Tick
+      let updated_enemies =
+        list.map(model.enemies, fn(local_enemy) {
+          case list.find(updates, fn(u) { u.id == local_enemy.enemy.id }) {
+            Ok(update) ->
+              LocalEnemy(
+                ..local_enemy,
+                enemy: enemy.Enemy(
+                  ..local_enemy.enemy,
+                  position: update.position,
+                ),
+              )
+            Error(_) -> local_enemy
+          }
+        })
+      #(Model(..model, enemies: updated_enemies), effect.none())
+    }
+
+    ServerEnemyDied(server_id) -> {
+      // Remove enemy and spawn altar at death position
+      let #(remaining, death_effects) =
+        list.fold(model.enemies, #([], []), fn(acc, local_enemy) {
+          let #(enemies_acc, effects_acc) = acc
+          case local_enemy.enemy.id |> id.to_serial == server_id {
+            True -> {
+              // Enemy died - spawn altar at death position
+              #(enemies_acc, effects_acc)
+            }
+            False -> #([local_enemy, ..enemies_acc], effects_acc)
+          }
+        })
+      #(Model(..model, enemies: remaining), effect.batch(death_effects))
     }
 
     ProjectileHasHitEnemy(enemy_id, damage) -> {
+      // Local damage feedback - for now just reduce health locally
+      // Server will send authoritative health updates later
       let #(updated_enemies, death_effects) =
-        list.fold(model.enemies, #([], []), fn(acc, enemy) {
+        list.fold(model.enemies, #([], []), fn(acc, local_enemy) {
           let #(enemies_acc, effects_acc) = acc
-          case enemy.id == enemy_id {
+          case local_enemy.enemy.id == enemy_id {
             True -> {
-              let new_health = health.damage(enemy.health, damage)
+              let new_health = health.damage(local_enemy.enemy.health, damage)
               case health.is_dead(new_health) {
                 True -> {
-                  // Enemy died - spawn altar at death position
-                  let spawn_effect =
-                    effect.dispatch(spawn_altar(enemy.position))
-                  #(enemies_acc, [spawn_effect, ..effects_acc])
+                  #(enemies_acc, effects_acc)
                 }
                 False -> {
                   #(
-                    [Enemy(..enemy, health: new_health), ..enemies_acc],
+                    [
+                      LocalEnemy(
+                        ..local_enemy,
+                        enemy: enemy.Enemy(
+                          ..local_enemy.enemy,
+                          health: new_health,
+                        ),
+                      ),
+                      ..enemies_acc
+                    ],
                     effects_acc,
                   )
                 }
               }
             }
-            False -> #([enemy, ..enemies_acc], effects_acc)
+            False -> #([local_enemy, ..enemies_acc], effects_acc)
           }
         })
       #(Model(..model, enemies: updated_enemies), effect.batch(death_effects))
-    }
-
-    PhysicsUpdatedPosition(positions, player_pos) -> {
-      let updated_enemies =
-        list.map(model.enemies, fn(enemy) {
-          case list.find(positions, fn(p) { p.0 == enemy.id }) {
-            Ok(#(_, new_pos)) -> Enemy(..enemy, position: new_pos)
-            Error(_) -> enemy
-          }
-        })
-      #(
-        Model(..model, enemies: updated_enemies, player_pos: player_pos),
-        effect.none(),
-      )
     }
   }
 }
@@ -188,125 +187,37 @@ pub fn update(
 // TICK
 // =============================================================================
 
-fn tick(model: Model, ctx: tiramisu.Context) -> #(Model, Float) {
+fn tick(model: Model, ctx: tiramisu.Context) -> Model {
   let dt = ctx.delta_time
 
-  // Update spawn timer and spawn enemies
-  let model = update_spawning(model, dt)
-
-  // Move enemies toward player
-  let model = update_movement(model, dt)
-
-  // Check for enemy attacks on player (returns damage dealt)
-  update_attacks(model, dt)
+  // Interpolate enemy positions toward server targets
+  let interpolated_enemies = interpolate_enemy_positions(model.enemies, dt)
+  Model(..model, enemies: interpolated_enemies)
 }
 
-fn update_spawning(model: Model, dt: duration.Duration) -> Model {
-  let new_timer = duration.add(model.spawn_timer, dt)
+/// Smoothly interpolate enemy positions toward their target positions
+fn interpolate_enemy_positions(
+  enemies: List(LocalEnemy),
+  _dt: duration.Duration,
+) -> List(LocalEnemy) {
+  let alpha = 0.25
 
-  case duration.compare(new_timer, model.spawn_interval) {
-    order.Gt | order.Eq -> {
-      // Time to spawn
-      let new_enemy = spawn_enemy(model)
-      Model(
-        ..model,
-        enemies: [new_enemy, ..model.enemies],
-        next_enemy_id: model.next_enemy_id + 1,
-        spawn_timer: duration.milliseconds(0),
-      )
+  list.map(enemies, fn(local_enemy) {
+    // Calculate distance to target
+    let delta = vec3f.subtract(local_enemy.enemy.position, local_enemy.position)
+    let distance = vec3f.length(delta)
+
+    // If very close, snap to target to avoid floating point drift
+    case distance <. 0.01 {
+      True -> LocalEnemy(..local_enemy, position: local_enemy.enemy.position)
+      False -> {
+        // Lerp toward target
+        let movement = vec3f.scale(delta, by: alpha)
+        let new_position = vec3f.add(local_enemy.position, movement)
+        LocalEnemy(..local_enemy, position: new_position)
+      }
     }
-    order.Lt -> Model(..model, spawn_timer: new_timer)
-  }
-}
-
-fn spawn_enemy(model: Model) -> Enemy {
-  // Spawn at random position around player, within arena bounds
-  let angle = float.random() *. 2.0 *. 3.14159
-  let distance =
-    spawn_distance_min
-    +. float.random()
-    *. { spawn_distance_max -. spawn_distance_min }
-
-  let spawn_x = model.player_pos.x +. maths.cos(angle) *. distance
-  let spawn_z = model.player_pos.z +. maths.sin(angle) *. distance
-
-  // Clamp to arena bounds
-  let spawn_x = float.clamp(spawn_x, min: arena_min, max: arena_max)
-  let spawn_z = float.clamp(spawn_z, min: arena_min, max: arena_max)
-
-  Enemy(
-    id: id.Enemy(model.next_enemy_id),
-    position: Vec3(spawn_x, 1.0, spawn_z),
-    health: health.new(default_enemy_health),
-    damage: default_enemy_damage,
-    speed: default_enemy_speed,
-    attack_cooldown: duration.milliseconds(0),
-    desired_velocity: Vec3(0.0, 0.0, 0.0),
-  )
-}
-
-fn update_movement(model: Model, _dt: duration.Duration) -> Model {
-  calculate_velocities(model)
-}
-
-/// Calculate desired velocities for all enemies based on player position
-fn calculate_velocities(model: Model) -> Model {
-  let updated_enemies =
-    list.map(model.enemies, fn(enemy) {
-      // Direction to player
-      let to_player = vec3f.subtract(model.player_pos, enemy.position)
-      let distance = vec3f.length(to_player)
-
-      case distance >. attack_range {
-        True -> {
-          // Calculate velocity toward player
-          let direction = vec3f.normalize(to_player)
-          let velocity = vec3f.scale(direction, by: enemy.speed)
-          Enemy(..enemy, desired_velocity: velocity)
-        }
-        False -> {
-          // Stop moving when in attack range
-          Enemy(..enemy, desired_velocity: Vec3(0.0, 0.0, 0.0))
-        }
-      }
-    })
-
-  Model(..model, enemies: updated_enemies)
-}
-
-fn update_attacks(model: Model, dt: duration.Duration) -> #(Model, Float) {
-  let #(updated_enemies, total_damage) =
-    list.fold(model.enemies, #([], 0.0), fn(acc, enemy) {
-      let #(enemies_acc, damage_acc) = acc
-
-      // Reduce cooldown
-      let cooldown_secs = duration.to_seconds(enemy.attack_cooldown)
-      let dt_secs = duration.to_seconds(dt)
-      let new_cooldown_secs = float.max(0.0, cooldown_secs -. dt_secs)
-      let new_cooldown =
-        duration.milliseconds(float.round(new_cooldown_secs *. 1000.0))
-
-      // Check if in range and can attack
-      let to_player = vec3f.subtract(model.player_pos, enemy.position)
-      let distance = vec3f.length(to_player)
-
-      case distance <=. attack_range && new_cooldown_secs <=. 0.0 {
-        True -> {
-          let attacking_enemy =
-            Enemy(
-              ..enemy,
-              attack_cooldown: duration.milliseconds(attack_cooldown_ms),
-            )
-          #([attacking_enemy, ..enemies_acc], damage_acc +. enemy.damage)
-        }
-        False -> {
-          let updated_enemy = Enemy(..enemy, attack_cooldown: new_cooldown)
-          #([updated_enemy, ..enemies_acc], damage_acc)
-        }
-      }
-    })
-
-  #(Model(..model, enemies: updated_enemies), total_damage)
+  })
 }
 
 // =============================================================================
@@ -321,12 +232,12 @@ pub fn view(model: Model, ctx: tiramisu.Context) -> List(scene.Node) {
 }
 
 fn view_enemy(
-  enemy: Enemy,
-  physics_world: physics.PhysicsWorld,
+  enemy: LocalEnemy,
+  _physics_world: physics.PhysicsWorld,
   enemy_geo: geometry.Geometry,
 ) -> scene.Node {
   // Color based on health percentage
-  let health_pct = health.percentage(enemy.health)
+  let health_pct = health.percentage(enemy.enemy.health)
   let color = case health_pct {
     p if p >. 0.6 -> 0xFF0000
     p if p >. 0.3 -> 0xFF6600
@@ -340,52 +251,28 @@ fn view_enemy(
     |> material.with_emissive_intensity(0.3)
     |> material.build()
 
-  let body_id = id.to_string(enemy.id)
+  let body_id = id.to_string(enemy.enemy.id)
 
-  let physics_body =
-    physics.new_rigid_body(physics.Dynamic)
-    |> physics.with_collider(physics.Capsule(
-      offset: transform.identity,
-      half_height: 1.0,
-      radius: 0.75,
-    ))
-    |> physics.with_mass(50.0)
-    |> physics.with_collision_groups(
-      membership: [layer.enemy],
-      can_collide_with: [
-        layer.player,
-        layer.map,
-        layer.projectile,
-        layer.enemy,
-      ],
-    )
-    |> physics.with_collision_events()
-    |> physics.with_lock_translation_y()
-    |> physics.with_lock_rotation_x()
-    |> physics.with_lock_rotation_z()
-    |> physics.build()
-
-  // Get transform from physics if body exists, otherwise use model position
-  let enemy_transform = case physics.get_transform(physics_world, body_id) {
-    Ok(t) -> t
-    Error(_) -> transform.at(position: enemy.position)
-  }
+  // Use interpolated render position directly (no physics simulation for enemies)
+  // Server is authoritative for all movement and logic
+  let enemy_transform = transform.at(position: enemy.position)
 
   // Create health bar CSS2D label
   let health_bar_label =
     scene.css2d(
-      id: id.to_string(id.EnemyHealth(enemy.id)),
-      html: element.to_string(view_enemy_health_bar(enemy.health)),
+      id: id.to_string(id.EnemyHealth(enemy.enemy.id)),
+      html: element.to_string(view_enemy_health_bar(enemy.enemy.health)),
       transform: transform.at(position: Vec3(0.0, 1.5, 0.0)),
     )
 
-  // Enemy mesh with physics body and health bar as child
+  // Enemy mesh WITHOUT physics - just a visual representation
+  // Server handles all collision detection and logic
   scene.mesh(
     id: body_id,
     geometry: enemy_geo,
     material: enemy_mat,
     transform: enemy_transform,
-    physics: option.Some(physics_body),
+    physics: option.None,
   )
   |> scene.with_children([health_bar_label])
 }
@@ -432,29 +319,4 @@ fn view_enemy_health_bar(enemy_health: health.Health) -> element.Element(Nil) {
       [element.text(current_str <> "/" <> max_str)],
     ),
   ])
-}
-
-// =============================================================================
-// PUBLIC HELPERS
-// =============================================================================
-
-/// Get enemies with their desired velocities for physics
-pub fn get_enemies_for_physics(model: Model) -> List(#(id.Id, Vec3(Float))) {
-  list.map(model.enemies, fn(e) { #(e.id, e.desired_velocity) })
-}
-
-/// Update player position and calculate velocities synchronously
-/// Returns updated model and velocities for physics
-pub fn update_for_physics(
-  model: Model,
-  player_pos: Vec3(Float),
-) -> #(Model, List(#(id.Id, Vec3(Float)))) {
-  let model_with_pos = Model(..model, player_pos: player_pos)
-  let model_with_velocities = calculate_velocities(model_with_pos)
-  let velocities = get_enemies_for_physics(model_with_velocities)
-  #(model_with_velocities, velocities)
-}
-
-pub fn id(enemy: Enemy) -> id.Id {
-  enemy.id
 }

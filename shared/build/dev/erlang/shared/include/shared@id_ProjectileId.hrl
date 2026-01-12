@@ -1,1 +1,0 @@
--record(projectile_id, {caster :: shared@id:player_id(), local_id :: integer()}).

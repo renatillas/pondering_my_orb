@@ -1,1 +1,0 @@
--record(graphic, {payload :: binary()}).

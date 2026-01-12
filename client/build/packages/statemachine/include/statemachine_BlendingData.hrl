@@ -1,1 +1,0 @@
--record(blending_data, {from :: any(), to :: any(), factor :: float()}).

@@ -1,6 +1,5 @@
 /// Main entry point for the Cloudflare Worker.
 /// Handles HTTP requests and routes them appropriately.
-
 import conversation.{type JsRequest, type JsResponse, Text}
 import gleam/dynamic
 import gleam/http
@@ -64,8 +63,9 @@ fn handle_websocket(
 }
 
 /// Forward a request to a Durable Object stub.
-@external(javascript, "./server_ffi.mjs", "forwardToStub")
-fn forward_to_stub(stub: Stub, request: JsRequest) -> Promise(JsResponse)
+fn forward_to_stub(stub: Stub, request: JsRequest) -> Promise(JsResponse) {
+  durable_object.stub_fetch(stub, request)
+}
 
 /// Handle health check endpoint.
 fn handle_health() -> Promise(JsResponse) {

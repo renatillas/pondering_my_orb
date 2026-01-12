@@ -1,6 +1,6 @@
-import client/id
 import gleam/int
 import gleam/list
+import shared/id
 import vec/vec2.{type Vec2, Vec2}
 import vec/vec3.{type Vec3, Vec3}
 

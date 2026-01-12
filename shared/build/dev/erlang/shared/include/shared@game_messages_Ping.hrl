@@ -1,1 +1,0 @@
--record(ping, {timestamp :: integer()}).

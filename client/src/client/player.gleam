@@ -14,15 +14,16 @@ import tiramisu/transform
 import vec/vec2.{type Vec2, Vec2}
 import vec/vec2f
 import vec/vec3.{Vec3}
+import vec/vec3f
 
-import client/assets
 import client/game_physics/layer
-import client/health
-import client/id
 import client/magic_system/spell
 import client/magic_system/spell_bag
 import client/magic_system/wand
 import client/player/magic
+import shared/health
+import shared/id
+import shared/projectile
 
 // =============================================================================
 // TYPES
@@ -109,6 +110,7 @@ pub fn update(
   msg: Msg,
   ctx: tiramisu.Context,
   effect_mapper effect_mapper,
+  send_input_update send_input_update: fn(Bool, vec3.Vec3(Float)) -> game_msg,
 ) -> #(Model, effect.Effect(game_msg)) {
   case msg {
     Tick -> {
@@ -125,7 +127,8 @@ pub fn update(
       // Check for wand switching input
       let wand_switch_effect = get_wand_switch_effect(ctx, effect_mapper)
 
-      // Send updated state to UI
+      // Check for spell casting input
+      let cast_effect = handle_spell_cast_input(model, ctx, send_input_update)
 
       #(
         new_model,
@@ -133,6 +136,7 @@ pub fn update(
           effect.dispatch(effect_mapper(Tick)),
           update_magic_effect,
           wand_switch_effect,
+          cast_effect,
         ]),
       )
     }
@@ -156,6 +160,37 @@ pub fn update(
       #(new_model, effect.none())
     }
   }
+}
+
+/// Handle spell casting input - sends input state to server every frame
+fn handle_spell_cast_input(
+  model: Model,
+  ctx: tiramisu.Context,
+  send_input_update: fn(Bool, vec3.Vec3(Float)) -> game_msg,
+) -> effect.Effect(game_msg) {
+  // Check if shoot button is pressed
+  let shoot_pressed = input.is_left_button_pressed(ctx.input)
+
+  // Calculate aim direction from mouse position
+  let mouse_pos = input.mouse_position(ctx.input)
+  let target_ground =
+    magic.screen_to_world_ground(
+      mouse_pos,
+      ctx.canvas_size,
+      model.position.x,
+      model.position.z,
+      model.zoom,
+    )
+
+  // Set target Y to player Y to get horizontal direction
+  let target_pos = vec3.Vec3(target_ground.x, model.position.y, target_ground.z)
+
+  let direction =
+    vec3f.subtract(target_pos, model.position)
+    |> vec3f.normalize()
+
+  // Send input state to server every frame (server handles cooldown)
+  effect.dispatch(send_input_update(shoot_pressed, direction))
 }
 
 /// Internal tick function - handles movement only
@@ -193,7 +228,7 @@ fn update_movement(model: Model, ctx: tiramisu.Context) -> Model {
   // Use character controller for collision-aware movement
   let new_position = case ctx.physics_world {
     option.Some(physics_world) -> {
-      let player_id = id.to_string(id.Player)
+      let player_id = id.to_string(id.Player(0))
       case
         physics.compute_character_movement(
           physics_world,
@@ -319,13 +354,7 @@ fn get_wand_switch_effect(
 // VIEW
 // =============================================================================
 
-pub fn view(
-  model: Model,
-  ctx: tiramisu.Context,
-  game_assets: assets.Model,
-) -> List(scene.Node) {
-  let assert option.Some(physics_world) = ctx.physics_world
-
+pub fn view(model: Model, ctx: tiramisu.Context) -> List(scene.Node) {
   // Physics body for collision with enemies and walls
   // Layer 0 = Player, collides with layer 1 = Enemies, layer 2 = Walls
   // Character controller enables collision-aware movement
@@ -353,7 +382,7 @@ pub fn view(
 
   let player_node =
     scene.mesh(
-      id: id.to_string(id.Player),
+      id: id.to_string(id.Player(0)),
       geometry: model.player_geometry,
       material: model.player_material,
       transform: transform.at(position: model.position),
@@ -361,15 +390,7 @@ pub fn view(
     )
     |> scene.with_children([camera_node])
 
-  // Projectiles from magic module - pass camera world position for billboard sprites
-  let camera_world_pos =
-    Vec3(
-      model.position.x +. camera_distance,
-      model.position.y +. camera_distance,
-      model.position.z +. camera_distance,
-    )
-  let projectile_nodes =
-    magic.view(model.magic, physics_world, camera_world_pos, game_assets)
+  let projectile_nodes = magic.view(model.magic)
 
   [player_node, ..projectile_nodes]
 }
@@ -459,7 +480,7 @@ pub fn get_wand_cast_index(model: Model) -> Int {
 }
 
 /// Get current projectiles for collision detection
-pub fn get_projectiles(model: Model) -> List(spell.Projectile) {
+pub fn get_projectiles(model: Model) -> List(projectile.Projectile) {
   magic.get_projectiles(model.magic)
 }
 

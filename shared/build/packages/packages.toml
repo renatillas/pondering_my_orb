@@ -1,6 +1,0 @@
-[packages]
-gleam_stdlib = "0.68.1"
-gleam_json = "3.1.0"
-vec = "3.0.3"
-gleam_time = "1.6.0"
-gleeunit = "1.9.0"

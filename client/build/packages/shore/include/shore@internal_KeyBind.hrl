@@ -1,1 +1,0 @@
--record(key_bind, {key :: shore@key:key(), event :: any()}).

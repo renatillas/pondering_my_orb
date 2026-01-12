@@ -1,1 +1,0 @@
--record(col, {children :: list(shore@internal:node_(any()))}).

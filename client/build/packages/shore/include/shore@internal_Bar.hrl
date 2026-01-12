@@ -1,1 +1,0 @@
--record(bar, {color :: shore@style:color()}).

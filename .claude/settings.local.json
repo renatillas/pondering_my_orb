@@ -18,7 +18,9 @@
       "Bash(tree:*)",
       "mcp__gleam_packages__get_module_info",
       "mcp__gleam_packages__get_package_releases",
-      "mcp__gleam_packages__get_modules"
+      "mcp__gleam_packages__get_modules",
+      "mcp__gleam_packages__search_functions",
+      "mcp__gleam_packages__search_packages"
     ],
     "deny": [],
     "ask": []

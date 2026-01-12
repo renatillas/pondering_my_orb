@@ -1,1 +1,0 @@
--record(player_left, {player_id :: shared@id:player_id()}).

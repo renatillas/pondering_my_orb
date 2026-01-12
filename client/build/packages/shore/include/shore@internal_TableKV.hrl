@@ -1,1 +1,0 @@
--record(table_k_v, {width :: shore@style:size(), table :: list(list(binary()))}).
