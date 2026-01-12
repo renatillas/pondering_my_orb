@@ -1,0 +1,1 @@
+-record(table, {width :: shore@style:size(), table :: list(list(binary()))}).

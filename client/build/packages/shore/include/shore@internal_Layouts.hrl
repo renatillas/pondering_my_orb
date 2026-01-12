@@ -1,0 +1,1 @@
+-record(layouts, {layout :: shore@internal:layout(any())}).

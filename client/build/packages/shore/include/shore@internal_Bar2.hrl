@@ -1,0 +1,1 @@
+-record(bar2, {color :: shore@style:color(), node :: shore@internal:node_(any())}).

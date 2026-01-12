@@ -1,0 +1,7 @@
+{application, tote, [
+    {vsn, "1.0.2"},
+    {applications, [gleam_stdlib]},
+    {description, "Bags (or multisets) in Gleam"},
+    {modules, [tote@bag]},
+    {registered, []}
+]}.

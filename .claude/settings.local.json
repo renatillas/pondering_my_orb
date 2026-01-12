@@ -13,7 +13,12 @@
       "Bash(curl:*)",
       "Bash(lsof:*)",
       "Bash(xargs kill:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(gleam clean:*)",
+      "Bash(tree:*)",
+      "mcp__gleam_packages__get_module_info",
+      "mcp__gleam_packages__get_package_releases",
+      "mcp__gleam_packages__get_modules"
     ],
     "deny": [],
     "ask": []

@@ -1,0 +1,1 @@
+-record(player_update, {position :: vec@vec3:vec3(float()), rotation :: float()}).

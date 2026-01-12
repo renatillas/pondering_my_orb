@@ -1,0 +1,1 @@
+-record(concatenated, {merged :: iv@internal@node:node_(any())}).

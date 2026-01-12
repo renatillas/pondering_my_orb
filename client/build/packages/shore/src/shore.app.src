@@ -1,0 +1,15 @@
+{application, shore, [
+    {vsn, "1.3.0"},
+    {applications, [gleam_erlang,
+                    gleam_otp,
+                    gleam_stdlib]},
+    {description, "A Gleam TUI (terminal user interface) framework targeting erlang"},
+    {modules, [shore,
+               shore@@main,
+               shore@internal,
+               shore@key,
+               shore@layout,
+               shore@style,
+               shore@ui]},
+    {registered, []}
+]}.

@@ -1,0 +1,1 @@
+-record(player_joined, {player :: shared@player_state:player_state()}).

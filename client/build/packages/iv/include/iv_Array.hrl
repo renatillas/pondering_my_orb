@@ -1,0 +1,1 @@
+-record(array, {shift :: integer(), root :: iv@internal@node:node_(any())}).

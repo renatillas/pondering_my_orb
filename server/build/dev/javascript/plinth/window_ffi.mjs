@@ -1,0 +1,160 @@
+import { Result$Ok, Result$Error } from "./gleam.mjs";
+
+export function crypto(self) {
+  const crypto = self.crypto
+  if (crypto && crypto instanceof globalThis.Crypto) {
+    return Result$Ok(crypto)
+  }
+  return Result$Error()
+}
+
+export function self() {
+  return globalThis;
+}
+
+export function alert(message) {
+  window.alert(message);
+}
+
+export function confirm(message) {
+  return window.confirm(message)
+}
+
+export function prompt(message, defaultValue) {
+  let text = window.prompt(message, defaultValue);
+  if (text !== null) {
+    return Result$Ok(text);
+  } else {
+    return Result$Error();
+  }
+}
+
+export function addEventListener(type, listener) {
+  return window.addEventListener(type, listener);
+}
+
+export function document(window) {
+  return window.document;
+}
+
+export async function requestWakeLock() {
+  try {
+    return Result$Ok(await window.navigator.wakeLock.request("screen"));
+  } catch (error) {
+    return Result$Error(error.toString());
+  }
+}
+
+export function location(window) {
+  return window.location;
+}
+
+
+export function focus(w) {
+  return w.focus();
+}
+
+export function innerHeight(w) {
+  return w.innerHeight;
+}
+
+export function innerWidth(w) {
+  return w.innerWidth;
+}
+
+export function outerHeight(w) {
+  return w.outerHeight;
+}
+
+export function outerWidth(w) {
+  return w.outerWidth;
+}
+
+export function screenX(w) {
+  return w.screenX;
+}
+
+export function screenY(w) {
+  return w.screenY;
+}
+
+export function screenTop(w) {
+  return w.screenTop;
+}
+
+export function screenLeft(w) {
+  return w.screenLeft;
+}
+
+export function scrollX(w) {
+  return w.scrollX;
+}
+
+export function scrollY(w) {
+  return w.scrollY;
+}
+
+export function opener(window) {
+  const opener = window.opener
+  if (opener) {
+    return Result$Ok(opener)
+  } else {
+    return Result$Error()
+  }
+}
+
+export function postMessage(window, message, targetOrigin) {
+  window.postMessage(message, targetOrigin)
+}
+
+export function onMessage(worker, callback) {
+  worker.addEventListener("message", function (message) {
+    callback(message);
+  });
+}
+
+// on message cast event
+
+export function open(url, target, features) {
+  try {
+    return Result$Ok(window.open(url, target, features));
+  } catch (error) {
+    return Result$Error(error.toString());
+  }
+}
+
+export function close(w) {
+  w.close();
+}
+
+export function closed(w) {
+  return w.closed;
+}
+
+export function queueMicrotask(callback) {
+  return window.queueMicrotask(callback);
+}
+
+export function requestAnimationFrame(callback) {
+  return window.requestAnimationFrame(callback);
+}
+
+export function cancelAnimationFrame(callback) {
+  return window.cancelAnimationFrame(callback);
+}
+
+export function eval_(string) {
+  try {
+    return Result$Ok(eval(string));
+  } catch (error) {
+    return Result$Error(error.toString());
+  }
+}
+
+export async function import_(string) {
+  try {
+    return Result$Ok(await import(string));
+  } catch (error) {
+    return Result$Error(error.toString());
+  }
+}

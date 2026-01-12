@@ -1,0 +1,9 @@
+{application, statemachine, [
+    {vsn, "1.0.0"},
+    {applications, [gleam_stdlib,
+                    gleam_time]},
+    {description, "A generic state machine package for Gleam"},
+    {modules, [statemachine,
+               statemachine@@main]},
+    {registered, []}
+]}.

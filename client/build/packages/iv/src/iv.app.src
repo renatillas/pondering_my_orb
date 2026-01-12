@@ -1,0 +1,16 @@
+{application, iv, [
+    {vsn, "1.4.0"},
+    {applications, [gleam_stdlib,
+                    gleam_yielder]},
+    {description, "A fast, safe, batteries-included array for Gleam!"},
+    {modules, [iv,
+               iv@@main,
+               iv@internal@builder,
+               iv@internal@constants,
+               iv@internal@iterator,
+               iv@internal@node,
+               iv@internal@vector,
+               iv_ffi,
+               test_ffi]},
+    {registered, []}
+]}.

@@ -4,27 +4,97 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A Gleam game targeting JavaScript that implements a Noita-inspired spell-casting system. Built with:
+A Gleam game targeting JavaScript that implements a Noita-inspired spell-casting system with multiplayer support. Built with:
 - **Tiramisu** - 3D game engine (Three.js + Rapier3D)
 - **Lustre** - UI framework for HUD/menus
 - **Ensaimada** - Drag-and-drop library for spell management
+- **Cloudflare Workers** - Multiplayer backend with Durable Objects
+
+## Monorepo Structure
+
+```
+pondering_my_orb/
+├── client/                      # Game client (JavaScript target)
+│   ├── src/client.gleam         # Main game entry point
+│   ├── src/client/              # Game modules
+│   ├── test/                    # Client tests
+│   ├── assets/                  # Game assets
+│   └── gleam.toml
+├── server/                      # Cloudflare Workers backend
+│   ├── src/server.gleam         # Worker entry point
+│   ├── src/server/              # Server modules
+│   ├── src/server_ffi.mjs       # Durable Object JS implementation
+│   ├── wrangler.toml            # Cloudflare config
+│   └── gleam.toml
+├── shared/                      # Shared types (client + server)
+│   ├── src/shared/              # Shared modules
+│   │   ├── id.gleam             # Entity identifiers
+│   │   ├── player_state.gleam   # Networked player state
+│   │   └── game_messages.gleam  # Client<->Server messages
+│   └── gleam.toml
+└── package.json                 # Root workspace config
+```
 
 ## Development Commands
 
 ```bash
-gleam run -m lustre/dev start  # Run the game
-gleam test                      # Run all tests
-gleam format src test           # Format code
+# Client (game)
+npm run client:dev              # Run game with hot reload
+npm run client:build            # Build for production
+npm run client:test             # Run client tests
+
+# Server (multiplayer backend)
+npm run server:dev              # Run local dev server
+npm run server:deploy           # Deploy to Cloudflare Workers
+
+# All packages
+npm run build                   # Build all packages
+npm run test                    # Run all tests
+npm run format                  # Format all code
+```
+
+Or run directly in each package:
+```bash
+cd client && gleam run -m lustre/dev start
+cd client && gleam test
+cd server && wrangler dev
+cd shared && gleam build
 ```
 
 ## Testing
 
-- Test files in `test/` ending with `_test.gleam`
+- Test files in `client/test/` ending with `_test.gleam`
 - All test functions must end with `_test` suffix
 - Use `assert <pattern> = <expression>` for pattern-matching assertions
 - Use `assert <bool expression>` for boolean assertions
 - Use `echo <expression>` for debug output (not `io.debug`)
 - **Do not use gleeunit/should** - it's deprecated
+
+## Shared Package
+
+The `shared/` package contains types used by both client and server:
+
+- **shared/id** - PlayerId, RoomId, ProjectileId, EnemyId
+- **shared/player_state** - Networked player state with JSON codecs
+- **shared/game_messages** - ClientMessage and ServerMessage types
+
+Both client and server import shared via path dependency:
+```toml
+shared = { path = "../shared" }
+```
+
+## Server Architecture
+
+The server uses Cloudflare Workers with Durable Objects for real-time multiplayer:
+
+- **Durable Objects** - One per game room, manages WebSocket connections
+- **WebSockets** - Real-time player state synchronization
+- **Message Protocol** - JSON-encoded ClientMessage/ServerMessage types
+
+Key files:
+- `server/src/server.gleam` - HTTP routing, Durable Object access
+- `server/src/server/game_room.gleam` - Game logic (Gleam types)
+- `server/src/server_ffi.mjs` - Durable Object class (JavaScript)
 
 ## Tiramisu Game Architecture
 
@@ -89,7 +159,7 @@ Msg (main module)
 Each game subsystem follows this structure:
 
 ```
-src/pondering_my_orb/
+client/src/client/
 ├── player.gleam           # Player module (movement, camera)
 ├── player/
 │   └── magic.gleam        # Magic subsystem (wand, projectiles, casting)
@@ -183,76 +253,6 @@ Each module should own its domain logic and dispatch cross-module effects via ta
 | `altar` | Altar lifecycle, pickup detection | player (wand pickup) |
 | `game_physics` | Physics simulation, collisions | enemy (damage), player (projectile removal) |
 
-### Async vs Sync Updates
-
-**Prefer async dispatch** for cross-module state updates. The one-frame delay is usually acceptable and keeps modules decoupled:
-
-```gleam
-// Physics dispatches position updates asynchronously
-let effects = effect.batch([
-  effect.dispatch(update_altar_player_pos(player_position)),
-  effect.dispatch(update_enemy_positions(enemy_positions, player_position)),
-  effect.tick(effect_mapper(Tick)),
-])
-```
-
-**When sync is required** (same-frame data needed):
-- Use `update_for_physics` pattern: module returns data needed for physics calculations
-- The caller uses the data immediately, then dispatches async updates for other state
-
-```gleam
-// Sync: Get velocities for physics step (needed this frame)
-let #(updated_enemy, enemy_velocities) =
-  enemy.update_for_physics(enemy_model, player_position)
-
-// Physics step uses velocities immediately
-let world_with_velocities = set_enemy_velocities(physics_world, enemy_velocities)
-let stepped_world = physics.step(world_with_velocities, ctx.delta_time)
-
-// Async: Dispatch position updates (can be next frame)
-effect.dispatch(update_enemy_positions(enemy_positions, player_position))
-```
-
-### Physics Coordination Pattern
-
-The physics module coordinates the physics simulation and returns updated state for multiple modules:
-
-```gleam
-pub type TickResult {
-  TickResult(
-    physics: Model,
-    enemy: enemy.Model,      // Updated enemy positions
-    altar: altar.Model,      // Updated player position for proximity
-    stepped_world: option.Option(physics.PhysicsWorld),
-  )
-}
-
-pub fn update(
-  msg msg: Msg,
-  ctx ctx: tiramisu.Context,
-  player_model player_model: player.Model,
-  enemy_model enemy_model: enemy.Model,
-  altar_model altar_model: altar.Model,
-  // Taggers for collision effects
-  enemy_took_projectile_damage enemy_took_projectile_damage,
-  remove_projectile remove_projectile,
-  effect_mapper effect_mapper,
-) -> #(TickResult, effect.Effect(game_msg)) {
-  // PRE-STEP: Set velocities from game state
-  // STEP: Run physics simulation
-  // POST-STEP: Read back positions, process collisions
-}
-```
-
-The physics module:
-1. **Reads** velocities/directions from player (projectiles) and enemy (movement)
-2. **Steps** the physics world simulation
-3. **Returns** updated positions and collision results
-4. **Dispatches** collision effects via taggers
-
-This keeps the physics module focused on simulation while modules own their behavior.
-
-
 ### Tiramisu Context
 
 The `tiramisu.Context` provides:
@@ -335,6 +335,8 @@ input.mouse_wheel_delta(ctx.input)                // Float
 ## CI/CD
 
 GitHub Actions runs on push to main/master and PRs:
-1. `gleam deps download`
-2. `gleam test`
-3. `gleam format --check src test`
+1. Build shared: `cd shared && gleam deps download && gleam build`
+2. Test client: `cd client && gleam deps download && gleam test`
+3. Format check: `gleam format --check src test`
+4. Deploy client to Cloudflare Pages
+5. Deploy server to Cloudflare Workers

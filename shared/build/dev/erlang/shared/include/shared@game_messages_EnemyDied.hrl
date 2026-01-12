@@ -1,0 +1,1 @@
+-record(enemy_died, {enemy_id :: integer(), killer_id :: shared@id:player_id()}).

@@ -1,0 +1,1 @@
+-record(player_states, {states :: list(shared@player_state:player_state())}).

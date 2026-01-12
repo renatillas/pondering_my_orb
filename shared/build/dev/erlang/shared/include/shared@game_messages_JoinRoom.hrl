@@ -1,0 +1,1 @@
+-record(join_room, {room_id :: binary(), player_name :: binary()}).

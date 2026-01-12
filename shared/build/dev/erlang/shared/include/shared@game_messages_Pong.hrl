@@ -1,0 +1,1 @@
+-record(pong, {client_timestamp :: integer(), server_timestamp :: integer()}).
