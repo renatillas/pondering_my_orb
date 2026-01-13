@@ -1,9 +1,9 @@
-import client/magic_system/spell
-import client/magic_system/wand
 import gleam/list
 import gleam/option
 import gleam/time/duration
 import iv
+import shared/spell
+import shared/wand
 import vec/vec3
 
 /// Test: Double spell with 2 fireballs should cast both

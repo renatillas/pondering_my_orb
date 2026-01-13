@@ -1,4 +1,4 @@
-// Network FFI for WebSocket communication with tiramisu effect system
+// Network FFI for WebSocket communication with Tiramisu effect system
 
 import {
   SocketOpened,
@@ -7,12 +7,15 @@ import {
 } from "./network.mjs";
 
 let socket = null;
-let pendingJoin = { roomId: "", playerName: "" };
 
+/**
+ * Connect to WebSocket server
+ * @param {string} url - WebSocket URL
+ * @param {string} roomId - Room ID to join
+ * @param {string} playerName - Player name
+ * @param {function} dispatch - Callback to dispatch Gleam messages
+ */
 export function connect(url, roomId, playerName, dispatch) {
-  // Store pending join info
-  pendingJoin = { roomId, playerName };
-
   // Close existing connection if any
   if (socket) {
     socket.close();
@@ -28,14 +31,14 @@ export function connect(url, roomId, playerName, dispatch) {
       // Send join room message
       const joinMsg = {
         type: "join_room",
-        room_id: pendingJoin.roomId,
-        player_name: pendingJoin.playerName,
+        room_id: roomId,
+        player_name: playerName,
       };
       socket.send(JSON.stringify(joinMsg));
     };
 
     socket.onmessage = (event) => {
-      // Dispatch message immediately - Hibernation WebSocket API delivers messages in real-time
+      // Dispatch message to Gleam - this calls ReceivedMessage(data)
       dispatch(new ReceivedMessage(event.data));
     };
 
@@ -46,13 +49,16 @@ export function connect(url, roomId, playerName, dispatch) {
     };
 
     socket.onerror = (error) => {
-      console.error("[Network] Error:", error);
+      console.error("[Network] WebSocket error:", error);
     };
   } catch (e) {
     console.error("[Network] Failed to connect:", e);
   }
 }
 
+/**
+ * Disconnect from server
+ */
 export function disconnect() {
   if (socket) {
     socket.close();
@@ -60,12 +66,14 @@ export function disconnect() {
   }
 }
 
+/**
+ * Send message to server
+ * @param {string} message - JSON string message
+ */
 export function send(message) {
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(message);
+  } else {
+    console.warn("[Network] Cannot send - socket not open");
   }
-}
-
-export function getTimestamp() {
-  return Date.now();
 }

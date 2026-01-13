@@ -1,101 +1,94 @@
-/// Shared enemy types for client-server communication.
-/// Server-authoritative enemy state that is synchronized over the network.
 import gleam/dynamic/decode
-import gleam/float
 import gleam/json
-import gleam/time/duration
+import gleam/option.{type Option}
 import shared/health
-import shared/id
+import shared/player
 import shared/vec3 as shared_vec3
-import vec/vec3
+import vec/vec3.{type Vec3}
 
-const default_enemy_damage = 10.0
+// =============================================================================
+// TYPES
+// =============================================================================
 
-const default_enemy_speed = 8.0
-
-/// Core enemy state synchronized between client and server.
-/// The server is authoritative for this data.
 pub type Enemy {
   Enemy(
-    id: id.Id,
-    position: vec3.Vec3(Float),
+    id: Id,
     health: health.Health,
-    damage: Float,
-    speed: Float,
-    attack_cooldown: duration.Duration,
+    enemy_type: EnemyType,
+    position: Vec3(Float),
+    velocity: Vec3(Float),
+    target_player: Option(player.Id),
   )
 }
 
-/// Lightweight position-only update for enemies (delta sync).
-pub type Delta {
-  Delta(id: id.Id, position: vec3.Vec3(Float))
+pub type EnemyType {
+  Zombie
+  // More types can be added later: Shooter, Flyer, Boss, etc.
 }
 
-// ----------------------------------------------------------------------------
-// JSON Encoding
-// ----------------------------------------------------------------------------
+pub type Id {
+  Id(Int)
+}
 
-/// Encode an Enemy to JSON for network transmission.
+// =============================================================================
+// JSON ENCODING / DECODING
+// =============================================================================
+
+/// Encode an Enemy to JSON for network transmission
 pub fn encode(enemy: Enemy) -> json.Json {
+  let Id(enemy_id) = enemy.id
+  let target_id = case enemy.target_player {
+    option.Some(player.Id(pid)) -> json.int(pid)
+    option.None -> json.null()
+  }
+
   json.object([
-    #("id", json.string(enemy.id |> id.to_string)),
+    #("id", json.int(enemy_id)),
+    #("enemy_type", encode_enemy_type(enemy.enemy_type)),
     #("position", shared_vec3.encode(enemy.position)),
-    #("health", json.float(enemy.health |> health.current)),
-    #("max_health", json.float(enemy.health |> health.max)),
-    #("damage", json.float(enemy.damage)),
-    #("speed", json.float(enemy.speed)),
-    #(
-      "attack_cooldown",
-      json.float(enemy.attack_cooldown |> duration.to_seconds),
-    ),
+    #("velocity", shared_vec3.encode(enemy.velocity)),
+    #("health", health.encode(enemy.health)),
+    #("target_player", target_id),
   ])
 }
 
-/// Encode an EnemyUpdate to JSON for network transmission.
-pub fn encode_update(update: Delta) -> json.Json {
-  json.object([
-    #("id", json.int(update.id |> id.to_serial)),
-    #("position", shared_vec3.encode(update.position)),
-  ])
+fn encode_enemy_type(enemy_type: EnemyType) -> json.Json {
+  case enemy_type {
+    Zombie -> json.string("zombie")
+  }
 }
 
-// ----------------------------------------------------------------------------
-// JSON Decoding
-// ----------------------------------------------------------------------------
-
-/// Decoder for Enemy from JSON.
+/// Decoder for Enemy from JSON
 pub fn decoder() -> decode.Decoder(Enemy) {
-  use id <- decode.field("id", decode.string)
+  use id <- decode.field("id", decode.int)
+  use enemy_type <- decode.field("enemy_type", enemy_type_decoder())
   use position <- decode.field("position", shared_vec3.decoder())
-  use current <- decode.field("health", decode.float)
-  use max <- decode.field("max_health", decode.float)
-  use damage <- decode.field("damage", decode.float)
-  use speed <- decode.field("speed", decode.float)
-  use attack_cooldown <- decode.field("attack_cooldown", decode.float)
+  use velocity <- decode.field("velocity", shared_vec3.decoder())
+  use health <- decode.field("health", health.decoder())
+  use target_player <- decode.field(
+    "target_player",
+    decode.optional(decode.int),
+  )
+
+  let target_player_id = case target_player {
+    option.Some(pid) -> option.Some(player.Id(pid))
+    option.None -> option.None
+  }
+
   decode.success(Enemy(
-    id |> id.from_string,
-    position,
-    health.with_current(current:, max:),
-    damage,
-    speed,
-    duration.seconds(float.round(attack_cooldown)),
+    id: Id(id),
+    enemy_type: enemy_type,
+    position: position,
+    velocity: velocity,
+    health: health,
+    target_player: target_player_id,
   ))
 }
 
-/// Decoder for EnemyUpdate from JSON.
-pub fn update_decoder() -> decode.Decoder(Delta) {
-  use id <- decode.field("id", decode.int)
-  use position <- decode.field("position", shared_vec3.decoder())
-  decode.success(Delta(id.Enemy(id), position))
-}
-
-pub fn new(id) {
-  Enemy(
-    id:,
-    position: vec3.Vec3(0.0, 0.0, 0.0),
-    health: health.with_current(100.0, 100.0),
-    damage: default_enemy_damage,
-    speed: default_enemy_speed,
-    attack_cooldown: duration.seconds(1),
-  )
+fn enemy_type_decoder() -> decode.Decoder(EnemyType) {
+  use type_str <- decode.then(decode.string)
+  case type_str {
+    "zombie" -> decode.success(Zombie)
+    _ -> decode.failure(Zombie, "EnemyType")
+  }
 }

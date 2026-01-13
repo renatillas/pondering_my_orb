@@ -60,4 +60,14 @@ export class GameRoom {
       this.roomState
     );
   }
+
+  // Durable Objects Alarms API handler
+  // Called when a scheduled alarm fires (used for game tick)
+  async alarm() {
+    console.log("[GameRoom] Alarm fired - processing game tick");
+    this.roomState = game_room_do.process_tick(
+      this.state,
+      this.roomState
+    );
+  }
 }

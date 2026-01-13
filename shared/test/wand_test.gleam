@@ -1,8 +1,8 @@
-import client/magic_system/spell
-import client/magic_system/wand
 import gleam/option
 import gleam/time/duration
 import iv
+import shared/spell
+import shared/wand
 import vec/vec3
 
 /// Test: Verify Rapid Fire's cast_delay_addition value

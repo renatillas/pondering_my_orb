@@ -1,11 +1,9 @@
-import client/game_physics/layer
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option
 import gleam/result
 import gleam_community/colour
-import shared/id
 import tiramisu/effect
 import tiramisu/geometry
 import tiramisu/light
@@ -21,6 +19,11 @@ import client/map/generator
 // =============================================================================
 // TYPES
 // =============================================================================
+
+pub type Id {
+  Floor(Int)
+  Wall(Int)
+}
 
 pub type LoadState {
   Loading(loaded: Int, total: Int)
@@ -191,9 +194,9 @@ fn render_arena(map_model: Model) -> List(scene.Node) {
     |> list.index_map(fn(element, index) {
       case element {
         generator.Floor(..) ->
-          render_element("floor", id.Floor, map_model, element, index)
+          render_element("floor", Floor, map_model, element, index)
         generator.Wall(..) ->
-          render_element("wall", id.Wall, map_model, element, index)
+          render_element("wall", Wall, map_model, element, index)
       }
     })
     |> list.filter_map(fn(x) { x })
@@ -216,12 +219,12 @@ fn render_element(
     Ok(fbx) -> {
       // Create physics body for walls
       let physics_body = case id_constructor(index) {
-        id.Wall(..) -> option.Some(create_wall_physics())
+        Wall(..) -> option.Some(create_wall_physics())
         _ -> option.None
       }
 
       Ok(scene.object_3d(
-        id: id.to_string(id_constructor(index)),
+        id: id_to_string(id_constructor(index)),
         object: model.get_fbx_scene(fbx),
         transform: transform.at(position: element.position)
           |> transform.with_scale(vec3.Vec3(
@@ -248,10 +251,7 @@ fn create_wall_physics() -> physics.RigidBody {
     offset: transform.identity,
     size: vec3.Vec3(10.0, 10.0, 10.0),
   ))
-  |> physics.with_collision_groups(membership: [layer.map], can_collide_with: [
-    layer.player,
-    layer.enemy,
-  ])
+  |> physics.with_collision_groups(membership: [0], can_collide_with: [1])
   |> physics.with_friction(0.0)
   |> physics.build()
 }
@@ -301,4 +301,11 @@ fn create_lights() -> List(scene.Node) {
     )
 
   [ambient, directional, hemisphere]
+}
+
+fn id_to_string(id: Id) -> String {
+  case id {
+    Floor(index) -> "floor-" <> int.to_string(index)
+    Wall(index) -> "wall-" <> int.to_string(index)
+  }
 }

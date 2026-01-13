@@ -19,3 +19,12 @@ pub fn decoder() -> decode.Decoder(Vec3(Float)) {
   use z <- decode.field("z", decode.float)
   decode.success(Vec3(x, y, z))
 }
+
+/// Linear interpolation between two Vec3 positions
+pub fn lerp(from: Vec3(Float), to: Vec3(Float), t: Float) -> Vec3(Float) {
+  Vec3(
+    from.x +. { { to.x -. from.x } *. t },
+    from.y +. { { to.y -. from.y } *. t },
+    from.z +. { { to.z -. from.z } *. t },
+  )
+}

@@ -1,8 +1,8 @@
-import client/magic_system/spell
-import client/magic_system/wand
 import gleam/option
 import gleam/time/duration
 import iv
+import shared/spell
+import shared/wand
 import vec/vec3
 
 // Helper to create test visuals

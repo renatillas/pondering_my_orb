@@ -1,6 +1,10 @@
+/// Player module - handles local player movement, input, and rendering
+import gleam/dict
 import gleam/float
+import gleam/int
+import gleam/io
 import gleam/list
-import gleam/option.{type Option}
+import gleam/option
 import gleam/time/duration
 import tiramisu
 import tiramisu/camera
@@ -12,46 +16,52 @@ import tiramisu/physics
 import tiramisu/scene
 import tiramisu/transform
 import vec/vec2.{type Vec2, Vec2}
-import vec/vec2f
-import vec/vec3.{Vec3}
-import vec/vec3f
+import vec/vec3.{type Vec3, Vec3}
 
-import client/game_physics/layer
-import client/magic_system/spell
-import client/magic_system/spell_bag
-import client/magic_system/wand
-import client/player/magic
-import shared/health
-import shared/id
+import shared/game_messages
+import shared/player
 import shared/projectile
+import shared/vec3 as shared_vec3
 
 // =============================================================================
 // TYPES
 // =============================================================================
 
+/// Client-side wrapper for projectiles with interpolated render position
+pub type ClientProjectile {
+  ClientProjectile(
+    projectile: projectile.Projectile,
+    render_position: Vec3(Float),
+  )
+}
+
 pub type Model {
   Model(
-    position: vec3.Vec3(Float),
+    player: player.Player,
+    // Client-side interpolated position for smooth rendering
+    render_position: Vec3(Float),
     zoom: Float,
-    magic: magic.Model,
-    health: health.Health,
+    server_tick: Int,
+    // Other players from server
+    other_players: dict.Dict(player.Id, player.Player),
+    // Projectiles from server with client-side interpolation
+    projectiles: dict.Dict(projectile.Id, ClientProjectile),
     // Shared rendering resources (created once in init)
     player_geometry: geometry.Geometry,
     player_material: material.Material,
+    projectile_geometry: geometry.Geometry,
+    projectile_material: material.Material,
   )
 }
 
 pub type Msg {
   Tick
-  MagicMsg(magic.Msg)
-  DamageReceived(Float)
+  ServerMessageReceived(game_messages.ServerMessage)
 }
 
 // =============================================================================
 // CONSTANTS
 // =============================================================================
-
-const move_speed = 30.0
 
 const zoom_speed = 50.0
 
@@ -63,430 +73,377 @@ const initial_zoom = 30.0
 
 const camera_distance = 50.0
 
-const initial_health = 100.0
+// Interpolation factor for smooth movement (0.0 = no smoothing, 1.0 = instant)
+// Higher values = more responsive but less smooth
+// Lower values = smoother but more laggy feeling
+const position_lerp_factor = 0.2
 
-// Isometric direction vectors (screen -> world)
-const isometric_up = Vec2(-0.7071, -0.7071)
-
-const isometric_right = Vec2(0.7071, -0.7071)
+// Projectiles move faster, so they need more aggressive interpolation
+const projectile_lerp_factor = 0.35
 
 // =============================================================================
 // INIT
 // =============================================================================
 
 pub fn init() -> #(Model, effect.Effect(Msg)) {
-  let #(magic_model, magic_effect) = magic.init()
-
   // Create shared rendering resources once
-  let assert Ok(player_geo) = geometry.box(Vec3(1.0, 2.0, 1.0))
+  let assert Ok(player_geo) = geometry.box(Vec3(0.8, 1.8, 0.8))
   let assert Ok(player_mat) =
     material.new()
-    |> material.with_color(0x4ecdc4)
+    |> material.with_color(0x00FF00)
+    |> material.with_emissive(0x00FF00)
+    |> material.with_emissive_intensity(0.5)
     |> material.build()
 
-  #(
+  // Projectile rendering resources
+  let assert Ok(projectile_geo) = geometry.sphere(0.3, Vec2(8, 6))
+  let assert Ok(projectile_mat) =
+    material.new()
+    |> material.with_color(0xFF4400)
+    |> material.with_emissive(0xFF4400)
+    |> material.with_emissive_intensity(1.0)
+    |> material.build()
+
+  let initial_position = Vec3(0.0, 0.9, 0.0)
+  let model =
     Model(
-      position: vec3.Vec3(x: 0.0, y: 1.0, z: 0.0),
+      player: player.new(player.Id(0), "LocalPlayer", initial_position),
+      render_position: initial_position,
       zoom: initial_zoom,
-      magic: magic_model,
-      health: health.new(initial_health),
+      server_tick: 0,
+      other_players: dict.new(),
+      projectiles: dict.new(),
       player_geometry: player_geo,
       player_material: player_mat,
-    ),
-    effect.batch([
-      effect.dispatch(Tick),
-      effect.map(magic_effect, MagicMsg),
-    ]),
-  )
+      projectile_geometry: projectile_geo,
+      projectile_material: projectile_mat,
+    )
+
+  #(model, effect.dispatch(Tick))
 }
 
 // =============================================================================
 // UPDATE
 // =============================================================================
 
-/// Update player. Uses callbacks for cross-module communication.
 pub fn update(
   model: Model,
   msg: Msg,
   ctx: tiramisu.Context,
-  effect_mapper effect_mapper,
-  send_input_update send_input_update: fn(Bool, vec3.Vec3(Float)) -> game_msg,
-) -> #(Model, effect.Effect(game_msg)) {
+  effect_mapper: fn(Msg) -> game_msg,
+  send_to_server: fn(game_messages.ClientMessage) -> game_msg,
+) -> #(Model, effect.Effect(game_msg), option.Option(physics.PhysicsWorld)) {
   case msg {
     Tick -> {
-      let new_model = tick(model, ctx)
-
-      // Send player state to magic module
-      let update_magic_effect =
-        effect.dispatch(
-          effect_mapper(
-            MagicMsg(magic.UpdatePlayerState(new_model.position, new_model.zoom)),
-          ),
-        )
-
-      // Check for wand switching input
-      let wand_switch_effect = get_wand_switch_effect(ctx, effect_mapper)
-
-      // Check for spell casting input
-      let cast_effect = handle_spell_cast_input(model, ctx, send_input_update)
-
+      let #(new_model, tick_effects) = tick(model, ctx, send_to_server)
       #(
         new_model,
-        effect.batch([
-          effect.dispatch(effect_mapper(Tick)),
-          update_magic_effect,
-          wand_switch_effect,
-          cast_effect,
-        ]),
+        effect.batch([effect.dispatch(effect_mapper(Tick)), tick_effects]),
+        option.None,
       )
     }
-    MagicMsg(magic_msg) -> {
-      let #(new_magic, magic_effect) = magic.update(model.magic, magic_msg, ctx)
-      let new_model = Model(..model, magic: new_magic)
-
-      // Send updated state to UI (wand may have changed)
-
-      #(
-        new_model,
-        effect.batch([
-          effect.map(magic_effect, fn(m) { effect_mapper(MagicMsg(m)) }),
-        ]),
-      )
-    }
-    DamageReceived(amount) -> {
-      let new_health = health.damage(model.health, amount)
-      let new_model = Model(..model, health: new_health)
-
-      #(new_model, effect.none())
+    ServerMessageReceived(server_msg) -> {
+      let new_model = handle_server_message(model, server_msg)
+      #(new_model, effect.none(), option.None)
     }
   }
 }
 
-/// Handle spell casting input - sends input state to server every frame
-fn handle_spell_cast_input(
+/// Internal tick function - handles input and sends to server
+fn tick(
   model: Model,
   ctx: tiramisu.Context,
-  send_input_update: fn(Bool, vec3.Vec3(Float)) -> game_msg,
-) -> effect.Effect(game_msg) {
-  // Check if shoot button is pressed
-  let shoot_pressed = input.is_left_button_pressed(ctx.input)
-
-  // Calculate aim direction from mouse position
-  let mouse_pos = input.mouse_position(ctx.input)
-  let target_ground =
-    magic.screen_to_world_ground(
-      mouse_pos,
-      ctx.canvas_size,
-      model.position.x,
-      model.position.z,
-      model.zoom,
-    )
-
-  // Set target Y to player Y to get horizontal direction
-  let target_pos = vec3.Vec3(target_ground.x, model.position.y, target_ground.z)
-
-  let direction =
-    vec3f.subtract(target_pos, model.position)
-    |> vec3f.normalize()
-
-  // Send input state to server every frame (server handles cooldown)
-  effect.dispatch(send_input_update(shoot_pressed, direction))
-}
-
-/// Internal tick function - handles movement only
-fn tick(model: Model, ctx: tiramisu.Context) -> Model {
-  update_movement(model, ctx)
-}
-
-fn update_movement(model: Model, ctx: tiramisu.Context) -> Model {
+  send_to_server: fn(game_messages.ClientMessage) -> game_msg,
+) -> #(Model, effect.Effect(game_msg)) {
   let dt = duration.to_seconds(ctx.delta_time)
 
-  // Get screen-space input direction
-  let screen_input = get_screen_input(ctx)
-
-  // Convert to world space and normalize if non-zero
-  let world_movement = screen_to_world_movement(screen_input)
-
-  // Mouse wheel for zoom (only when Shift is NOT held - Shift+scroll is for wand switching)
-  let shift_held =
-    input.is_key_pressed(ctx.input, input.ShiftLeft)
-    || input.is_key_pressed(ctx.input, input.ShiftRight)
-  let wheel_delta = input.mouse_wheel_delta(ctx.input)
-  let zoom_change = case shift_held {
-    True -> 0.0
-    // Scroll used for wand switching when shift held
-    False -> wheel_delta *. zoom_speed *. dt
-  }
-  let new_zoom =
-    float.clamp(model.zoom +. zoom_change, min: min_zoom, max: max_zoom)
-
-  // Calculate desired movement
-  let desired_x = world_movement.x *. move_speed *. dt
-  let desired_z = world_movement.y *. move_speed *. dt
-  let desired_translation = Vec3(desired_x, 0.0, desired_z)
-
-  // Use character controller for collision-aware movement
-  let new_position = case ctx.physics_world {
-    option.Some(physics_world) -> {
-      let player_id = id.to_string(id.Player(0))
-      case
-        physics.compute_character_movement(
-          physics_world,
-          player_id,
-          desired_translation,
+  // Handle click-to-move (left-click held)
+  let move_effect = case input.is_left_button_pressed(ctx.input) {
+    True -> {
+      // Raycast from mouse to ground plane to get world position
+      let mouse_pos = input.mouse_position(ctx.input)
+      let target =
+        raycast_to_ground(
+          mouse_pos,
+          model.zoom,
+          model.player.position,
+          ctx.canvas_size,
         )
-      {
-        Ok(safe_movement) ->
-          Vec3(
-            model.position.x +. safe_movement.x,
-            model.position.y,
-            model.position.z +. safe_movement.z,
-          )
-        Error(_) ->
-          // Fallback if character controller not ready yet
-          Vec3(
-            model.position.x +. desired_x,
-            model.position.y,
-            model.position.z +. desired_z,
-          )
-      }
-    }
-    option.None ->
-      // No physics world, use direct movement
-      Vec3(
-        model.position.x +. desired_x,
-        model.position.y,
-        model.position.z +. desired_z,
+
+      // Send MoveToPosition to server via tagger
+      effect.dispatch(
+        send_to_server(game_messages.PlayerInput(
+          tick: model.server_tick,
+          action: game_messages.MoveToPosition(target),
+        )),
       )
+    }
+    False -> effect.none()
   }
 
-  Model(..model, position: new_position, zoom: new_zoom)
+  // Handle spell casting (right-click)
+  let cast_effect = case input.is_right_button_pressed(ctx.input) {
+    True -> {
+      // Raycast to get target position for spell
+      let mouse_pos = input.mouse_position(ctx.input)
+      let target =
+        raycast_to_ground(
+          mouse_pos,
+          model.zoom,
+          model.player.position,
+          ctx.canvas_size,
+        )
+
+      // Send CastSpell to server via tagger
+      effect.dispatch(
+        send_to_server(game_messages.PlayerInput(
+          tick: model.server_tick,
+          action: game_messages.CastSpell(target),
+        )),
+      )
+    }
+    False -> effect.none()
+  }
+
+  // Handle zoom
+  let zoom_delta = input.mouse_wheel_delta(ctx.input) *. zoom_speed *. dt
+  let new_zoom = float.clamp(model.zoom -. zoom_delta, min_zoom, max_zoom)
+
+  // Interpolate render position toward server's authoritative position
+  let new_render_position =
+    shared_vec3.lerp(
+      model.render_position,
+      model.player.position,
+      position_lerp_factor,
+    )
+
+  // Interpolate all projectile render positions
+  let new_projectiles =
+    dict.map_values(model.projectiles, fn(_id, client_proj) {
+      let new_proj_render_pos =
+        shared_vec3.lerp(
+          client_proj.render_position,
+          client_proj.projectile.position,
+          projectile_lerp_factor,
+        )
+      ClientProjectile(
+        projectile: client_proj.projectile,
+        render_position: new_proj_render_pos,
+      )
+    })
+
+  let new_model =
+    Model(
+      ..model,
+      zoom: new_zoom,
+      render_position: new_render_position,
+      projectiles: new_projectiles,
+    )
+
+  #(new_model, effect.batch([move_effect, cast_effect]))
 }
 
-fn get_screen_input(ctx: tiramisu.Context) -> Vec2(Float) {
-  let up =
-    input.is_key_pressed(ctx.input, input.KeyW)
-    || input.is_key_pressed(ctx.input, input.ArrowUp)
-  let down =
-    input.is_key_pressed(ctx.input, input.KeyS)
-    || input.is_key_pressed(ctx.input, input.ArrowDown)
-  let left =
-    input.is_key_pressed(ctx.input, input.KeyA)
-    || input.is_key_pressed(ctx.input, input.ArrowLeft)
-  let right =
-    input.is_key_pressed(ctx.input, input.KeyD)
-    || input.is_key_pressed(ctx.input, input.ArrowRight)
+/// Raycast from screen coordinates to ground plane (y=0.9)
+fn raycast_to_ground(
+  mouse_pos: Vec2(Float),
+  zoom: Float,
+  player_pos: Vec3(Float),
+  canvas_size: Vec2(Float),
+) -> Vec3(Float) {
+  // Convert mouse screen coordinates to normalized device coordinates (NDC)
+  let ndc_x = { mouse_pos.x /. canvas_size.x *. 2.0 } -. 1.0
+  let ndc_y = 1.0 -. { mouse_pos.y /. canvas_size.y *. 2.0 }
 
-  // Calculate net screen direction (opposing keys cancel)
-  let screen_y = case up, down {
-    True, False -> 1.0
-    False, True -> -1.0
-    _, _ -> 0.0
-  }
+  // For orthographic camera, NDC maps to view space with zoom scale
+  let view_x = ndc_x *. zoom
+  let view_y = ndc_y *. zoom
 
-  let screen_x = case left, right {
-    True, False -> -1.0
-    False, True -> 1.0
-    _, _ -> 0.0
-  }
+  let cos_45 = 0.7071067811865476
 
-  Vec2(screen_x, screen_y)
+  // Camera right vector in world XZ plane: moving screen right goes +X and -Z
+  let right_x = cos_45
+  let right_z = 0.0 -. cos_45
+
+  // Camera up projected to ground plane: moving screen up goes -X and -Z
+  let up_x = 0.0 -. cos_45
+  let up_z = 0.0 -. cos_45
+
+  Vec3(
+    player_pos.x +. { view_x *. right_x } +. { view_y *. up_x },
+    0.9,
+    player_pos.z +. { view_x *. right_z } +. { view_y *. up_z },
+  )
 }
 
-fn screen_to_world_movement(screen_input: Vec2(Float)) -> Vec2(Float) {
-  // Combine isometric directions based on screen input
-  let from_vertical = vec2f.scale(isometric_up, by: screen_input.y)
-  let from_horizontal = vec2f.scale(isometric_right, by: screen_input.x)
-  let combined = vec2f.add(from_vertical, from_horizontal)
+/// Handle server messages (dispatched from network module via tagger)
+fn handle_server_message(
+  model: Model,
+  msg: game_messages.ServerMessage,
+) -> Model {
+  case msg {
+    game_messages.RoomJoined(_room_id, player_id, existing_players) -> {
+      let player.Id(pid) = player_id
+      io.println("🎮 Joined room with player ID: " <> int.to_string(pid))
 
-  // Normalize if moving to maintain consistent speed
-  case vec2f.length(combined) >. 0.0 {
-    True -> vec2f.normalize(combined)
-    False -> vec2f.zero
+      // Update our player ID
+      let updated_player = player.Player(..model.player, id: player_id)
+
+      // Add existing players
+      let other_players =
+        dict.from_list(
+          existing_players
+          |> list.map(fn(p) { #(p.id, p) }),
+        )
+
+      Model(..model, player: updated_player, other_players: other_players)
+    }
+
+    game_messages.GameStateUpdate(tick, players, projectiles, _enemies) -> {
+      // Update other players from server
+      let other_players =
+        dict.from_list(
+          players
+          |> list.filter(fn(p) { p.id != model.player.id })
+          |> list.map(fn(p) { #(p.id, p) }),
+        )
+
+      // Update projectiles from server
+      // For each server projectile, create or update ClientProjectile with interpolation
+      let projectiles_dict =
+        projectiles
+        |> list.fold(dict.new(), fn(acc, server_proj) {
+          case dict.get(model.projectiles, server_proj.id) {
+            // Existing projectile - keep render position for interpolation
+            Ok(existing) ->
+              dict.insert(
+                acc,
+                server_proj.id,
+                ClientProjectile(
+                  projectile: server_proj,
+                  render_position: existing.render_position,
+                ),
+              )
+            // New projectile - initialize render position to server position
+            Error(_) ->
+              dict.insert(
+                acc,
+                server_proj.id,
+                ClientProjectile(
+                  projectile: server_proj,
+                  render_position: server_proj.position,
+                ),
+              )
+          }
+        })
+
+      // Update our player from server (server-authoritative)
+      let updated_player = case
+        list.find(players, fn(p) { p.id == model.player.id })
+      {
+        Ok(server_player) -> server_player
+        Error(_) -> model.player
+      }
+
+      Model(
+        ..model,
+        server_tick: tick,
+        other_players: other_players,
+        projectiles: projectiles_dict,
+        player: updated_player,
+      )
+    }
+
+    _ -> model
   }
-}
-
-// =============================================================================
-// WAND SWITCHING
-// =============================================================================
-
-/// Check for wand switch inputs and return appropriate effect
-fn get_wand_switch_effect(
-  ctx: tiramisu.Context,
-  effect_mapper,
-) -> effect.Effect(game_msg) {
-  // Number keys 1-4 for direct wand selection
-  let key_effect = case
-    input.is_key_just_pressed(ctx.input, input.Digit1),
-    input.is_key_just_pressed(ctx.input, input.Digit2),
-    input.is_key_just_pressed(ctx.input, input.Digit3),
-    input.is_key_just_pressed(ctx.input, input.Digit4)
-  {
-    True, _, _, _ ->
-      effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWand(0))))
-    _, True, _, _ ->
-      effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWand(1))))
-    _, _, True, _ ->
-      effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWand(2))))
-    _, _, _, True ->
-      effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWand(3))))
-    _, _, _, _ -> effect.none()
-  }
-
-  // Shift + scroll wheel for wand cycling
-  let shift_held =
-    input.is_key_pressed(ctx.input, input.ShiftLeft)
-    || input.is_key_pressed(ctx.input, input.ShiftRight)
-  let wheel_delta = input.mouse_wheel_delta(ctx.input)
-
-  let scroll_effect = case shift_held, wheel_delta {
-    True, d if d >. 0.0 ->
-      effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWandRelative(-1))))
-    True, d if d <. 0.0 ->
-      effect.dispatch(effect_mapper(MagicMsg(magic.SwitchWandRelative(1))))
-    _, _ -> effect.none()
-  }
-
-  effect.batch([key_effect, scroll_effect])
 }
 
 // =============================================================================
 // VIEW
 // =============================================================================
 
-pub fn view(model: Model, ctx: tiramisu.Context) -> List(scene.Node) {
-  // Physics body for collision with enemies and walls
-  // Layer 0 = Player, collides with layer 1 = Enemies, layer 2 = Walls
-  // Character controller enables collision-aware movement
-  let physics_body =
-    physics.new_rigid_body(physics.Kinematic)
-    |> physics.with_collider(physics.Capsule(
-      offset: transform.identity,
-      half_height: 1.0,
-      radius: 0.5,
-    ))
-    |> physics.with_collision_groups(
-      membership: [layer.player],
-      can_collide_with: [layer.enemy, layer.map],
-    )
-    |> physics.with_character_controller(
-      offset: 1.0,
-      up_vector: Vec3(0.0, 1.0, 0.0),
-      slide_enabled: True,
-    )
-    |> physics.with_collision_events()
-    |> physics.with_friction(0.0)
-    |> physics.build()
+pub fn view(model: Model, _ctx: tiramisu.Context) -> scene.Node {
+  // True isometric camera angle
+  let horizontal_offset = camera_distance /. 1.4142
 
-  let camera_node = create_camera(model, ctx)
+  // Use interpolated render position for smooth camera following
+  let camera_pos =
+    Vec3(
+      model.render_position.x +. horizontal_offset,
+      model.render_position.y +. camera_distance,
+      model.render_position.z +. horizontal_offset,
+    )
 
+  let camera_transform = transform.at(position: camera_pos)
+  let target_transform = transform.at(position: model.render_position)
+  let camera_node =
+    scene.camera(
+      id: "main_camera",
+      camera: camera.orthographic(
+        left: 0.0 -. model.zoom,
+        right: model.zoom,
+        top: model.zoom,
+        bottom: 0.0 -. model.zoom,
+        near: 0.1,
+        far: 200.0,
+      ),
+      transform: transform.look_at(
+        from: camera_transform,
+        to: target_transform,
+        up: option.Some(Vec3(0.0, 1.0, 0.0)),
+      ),
+      active: True,
+      viewport: option.None,
+      postprocessing: option.None,
+    )
+
+  // Use interpolated render position for smooth player mesh rendering
   let player_node =
     scene.mesh(
-      id: id.to_string(id.Player(0)),
+      id: "player",
       geometry: model.player_geometry,
       material: model.player_material,
-      transform: transform.at(position: model.position),
-      physics: option.Some(physics_body),
-    )
-    |> scene.with_children([camera_node])
-
-  let projectile_nodes = magic.view(model.magic)
-
-  [player_node, ..projectile_nodes]
-}
-
-// =============================================================================
-// CAMERA
-// =============================================================================
-
-fn create_camera(model: Model, ctx: tiramisu.Context) -> scene.Node {
-  let ortho_size = model.zoom
-  let aspect = ctx.canvas_size.x /. ctx.canvas_size.y
-
-  let cam =
-    camera.orthographic(
-      left: 0.0 -. ortho_size *. aspect,
-      right: ortho_size *. aspect,
-      top: ortho_size,
-      bottom: 0.0 -. ortho_size,
-      near: 0.1,
-      far: 1000.0,
+      transform: transform.at(position: model.render_position),
+      physics: option.None,
     )
 
-  let camera_pos =
-    transform.at(position: Vec3(
-      camera_distance,
-      camera_distance,
-      camera_distance,
-    ))
-  let target_pos = transform.at(position: Vec3(0.0, 0.0, 0.0))
-  let camera_transform =
-    transform.look_at(
-      from: camera_pos,
-      to: target_pos,
-      up: option.Some(Vec3(0.0, 1.0, 0.0)),
-    )
+  // Render other players
+  let other_player_nodes =
+    dict.to_list(model.other_players)
+    |> list.map(fn(entry) {
+      let #(player_id, other_player) = entry
+      let player.Id(pid) = player_id
+      scene.mesh(
+        id: "player_" <> int.to_string(pid),
+        geometry: model.player_geometry,
+        material: model.player_material,
+        transform: transform.at(position: other_player.position),
+        physics: option.None,
+      )
+    })
 
-  scene.camera(
-    id: "main-camera",
-    camera: cam,
-    transform: camera_transform,
-    active: True,
-    viewport: option.None,
-    postprocessing: option.None,
+  // Render projectiles with interpolated positions
+  let projectile_nodes =
+    dict.to_list(model.projectiles)
+    |> list.map(fn(entry) {
+      let #(proj_id, client_proj) = entry
+      let projectile.Id(pid) = proj_id
+      scene.mesh(
+        id: "projectile_" <> int.to_string(pid),
+        geometry: model.projectile_geometry,
+        material: model.projectile_material,
+        transform: transform.at(position: client_proj.render_position),
+        physics: option.None,
+      )
+    })
+
+  let all_children =
+    [camera_node, player_node]
+    |> list.append(other_player_nodes)
+    |> list.append(projectile_nodes)
+
+  scene.empty(
+    id: "player_root",
+    transform: transform.identity,
+    children: all_children,
   )
-}
-
-// =============================================================================
-// STATE HELPERS
-// =============================================================================
-
-/// Get wand state for UI synchronization (active wand)
-pub fn get_wand_ui_state(
-  model: Model,
-) -> #(List(Option(spell.Spell)), Option(Int), Float, Float, spell_bag.SpellBag) {
-  magic.get_wand_ui_state(model.magic)
-}
-
-/// Get wand inventory for UI
-pub fn get_wand_inventory(model: Model) -> List(Option(wand.Wand)) {
-  magic.get_wand_inventory(model.magic)
-}
-
-/// Get wand names for UI display
-pub fn get_wand_names(model: Model) -> List(Option(String)) {
-  magic.get_wand_inventory(model.magic)
-  |> list.map(fn(wand_opt) {
-    case wand_opt {
-      option.Some(w) -> option.Some(w.name)
-      option.None -> option.None
-    }
-  })
-}
-
-/// Get active wand index
-pub fn get_active_wand_index(model: Model) -> Int {
-  magic.get_active_wand_index(model.magic)
-}
-
-/// Get the currently active wand (if any)
-pub fn get_active_wand(model: Model) -> Option(wand.Wand) {
-  magic.get_active_wand(model.magic)
-}
-
-/// Get the wand cast index for UI display
-pub fn get_wand_cast_index(model: Model) -> Int {
-  magic.get_wand_cast_index(model.magic)
-}
-
-/// Get current projectiles for collision detection
-pub fn get_projectiles(model: Model) -> List(projectile.Projectile) {
-  magic.get_projectiles(model.magic)
-}
-
-/// Get all wands with their cast indices for inventory display
-pub fn get_all_wands_with_cast_indices(
-  model: Model,
-) -> List(#(Option(wand.Wand), Int)) {
-  magic.get_all_wands_with_cast_indices(model.magic)
 }

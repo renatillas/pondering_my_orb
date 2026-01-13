@@ -1,5 +1,7 @@
+import gleam/dynamic/decode
 import gleam/float
 import gleam/int
+import gleam/json
 import gleam/list
 import gleam/option
 import gleam/result
@@ -834,4 +836,53 @@ fn apply_spread(
     }
   }
 }
-/// Get the names of all spells in a wand's slots
+
+// =============================================================================
+// JSON ENCODING / DECODING (for network transmission)
+// =============================================================================
+
+/// Encode a wand to JSON for network transmission
+/// Note: For MVP we'll send a simplified version (skip spell slots for now)
+pub fn encode(wand: Wand) -> json.Json {
+  let cast_delay_ms =
+    float.round(duration.to_seconds(wand.cast_delay) *. 1000.0)
+  let recharge_time_ms =
+    float.round(duration.to_seconds(wand.recharge_time) *. 1000.0)
+
+  json.object([
+    #("name", json.string(wand.name)),
+    #("max_mana", json.float(wand.max_mana)),
+    #("current_mana", json.float(wand.current_mana)),
+    #("mana_recharge_rate", json.float(wand.mana_recharge_rate)),
+    #("cast_delay_ms", json.int(cast_delay_ms)),
+    #("recharge_time_ms", json.int(recharge_time_ms)),
+    #("spells_per_cast", json.int(wand.spells_per_cast)),
+    #("spread", json.float(wand.spread)),
+    // TODO: Add spell slots encoding when needed
+  ])
+}
+
+/// Decoder for Wand from JSON
+pub fn decoder() -> decode.Decoder(Wand) {
+  use name <- decode.field("name", decode.string)
+  use max_mana <- decode.field("max_mana", decode.float)
+  use current_mana <- decode.field("current_mana", decode.float)
+  use mana_recharge_rate <- decode.field("mana_recharge_rate", decode.float)
+  use cast_delay_ms <- decode.field("cast_delay_ms", decode.int)
+  use recharge_time_ms <- decode.field("recharge_time_ms", decode.int)
+  use spells_per_cast <- decode.field("spells_per_cast", decode.int)
+  use spread <- decode.field("spread", decode.float)
+
+  decode.success(Wand(
+    name: name,
+    slots: iv.new(),
+    // Empty slots for now (TODO: decode spell slots)
+    max_mana: max_mana,
+    current_mana: current_mana,
+    mana_recharge_rate: mana_recharge_rate,
+    cast_delay: duration.milliseconds(cast_delay_ms),
+    recharge_time: duration.milliseconds(recharge_time_ms),
+    spells_per_cast: spells_per_cast,
+    spread: spread,
+  ))
+}

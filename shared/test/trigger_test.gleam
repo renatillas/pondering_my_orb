@@ -1,10 +1,10 @@
-import client/magic_system/spell
-import client/magic_system/wand
 import gleam/int
 import gleam/list
 import gleam/option
 import gleam/time/duration
 import iv
+import shared/spell
+import shared/wand
 import vec/vec3
 
 /// Test: Spark with trigger should have trigger payload after casting

@@ -1,4 +1,6 @@
+import gleam/dynamic/decode
 import gleam/float
+import gleam/json
 
 // =============================================================================
 // TYPES
@@ -68,4 +70,17 @@ pub fn current(health: Health) -> Float {
 /// Get max health value
 pub fn max(health: Health) -> Float {
   health.max
+}
+
+pub fn decoder() -> decode.Decoder(Health) {
+  use current <- decode.field("current", decode.float)
+  use max <- decode.field("max", decode.float)
+  decode.success(Health(current: current, max: max))
+}
+
+pub fn encode(health: Health) -> json.Json {
+  json.object([
+    #("current", json.float(health.current)),
+    #("max", json.float(health.max)),
+  ])
 }

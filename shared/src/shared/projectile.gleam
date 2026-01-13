@@ -1,67 +1,106 @@
-/// Shared projectile types for client-server communication.
-/// Server-authoritative projectile state that is synchronized over the network.
 import gleam/dynamic/decode
+import gleam/float
 import gleam/json
-import shared/id
+import gleam/option.{type Option}
+import gleam/time/duration
+import shared/player
+import shared/spell
 import shared/vec3 as shared_vec3
-import vec/vec3
+import vec/vec2
+import vec/vec3.{type Vec3}
 
-/// Core projectile state synchronized between client and server.
-/// The server is authoritative for this data.
+// =============================================================================
+// TYPES
+// =============================================================================
+
 pub type Projectile {
   Projectile(
-    id: Int,
-    owner_id: id.Id,
-    position: vec3.Vec3(Float),
-    direction: vec3.Vec3(Float),
-    damage: Float,
-    speed: Float,
-    size: Float,
-    lifetime: Float,
+    id: Id,
+    owner_id: player.Id,
+    spell: spell.ModifiedSpell,
+    position: Vec3(Float),
+    velocity: Vec3(Float),
+    time_alive: duration.Duration,
+    visuals: spell.SpellVisuals,
+    trigger_payload: Option(spell.ModifiedSpell),
   )
 }
 
-// ----------------------------------------------------------------------------
-// JSON Encoding
-// ----------------------------------------------------------------------------
+pub type Id {
+  Id(Int)
+}
 
-/// Encode a Projectile to JSON for network transmission.
-pub fn encode(projectile: Projectile) -> json.Json {
-  let assert id.Player(owner) = projectile.owner_id
+// =============================================================================
+// JSON ENCODING / DECODING
+// =============================================================================
+
+/// Encode a Projectile to JSON for network transmission
+/// Note: For MVP we send simplified projectile data
+pub fn encode(proj: Projectile) -> json.Json {
+  let Id(proj_id) = proj.id
+  let player.Id(owner_id_int) = proj.owner_id
+  let time_alive_ms =
+    duration.to_seconds(proj.time_alive) *. 1000.0 |> float.round
+
   json.object([
-    #("id", json.int(projectile.id)),
-    #("owner_id", json.int(owner)),
-    #("position", shared_vec3.encode(projectile.position)),
-    #("direction", shared_vec3.encode(projectile.direction)),
-    #("damage", json.float(projectile.damage)),
-    #("speed", json.float(projectile.speed)),
-    #("size", json.float(projectile.size)),
-    #("lifetime", json.float(projectile.lifetime)),
+    #("id", json.int(proj_id)),
+    #("owner_id", json.int(owner_id_int)),
+    #("position", shared_vec3.encode(proj.position)),
+    #("velocity", shared_vec3.encode(proj.velocity)),
+    #("time_alive_ms", json.int(time_alive_ms)),
+    // TODO: Encode spell data when needed for rendering
   ])
 }
 
-// ----------------------------------------------------------------------------
-// JSON Decoding
-// ----------------------------------------------------------------------------
-
-/// Decoder for Projectile from JSON.
+/// Decoder for Projectile from JSON
 pub fn decoder() -> decode.Decoder(Projectile) {
   use id <- decode.field("id", decode.int)
   use owner_id <- decode.field("owner_id", decode.int)
   use position <- decode.field("position", shared_vec3.decoder())
-  use direction <- decode.field("direction", shared_vec3.decoder())
-  use damage <- decode.field("damage", decode.float)
-  use speed <- decode.field("speed", decode.float)
-  use size <- decode.field("size", decode.float)
-  use lifetime <- decode.field("lifetime", decode.float)
+  use velocity <- decode.field("velocity", shared_vec3.decoder())
+  use time_alive_ms <- decode.field("time_alive_ms", decode.int)
+
+  // For MVP, create a minimal projectile (spell data will be added later)
   decode.success(Projectile(
-    id,
-    id.Player(owner_id),
-    position,
-    direction,
-    damage,
-    speed,
-    size,
-    lifetime,
+    id: Id(id),
+    owner_id: player.Id(owner_id),
+    spell: create_placeholder_spell(),
+    position: position,
+    velocity: velocity,
+    time_alive: duration.milliseconds(time_alive_ms),
+    visuals: create_placeholder_visuals(),
+    trigger_payload: option.None,
   ))
+}
+
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+fn create_placeholder_spell() -> spell.ModifiedSpell {
+  // Placeholder for MVP - will be replaced with real spell data
+  spell.ModifiedSpell(
+    base: spell.spark(),
+    final_damage: 0.0,
+    final_speed: 0.0,
+    final_size: 1.0,
+    final_lifetime: duration.seconds(1),
+    final_cast_delay: duration.milliseconds(0),
+    final_recharge_time: duration.milliseconds(0),
+    final_critical_chance: 0.0,
+    final_spread: 0.0,
+    total_mana_cost: 0.0,
+  )
+}
+
+fn create_placeholder_visuals() -> spell.SpellVisuals {
+  spell.SpellVisuals(
+    projectile: spell.StaticSprite(
+      texture_path: "spell_projectiles/spark.png",
+      size: vec2.Vec2(1.0, 1.0),
+    ),
+    hit_effect: spell.NoEffect,
+    base_tint: 0xFFFFFF,
+    emissive_intensity: 1.0,
+  )
 }

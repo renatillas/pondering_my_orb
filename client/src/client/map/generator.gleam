@@ -1,6 +1,5 @@
 import gleam/int
 import gleam/list
-import shared/id
 import vec/vec2.{type Vec2, Vec2}
 import vec/vec3.{type Vec3, Vec3}
 
@@ -120,14 +119,5 @@ fn direction_from_rotation(rotation: Float) -> vec2.Vec2(Float) {
     r if r <. -1.0 && r >. -2.0 -> Vec2(0.0, 1.0)
     // Default: extend east
     _ -> Vec2(1.0, 0.0)
-  }
-}
-
-/// Get the rendering layer for proper depth ordering
-pub fn get_render_layer(element: id.Id) -> Int {
-  case element {
-    id.Floor(_) -> 0
-    id.Wall(_) -> 2
-    _ -> -1
   }
 }
