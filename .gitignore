@@ -1,5 +1,6 @@
 *.beam
 *.ez
+.wrangler
 /build
 erl_crash.dump
 /priv
