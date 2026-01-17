@@ -1,11 +1,13 @@
 /// ProjectileActor - manages individual projectile state using OTP actor pattern
 import gleam/erlang/process.{type Subject}
 import gleam/float
+import gleam/int
 import gleam/otp/actor
 import gleam/time/duration.{type Duration}
 import logging
 import vec/vec3f
 
+import shared/enemy
 import shared/projectile
 
 // =============================================================================
@@ -16,6 +18,8 @@ import shared/projectile
 pub type Msg {
   /// Tick for movement and lifetime tracking
   Tick(delta_time: Duration)
+  /// Hit an enemy (causes projectile to expire)
+  Hit(enemy_id: enemy.Id)
 }
 
 /// Messages sent FROM projectile actor back to the room
@@ -77,6 +81,7 @@ fn handle_message(
 ) -> actor.Next(State(room_msg), Msg) {
   case msg {
     Tick(delta_time) -> handle_tick(state, delta_time)
+    Hit(enemy_id) -> handle_hit(state, enemy_id)
   }
 }
 
@@ -130,9 +135,38 @@ fn handle_tick(
   }
 }
 
+fn handle_hit(
+  state: State(room_msg),
+  enemy_id: enemy.Id,
+) -> actor.Next(State(room_msg), Msg) {
+  logging.log(
+    logging.Debug,
+    "Projectile "
+      <> projectile_id_to_string(state.projectile.id)
+      <> " hit enemy "
+      <> enemy_id_to_string(enemy_id),
+  )
+
+  // Notify room that projectile expired
+  process.send(state.room, state.to_room(Expired(state.projectile.id)))
+
+  // Stop the actor
+  actor.stop()
+}
+
 // =============================================================================
 // HELPER FUNCTIONS
 // =============================================================================
+
+fn projectile_id_to_string(id: projectile.Id) -> String {
+  let projectile.Id(n) = id
+  int.to_string(n)
+}
+
+fn enemy_id_to_string(id: enemy.Id) -> String {
+  let enemy.Id(n) = id
+  int.to_string(n)
+}
 
 fn duration_to_string(dur: Duration) -> String {
   let seconds = duration.to_seconds(dur)

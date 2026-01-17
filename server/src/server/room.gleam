@@ -10,6 +10,7 @@ import gleam/otp/factory_supervisor
 import gleam/time/duration
 import gleam/time/timestamp
 import logging.{Info}
+import spatial/collider
 import vec/vec3.{Vec3}
 
 import server/enemy as enemy_actor
@@ -295,6 +296,10 @@ fn finalize_tick(
       <> " clients",
   )
 
+  // Check collisions BEFORE broadcasting
+  // This ensures damage is applied and actors receive messages before tick ends
+  check_collisions(state, projectile_responses, enemy_responses)
+
   // Broadcast GameStateUpdate to all players (using collected snapshots)
   broadcast_tick_updates(
     state.connections,
@@ -369,7 +374,7 @@ fn handle_tick_idle(state: State) -> actor.Next(State, Msg) {
   let current_tick = tick.current(tick_scheduler)
 
   logging.log(
-    logging.Info,
+    logging.Debug,
     "⏱️  Tick "
       <> int.to_string(current_tick)
       <> " started ("
@@ -1121,8 +1126,74 @@ fn broadcast_to_all(
 }
 
 // =============================================================================
+// COLLISION DETECTION
+// =============================================================================
+
+/// Check collisions between projectiles and enemies, send damage/hit messages
+fn check_collisions(
+  state: State,
+  projectile_responses: Dict(projectile.Id, projectile.Projectile),
+  enemy_responses: Dict(enemy.Id, enemy.Enemy),
+) -> Nil {
+  // For each projectile, check against all enemies
+  dict.each(projectile_responses, fn(proj_id, proj) {
+    dict.each(enemy_responses, fn(enemy_id, enemy_state) {
+      // Create sphere colliders
+      let proj_collider =
+        collider.sphere(center: proj.position, radius: proj.spell.final_size)
+
+      let enemy_collider =
+        collider.sphere(center: enemy_state.position, radius: 1.0)
+
+      // Check if they intersect
+      case collider.intersects(proj_collider, enemy_collider) {
+        True -> {
+          logging.log(
+            logging.Info,
+            "💥 Projectile "
+              <> projectile_id_to_string(proj_id)
+              <> " hit Enemy "
+              <> enemy_id_to_string(enemy_id),
+          )
+
+          // Send TakeDamage to enemy actor
+          case dict.get(state.enemy_actors, enemy_id) {
+            Ok(enemy_actor) -> {
+              process.send(
+                enemy_actor,
+                enemy_actor.TakeDamage(proj.spell.final_damage),
+              )
+            }
+            Error(_) -> Nil
+          }
+
+          // Send Hit to projectile actor (will expire itself)
+          case dict.get(state.projectile_actors, proj_id) {
+            Ok(projectile_actor) -> {
+              process.send(projectile_actor, projectile_actor.Hit(enemy_id))
+            }
+            Error(_) -> Nil
+          }
+        }
+        False -> Nil
+      }
+    })
+  })
+}
+
+// =============================================================================
 // HELPER FUNCTIONS
 // =============================================================================
+
+fn projectile_id_to_string(id: projectile.Id) -> String {
+  let projectile.Id(n) = id
+  int.to_string(n)
+}
+
+fn enemy_id_to_string(id: enemy.Id) -> String {
+  let enemy.Id(n) = id
+  int.to_string(n)
+}
 
 fn player_id_to_string(id: player.Id) -> String {
   let player.Id(n) = id
