@@ -11,10 +11,11 @@ import gleam/time/timestamp
 import logging.{Info}
 import vec/vec3.{Vec3}
 
-import server/enemy_actor
+import server/enemy as enemy_actor
 import server/player as player_actor
-import server/projectile_actor
+import server/projectile as projectile_actor
 import server/tick
+import server/wand as wand_actor
 
 import shared/enemy
 import shared/game_message
@@ -81,6 +82,10 @@ pub type State {
       enemy_actor.SpawnArguments(Msg),
       process.Subject(enemy_actor.Msg),
     ),
+    wand_factory: factory_supervisor.Supervisor(
+      wand_actor.SpawnArguments(player_actor.Msg),
+      process.Subject(wand_actor.Msg),
+    ),
     self: process.Subject(Msg),
   )
 }
@@ -146,6 +151,12 @@ pub fn start(
       process.Subject(enemy_actor.Msg),
     ),
   ),
+  wand_factory_name: process.Name(
+    factory_supervisor.Message(
+      wand_actor.SpawnArguments(player_actor.Msg),
+      process.Subject(wand_actor.Msg),
+    ),
+  ),
 ) -> Result(actor.Started(process.Subject(Msg)), actor.StartError) {
   actor.new_with_initialiser(1000, fn(self) {
     // Get references to all factory supervisors
@@ -153,6 +164,7 @@ pub fn start(
     let projectile_factory =
       factory_supervisor.get_by_name(projectile_factory_name)
     let enemy_factory = factory_supervisor.get_by_name(enemy_factory_name)
+    let wand_factory = factory_supervisor.get_by_name(wand_factory_name)
 
     let state =
       State(
@@ -164,11 +176,13 @@ pub fn start(
         player_actors: dict.new(),
         projectile_actors: dict.new(),
         enemy_actors: dict.new(),
+        last_player_positions: dict.new(),
         tick_state: Idle,
         tick_scheduler: tick.new(timestamp.system_time()),
         player_factory: player_factory,
         projectile_factory: projectile_factory,
         enemy_factory: enemy_factory,
+        wand_factory: wand_factory,
         self: self,
       )
 
@@ -286,8 +300,15 @@ fn finalize_tick(
     enemy_responses,
   )
 
+  // Cache player positions for next tick's enemy AI
+  let player_positions =
+    dict.map_values(player_responses, fn(_id, player_state) {
+      player_state.position
+    })
+
   // Reset collection state (all ephemeral data is discarded)
-  let new_state = State(..state, tick_state: Idle)
+  let new_state =
+    State(..state, tick_state: Idle, last_player_positions: player_positions)
 
   // Check if all clients disconnected
   case dict.is_empty(new_state.player_actors) {
@@ -377,21 +398,14 @@ fn handle_tick(state: State) -> actor.Next(State, Msg) {
           process.send(projectile_actor, projectile_actor.Tick(delta_time))
         })
 
-      // Send Tick to all enemy actors with nearby player positions for AI
-      // Note: Using current game_state.players which may be from previous tick
+      // Send Tick to all enemy actors with player positions from previous tick
       // This is acceptable for AI - enemies don't need frame-perfect player positions
-      let player_positions =
-        dict.map_values(state.player_actors, fn(_id, _actor) {
-          // We don't have player positions here yet (collecting during this tick)
-          // For now, send empty dict - TODO: use previous tick's positions
-          vec3.Vec3(0.0, 0.0, 0.0)
-        })
-
+      // Using cached positions avoids race conditions during collection phase
       let _nil =
         dict.each(state.enemy_actors, fn(_enemy_id, enemy_actor) {
           process.send(
             enemy_actor,
-            enemy_actor.Tick(delta_time, player_positions),
+            enemy_actor.Tick(delta_time, state.last_player_positions),
           )
         })
 
@@ -882,6 +896,7 @@ fn handle_join(
       initial_position: initial_position,
       room: state.self,
       to_room: to_room,
+      wand_factory: state.wand_factory,
     )
 
   // Spawn PlayerActor using factory supervisor

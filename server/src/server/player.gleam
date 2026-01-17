@@ -3,12 +3,13 @@ import gleam/int
 import gleam/list
 import gleam/option
 import gleam/otp/actor
+import gleam/otp/factory_supervisor
 import gleam/time/duration.{type Duration}
 import logging
 import vec/vec3.{type Vec3}
 import vec/vec3f
 
-import server/wand_actor
+import server/wand as wand_actor
 import shared/player
 import shared/projectile
 import shared/spell
@@ -63,6 +64,10 @@ type State(room_msg) {
     ),
     room: Subject(room_msg),
     to_room: fn(ToRoomMsg) -> room_msg,
+    wand_factory: factory_supervisor.Supervisor(
+      wand_actor.SpawnArguments(Msg),
+      Subject(wand_actor.Msg),
+    ),
     self: Subject(Msg),
   )
 }
@@ -78,6 +83,10 @@ pub type SpawnArguments(room_msg) {
     initial_position: Vec3(Float),
     room: Subject(room_msg),
     to_room: fn(ToRoomMsg) -> room_msg,
+    wand_factory: factory_supervisor.Supervisor(
+      wand_actor.SpawnArguments(Msg),
+      Subject(wand_actor.Msg),
+    ),
   )
 }
 
@@ -103,9 +112,6 @@ pub fn start(
       )
 
     // Create wand tagger for slot 0
-    let to_player_slot_0 = fn(msg: wand_actor.ToPlayerMsg) -> Msg {
-      WandMessage(0, msg)
-    }
 
     // Spawn starter wand in slot 0
     let starter_wand = wand_actor.create_starter_wand()
@@ -113,15 +119,17 @@ pub fn start(
       wand_actor.SpawnArguments(
         wand: starter_wand,
         player: self,
-        to_player: to_player_slot_0,
+        to_player: WandMessage(0, _),
       )
 
-    let wand_0 = case wand_actor.start(wand_spawn_args) {
+    let wand_0 = case
+      factory_supervisor.start_child(
+        spawn_arguments.wand_factory,
+        wand_spawn_args,
+      )
+    {
       Ok(started) -> option.Some(started.data)
-      Error(_) -> {
-        logging.log(logging.Error, "Failed to start wand actor for slot 0")
-        option.None
-      }
+      Error(_) -> panic as "Failed to spawn starter wand actor"
     }
 
     // Update player state with starter wand
@@ -145,6 +153,7 @@ pub fn start(
         wand_actors: #(wand_0, option.None, option.None, option.None),
         room: spawn_arguments.room,
         to_room: spawn_arguments.to_room,
+        wand_factory: spawn_arguments.wand_factory,
         self: self,
       )
 

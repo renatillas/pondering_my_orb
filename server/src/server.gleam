@@ -7,10 +7,11 @@ import gleam/otp/factory_supervisor
 import gleam/otp/static_supervisor
 import gleam/otp/supervision
 import logging
-import server/enemy_actor
+import server/enemy
 import server/player
-import server/projectile_actor
+import server/projectile
 import server/room
+import server/wand
 
 pub fn main() {
   logging.configure()
@@ -25,14 +26,20 @@ pub fn main() {
 
   let projectile_factory_name = process.new_name("projectile_factory")
   let projectile_factory =
-    factory_supervisor.worker_child(projectile_actor.start)
+    factory_supervisor.worker_child(projectile.start)
     |> factory_supervisor.named(projectile_factory_name)
     |> factory_supervisor.supervised()
 
   let enemy_factory_name = process.new_name("enemy_factory")
   let enemy_factory =
-    factory_supervisor.worker_child(enemy_actor.start)
+    factory_supervisor.worker_child(enemy.start)
     |> factory_supervisor.named(enemy_factory_name)
+    |> factory_supervisor.supervised()
+
+  let wand_factory_name = process.new_name("wand_factory")
+  let wand_factory =
+    factory_supervisor.worker_child(wand.start)
+    |> factory_supervisor.named(wand_factory_name)
     |> factory_supervisor.supervised()
 
   // Start the game room actor, passing all factory names
@@ -44,6 +51,7 @@ pub fn main() {
         player_factory_name,
         projectile_factory_name,
         enemy_factory_name,
+        wand_factory_name,
       )
     })
 
@@ -117,6 +125,7 @@ pub fn main() {
     |> static_supervisor.add(player_factory)
     |> static_supervisor.add(projectile_factory)
     |> static_supervisor.add(enemy_factory)
+    |> static_supervisor.add(wand_factory)
     |> static_supervisor.add(room)
     |> static_supervisor.add(server)
     |> static_supervisor.start()
