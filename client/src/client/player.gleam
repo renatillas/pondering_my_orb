@@ -1,4 +1,4 @@
-/// Player module - handles local player movement, input, and rendering
+/// Player module - handles local player movement, input, camera, and rendering
 import gleam/dict
 import gleam/float
 import gleam/int
@@ -15,26 +15,16 @@ import tiramisu/material
 import tiramisu/physics
 import tiramisu/scene
 import tiramisu/transform
-import vec/vec2.{type Vec2, Vec2}
+import vec/vec2.{type Vec2}
 import vec/vec3.{type Vec3, Vec3}
 
-import shared/enemy
 import shared/game_message
 import shared/player
-import shared/projectile
 import shared/vec3 as shared_vec3
 
 // =============================================================================
 // TYPES
 // =============================================================================
-
-/// Client-side wrapper for projectiles with interpolated render position
-pub type ClientProjectile {
-  ClientProjectile(
-    projectile: projectile.Projectile,
-    render_position: Vec3(Float),
-  )
-}
 
 pub type Model {
   Model(
@@ -45,24 +35,18 @@ pub type Model {
     server_tick: Int,
     // Other players from server
     other_players: dict.Dict(player.Id, player.Player),
-    // Projectiles from server with client-side interpolation
-    projectiles: dict.Dict(projectile.Id, ClientProjectile),
-    // Enemies from server
-    enemies: dict.Dict(enemy.Id, enemy.Enemy),
     // Last sent input state (for change detection)
     last_input: #(Bool, Bool, Bool, Bool),
     // Shared rendering resources (created once in init)
     player_geometry: geometry.Geometry,
     player_material: material.Material,
-    projectile_geometry: geometry.Geometry,
-    projectile_material: material.Material,
-    enemy_geometry: geometry.Geometry,
-    enemy_material: material.Material,
   )
 }
 
 pub type Msg {
   Tick
+  UpdateFromServer(player.Player)
+  UpdateOtherPlayers(dict.Dict(player.Id, player.Player))
   ServerMessageReceived(game_message.ServerMessage)
 }
 
@@ -85,9 +69,6 @@ const camera_distance = 50.0
 // Lower values = smoother but more laggy feeling
 const position_lerp_factor = 0.2
 
-// Projectiles move faster, so they need more aggressive interpolation
-const projectile_lerp_factor = 0.35
-
 // =============================================================================
 // INIT
 // =============================================================================
@@ -102,24 +83,6 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
     |> material.with_emissive_intensity(0.5)
     |> material.build()
 
-  // Projectile rendering resources
-  let assert Ok(projectile_geo) = geometry.sphere(0.3, Vec2(8, 6))
-  let assert Ok(projectile_mat) =
-    material.new()
-    |> material.with_color(0xFF4400)
-    |> material.with_emissive(0xFF4400)
-    |> material.with_emissive_intensity(1.0)
-    |> material.build()
-
-  // Enemy rendering resources
-  let assert Ok(enemy_geo) = geometry.box(Vec3(0.8, 1.8, 0.8))
-  let assert Ok(enemy_mat) =
-    material.new()
-    |> material.with_color(0xFF0000)
-    |> material.with_emissive(0xFF0000)
-    |> material.with_emissive_intensity(0.8)
-    |> material.build()
-
   let initial_position = Vec3(0.0, 0.9, 0.0)
   let model =
     Model(
@@ -128,15 +91,9 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
       zoom: initial_zoom,
       server_tick: 0,
       other_players: dict.new(),
-      projectiles: dict.new(),
-      enemies: dict.new(),
       last_input: #(False, False, False, False),
       player_geometry: player_geo,
       player_material: player_mat,
-      projectile_geometry: projectile_geo,
-      projectile_material: projectile_mat,
-      enemy_geometry: enemy_geo,
-      enemy_material: enemy_mat,
     )
 
   #(model, effect.dispatch(Tick))
@@ -162,6 +119,19 @@ pub fn update(
         option.None,
       )
     }
+
+    UpdateFromServer(player_data) -> {
+      // Update position from server (server-authoritative)
+      let new_model = Model(..model, player: player_data)
+      #(new_model, effect.none(), option.None)
+    }
+
+    UpdateOtherPlayers(other_players) -> {
+      // Update other players from server
+      let new_model = Model(..model, other_players: other_players)
+      #(new_model, effect.none(), option.None)
+    }
+
     ServerMessageReceived(server_msg) -> {
       let new_model = handle_server_message(model, server_msg)
       #(new_model, effect.none(), option.None)
@@ -240,27 +210,11 @@ fn tick(
       position_lerp_factor,
     )
 
-  // Interpolate all projectile render positions
-  let new_projectiles =
-    dict.map_values(model.projectiles, fn(_id, client_proj) {
-      let new_proj_render_pos =
-        shared_vec3.lerp(
-          client_proj.render_position,
-          client_proj.projectile.position,
-          projectile_lerp_factor,
-        )
-      ClientProjectile(
-        projectile: client_proj.projectile,
-        render_position: new_proj_render_pos,
-      )
-    })
-
   let new_model =
     Model(
       ..model,
       zoom: new_zoom,
       render_position: new_render_position,
-      projectiles: new_projectiles,
       last_input: new_last_input,
     )
 
@@ -338,49 +292,13 @@ fn handle_server_message(model: Model, msg: game_message.ServerMessage) -> Model
       Model(..model, other_players: new_other_players)
     }
 
-    game_message.GameStateUpdate(tick, players, projectiles, enemies) -> {
+    game_message.GameStateUpdate(tick, players, _projectiles, _enemies) -> {
       // Update other players from server
       let other_players =
         dict.from_list(
           players
           |> list.filter(fn(p) { p.id != model.player.id })
           |> list.map(fn(p) { #(p.id, p) }),
-        )
-
-      // Update projectiles from server
-      // For each server projectile, create or update ClientProjectile with interpolation
-      let projectiles_dict =
-        projectiles
-        |> list.fold(dict.new(), fn(acc, server_proj) {
-          case dict.get(model.projectiles, server_proj.id) {
-            // Existing projectile - keep render position for interpolation
-            Ok(existing) ->
-              dict.insert(
-                acc,
-                server_proj.id,
-                ClientProjectile(
-                  projectile: server_proj,
-                  render_position: existing.render_position,
-                ),
-              )
-            // New projectile - start at server position
-            Error(_) ->
-              dict.insert(
-                acc,
-                server_proj.id,
-                ClientProjectile(
-                  projectile: server_proj,
-                  render_position: server_proj.position,
-                ),
-              )
-          }
-        })
-
-      // Update enemies from server
-      let enemies_dict =
-        dict.from_list(
-          enemies
-          |> list.map(fn(e) { #(e.id, e) }),
         )
 
       // Update our player from server (server-authoritative)
@@ -395,8 +313,6 @@ fn handle_server_message(model: Model, msg: game_message.ServerMessage) -> Model
         ..model,
         server_tick: tick,
         other_players: other_players,
-        projectiles: projectiles_dict,
-        enemies: enemies_dict,
         player: updated_player,
       )
     }
@@ -409,7 +325,7 @@ fn handle_server_message(model: Model, msg: game_message.ServerMessage) -> Model
 // VIEW
 // =============================================================================
 
-pub fn view(model: Model, _ctx: tiramisu.Context) -> scene.Node {
+pub fn view(model: Model, _ctx: tiramisu.Context) -> List(scene.Node) {
   // True isometric camera angle
   let horizontal_offset = camera_distance /. 1.4142
 
@@ -469,45 +385,6 @@ pub fn view(model: Model, _ctx: tiramisu.Context) -> scene.Node {
       )
     })
 
-  // Render projectiles with interpolated positions
-  let projectile_nodes =
-    dict.to_list(model.projectiles)
-    |> list.map(fn(entry) {
-      let #(proj_id, client_proj) = entry
-      let projectile.Id(pid) = proj_id
-      scene.mesh(
-        id: "projectile_" <> int.to_string(pid),
-        geometry: model.projectile_geometry,
-        material: model.projectile_material,
-        transform: transform.at(position: client_proj.render_position),
-        physics: option.None,
-      )
-    })
-
-  // Render enemies
-  let enemy_nodes =
-    dict.to_list(model.enemies)
-    |> list.map(fn(entry) {
-      let #(enemy_id, enemy_data) = entry
-      let enemy.Id(eid) = enemy_id
-      scene.mesh(
-        id: "enemy_" <> int.to_string(eid),
-        geometry: model.enemy_geometry,
-        material: model.enemy_material,
-        transform: transform.at(position: enemy_data.position),
-        physics: option.None,
-      )
-    })
-
-  let all_children =
-    [camera_node, player_node]
-    |> list.append(other_player_nodes)
-    |> list.append(projectile_nodes)
-    |> list.append(enemy_nodes)
-
-  scene.empty(
-    id: "player_root",
-    transform: transform.identity,
-    children: all_children,
-  )
+  [camera_node, player_node]
+  |> list.append(other_player_nodes)
 }

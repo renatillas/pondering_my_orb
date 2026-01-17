@@ -12,10 +12,13 @@ import server/player
 import server/projectile
 import server/room
 import server/wand
+import spectator
 
 pub fn main() {
   logging.configure()
   logging.set_level(logging.Debug)
+
+  let assert Ok(_) = spectator.start()
 
   // Create factory supervisors for all actor types
   let player_factory_name = process.new_name("player_factory")
