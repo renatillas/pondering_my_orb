@@ -1,5 +1,4 @@
 *.beam
-.wrangler
 *.ez
 /build
 erl_crash.dump

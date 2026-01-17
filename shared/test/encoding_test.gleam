@@ -1,4 +1,3 @@
-import gleam/dict
 import gleam/json
 import gleam/option
 import shared/enemy
@@ -96,28 +95,8 @@ pub fn game_state_empty_test() {
 }
 
 pub fn game_state_with_entities_test() {
-  // Create a game state with some entities
-  let test_player =
-    player.new(player.Id(1), "Player1", vec3.Vec3(0.0, 0.0, 0.0))
-  let test_enemy =
-    enemy.Enemy(
-      id: enemy.Id(1),
-      enemy_type: enemy.Zombie,
-      position: vec3.Vec3(10.0, 0.0, 10.0),
-      velocity: vec3.Vec3(0.0, 0.0, 0.0),
-      health: health.new(50.0),
-      target_player: option.Some(player.Id(1)),
-    )
-
   let original_state =
-    game_state.GameState(
-      tick: 42,
-      players: dict.from_list([#(test_player.id, test_player)]),
-      projectiles: dict.new(),
-      enemies: dict.from_list([#(test_enemy.id, test_enemy)]),
-      next_projectile_id: 0,
-      next_enemy_id: 0,
-    )
+    game_state.GameState(tick: 42, next_projectile_id: 0, next_enemy_id: 0)
 
   let json_encoded = game_state.encode(original_state)
   let json_string = json.to_string(json_encoded)

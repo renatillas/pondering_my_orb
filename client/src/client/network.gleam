@@ -4,7 +4,7 @@ import gleam/io
 import tiramisu
 import tiramisu/effect.{type Effect}
 
-import shared/game_messages
+import shared/game_message
 
 // =============================================================================
 // MODEL
@@ -29,7 +29,7 @@ pub type Model {
 /// Messages for network operations.
 pub type Msg {
   /// Connect to a game server
-  Connect(server_url: String, room_id: String, player_name: String)
+  Connect(server_url: String, player_name: String)
   /// Disconnect from the server
   Disconnect
   /// WebSocket opened successfully
@@ -39,7 +39,7 @@ pub type Msg {
   /// Received a server message (raw string)
   ReceivedMessage(String)
   /// Send a client message to the server
-  SendMessage(game_messages.ClientMessage)
+  SendMessage(game_message.ClientMessage)
 }
 
 // =============================================================================
@@ -62,12 +62,12 @@ pub fn update(
   model: Model,
   msg: Msg,
   effect_mapper: fn(Msg) -> game_msg,
-  on_server_message: fn(game_messages.ServerMessage) -> game_msg,
+  on_server_message: fn(game_message.ServerMessage) -> game_msg,
   _ctx: tiramisu.Context,
 ) -> #(Model, Effect(game_msg)) {
   case msg {
-    Connect(server_url, room_id, player_name) ->
-      handle_connect(model, server_url, room_id, player_name, effect_mapper)
+    Connect(server_url, player_name) ->
+      handle_connect(model, server_url, player_name, effect_mapper)
 
     Disconnect -> handle_disconnect(model, effect_mapper)
 
@@ -97,21 +97,17 @@ pub fn update(
 fn handle_connect(
   _model: Model,
   server_url: String,
-  room_id: String,
   player_name: String,
   effect_mapper: fn(Msg) -> game_msg,
 ) -> #(Model, Effect(game_msg)) {
   // Build the WebSocket URL
-  let ws_url = server_url <> "/ws/" <> room_id
-
+  let ws_url = server_url
   let new_model = Model(server_url: server_url, connection_state: Connecting)
 
   // Create effect to connect WebSocket
   let connect_effect =
     effect.from(fn(dispatch) {
-      do_connect(ws_url, room_id, player_name, fn(msg) {
-        dispatch(effect_mapper(msg))
-      })
+      do_connect(ws_url, player_name, fn(msg) { dispatch(effect_mapper(msg)) })
     })
 
   #(new_model, connect_effect)
@@ -137,9 +133,9 @@ fn handle_disconnect(
 fn handle_received_message(
   model: Model,
   data: String,
-  on_server_message: fn(game_messages.ServerMessage) -> game_msg,
+  on_server_message: fn(game_message.ServerMessage) -> game_msg,
 ) -> #(Model, Effect(game_msg)) {
-  case game_messages.decode_server_message(data) {
+  case game_message.decode_server_message(data) {
     Ok(server_msg) -> {
       // Route server message to parent module via tagger
       #(model, effect.dispatch(on_server_message(server_msg)))
@@ -154,9 +150,9 @@ fn handle_received_message(
 /// Send a client message to the server.
 fn send_client_message(
   model: Model,
-  message: game_messages.ClientMessage,
+  message: game_message.ClientMessage,
 ) -> #(Model, Effect(game_msg)) {
-  let json = game_messages.encode_client_message(message)
+  let json = game_message.encode_client_message(message)
   let send_effect = effect.from(fn(_dispatch) { do_send(json) })
   #(model, send_effect)
 }
@@ -179,12 +175,7 @@ pub fn is_connected(model: Model) -> Bool {
 
 /// Connect to WebSocket server
 @external(javascript, "./network_ffi.mjs", "connect")
-fn do_connect(
-  url: String,
-  room_id: String,
-  player_name: String,
-  dispatch: fn(Msg) -> Nil,
-) -> Nil
+fn do_connect(url: String, player_name: String, dispatch: fn(Msg) -> Nil) -> Nil
 
 /// Disconnect from server
 @external(javascript, "./network_ffi.mjs", "disconnect")

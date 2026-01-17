@@ -6,9 +6,9 @@ import gleam/result
 import gleam/string
 import gleam/time/timestamp
 import shared/enemy
+import shared/game_event
 import shared/player.{type Player}
 import shared/projectile
-import shared/room
 import shared/vec3 as shared_vec3
 import vec/vec3
 
@@ -156,7 +156,7 @@ fn player_action_decoder() -> decode.Decoder(PlayerAction) {
 /// Messages sent from the server to the client.
 pub type ServerMessage {
   /// Confirmation that the player has joined a room.
-  RoomJoined(room_id: room.Id, player_id: player.Id, players: List(Player))
+  RoomJoined(player_id: player.Id, players: List(Player))
   /// A new player has joined the room.
   PlayerJoined(player: Player)
   /// A player has left the room.
@@ -170,16 +170,8 @@ pub type ServerMessage {
     projectiles: List(projectile.Projectile),
     enemies: List(enemy.Enemy),
   )
-  /// A projectile was spawned
-  ProjectileSpawned(projectile: projectile.Projectile)
-  /// A projectile was destroyed
-  ProjectileDestroyed(id: projectile.Id, reason: DestroyReason)
-  /// An enemy was spawned
-  EnemySpawned(enemy: enemy.Enemy)
-  /// An enemy died
-  EnemyDied(id: enemy.Id)
-  /// A player took damage
-  PlayerDamaged(player_id: player.Id, damage: Float, new_health: Float)
+  /// A game event occurred (projectiles, enemies, damage)
+  GameEvent(event: game_event.GameEvent)
   /// Response to a ping.
   Pong(
     client_timestamp: timestamp.Timestamp,
@@ -189,22 +181,13 @@ pub type ServerMessage {
   Error(message: String)
 }
 
-/// Reason a projectile was destroyed
-pub type DestroyReason {
-  HitEnemy(enemy_id: enemy.Id)
-  HitPlayer(player_id: player.Id)
-  Expired
-}
-
 /// Encode a ServerMessage to JSON string for transmission.
 pub fn encode_server_message(msg: ServerMessage) -> String {
   case msg {
-    RoomJoined(room_id, player_id, players) -> {
-      let room.Id(room_serial) = room_id
+    RoomJoined(player_id, players) -> {
       let player.Id(player_serial) = player_id
       json.object([
         #("type", json.string("room_joined")),
-        #("room_id", json.int(room_serial)),
         #("player_id", json.int(player_serial)),
         #("players", json.array(players, player.encode)),
       ])
@@ -234,40 +217,11 @@ pub fn encode_server_message(msg: ServerMessage) -> String {
         #("projectiles", json.array(projectiles, projectile.encode)),
         #("enemies", json.array(enemies, enemy.encode)),
       ])
-    ProjectileSpawned(proj) ->
+    GameEvent(event) ->
       json.object([
-        #("type", json.string("projectile_spawned")),
-        #("projectile", projectile.encode(proj)),
+        #("type", json.string("game_event")),
+        #("event", game_event.encode(event)),
       ])
-    ProjectileDestroyed(id, reason) -> {
-      let projectile.Id(proj_id) = id
-      json.object([
-        #("type", json.string("projectile_destroyed")),
-        #("id", json.int(proj_id)),
-        #("reason", encode_destroy_reason(reason)),
-      ])
-    }
-    EnemySpawned(enm) ->
-      json.object([
-        #("type", json.string("enemy_spawned")),
-        #("enemy", enemy.encode(enm)),
-      ])
-    EnemyDied(id) -> {
-      let enemy.Id(enemy_id) = id
-      json.object([
-        #("type", json.string("enemy_died")),
-        #("id", json.int(enemy_id)),
-      ])
-    }
-    PlayerDamaged(player_id, damage, new_health) -> {
-      let player.Id(pid) = player_id
-      json.object([
-        #("type", json.string("player_damaged")),
-        #("player_id", json.int(pid)),
-        #("damage", json.float(damage)),
-        #("new_health", json.float(new_health)),
-      ])
-    }
     Pong(client_timestamp, server_timestamp) ->
       json.object([
         #("type", json.string("pong")),
@@ -293,40 +247,15 @@ pub fn encode_server_message(msg: ServerMessage) -> String {
   |> json.to_string
 }
 
-fn encode_destroy_reason(reason: DestroyReason) -> json.Json {
-  case reason {
-    HitEnemy(enemy_id) -> {
-      let enemy.Id(eid) = enemy_id
-      json.object([
-        #("type", json.string("hit_enemy")),
-        #("enemy_id", json.int(eid)),
-      ])
-    }
-    HitPlayer(player_id) -> {
-      let player.Id(pid) = player_id
-      json.object([
-        #("type", json.string("hit_player")),
-        #("player_id", json.int(pid)),
-      ])
-    }
-    Expired -> json.object([#("type", json.string("expired"))])
-  }
-}
-
 /// Decode a ServerMessage from JSON string.
 pub fn decode_server_message(data: String) -> Result(ServerMessage, String) {
   let decoder = {
     use msg_type <- decode.field("type", decode.string)
     case msg_type {
       "room_joined" -> {
-        use room_id <- decode.field("room_id", decode.int)
         use player_id <- decode.field("player_id", decode.int)
         use players <- decode.field("players", decode.list(player.decoder()))
-        decode.success(RoomJoined(
-          room.Id(room_id),
-          player.Id(player_id),
-          players,
-        ))
+        decode.success(RoomJoined(player.Id(player_id), players))
       }
       "player_joined" -> {
         use player_state <- decode.field("player", player.decoder())
@@ -350,28 +279,9 @@ pub fn decode_server_message(data: String) -> Result(ServerMessage, String) {
         use enemies <- decode.field("enemies", decode.list(enemy.decoder()))
         decode.success(GameStateUpdate(tick, players, projectiles, enemies))
       }
-      "projectile_spawned" -> {
-        use proj <- decode.field("projectile", projectile.decoder())
-        decode.success(ProjectileSpawned(proj))
-      }
-      "projectile_destroyed" -> {
-        use id <- decode.field("id", decode.int)
-        use reason <- decode.field("reason", destroy_reason_decoder())
-        decode.success(ProjectileDestroyed(projectile.Id(id), reason))
-      }
-      "enemy_spawned" -> {
-        use enm <- decode.field("enemy", enemy.decoder())
-        decode.success(EnemySpawned(enm))
-      }
-      "enemy_died" -> {
-        use id <- decode.field("id", decode.int)
-        decode.success(EnemyDied(enemy.Id(id)))
-      }
-      "player_damaged" -> {
-        use player_id <- decode.field("player_id", decode.int)
-        use damage <- decode.field("damage", decode.float)
-        use new_health <- decode.field("new_health", decode.float)
-        decode.success(PlayerDamaged(player.Id(player_id), damage, new_health))
+      "game_event" -> {
+        use event <- decode.field("event", game_event.decoder())
+        decode.success(GameEvent(event))
       }
       "pong" -> {
         use client_timestamp <- decode.field("client_timestamp", decode.int)
@@ -392,20 +302,4 @@ pub fn decode_server_message(data: String) -> Result(ServerMessage, String) {
   |> result.map_error(fn(error) {
     "Failed to parse server message" <> string.inspect(error)
   })
-}
-
-fn destroy_reason_decoder() -> decode.Decoder(DestroyReason) {
-  use reason_type <- decode.field("type", decode.string)
-  case reason_type {
-    "hit_enemy" -> {
-      use enemy_id <- decode.field("enemy_id", decode.int)
-      decode.success(HitEnemy(enemy.Id(enemy_id)))
-    }
-    "hit_player" -> {
-      use player_id <- decode.field("player_id", decode.int)
-      decode.success(HitPlayer(player.Id(player_id)))
-    }
-    "expired" -> decode.success(Expired)
-    _ -> decode.failure(Expired, "DestroyReason")
-  }
 }

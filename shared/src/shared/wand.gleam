@@ -16,7 +16,6 @@ import shared/spell
 /// Represents a wand with spell slots
 pub type Wand {
   Wand(
-    name: String,
     slots: iv.Array(option.Option(spell.Spell)),
     max_mana: Float,
     current_mana: Float,
@@ -80,7 +79,6 @@ type CastState {
 
 /// Create a new wand
 pub fn new(
-  name name: String,
   slot_count slot_count: Int,
   max_mana max_mana: Float,
   mana_recharge_rate mana_recharge_rate: Float,
@@ -90,7 +88,6 @@ pub fn new(
   spread spread: Float,
 ) -> Wand {
   Wand(
-    name:,
     slots: iv.repeat(option.None, slot_count),
     max_mana:,
     current_mana: max_mana,
@@ -103,7 +100,7 @@ pub fn new(
 }
 
 /// Create a new wand with random stats (Noita-inspired ranges)
-pub fn new_random(name: String) -> Wand {
+pub fn new_random() -> Wand {
   // Capacity (slots): 2-6
   let slot_count = 2 + int.random(5)
 
@@ -126,7 +123,6 @@ pub fn new_random(name: String) -> Wand {
   let spread = float.random() *. 10.0
 
   new(
-    name:,
     slot_count:,
     max_mana:,
     mana_recharge_rate:,
@@ -850,7 +846,6 @@ pub fn encode(wand: Wand) -> json.Json {
     float.round(duration.to_seconds(wand.recharge_time) *. 1000.0)
 
   json.object([
-    #("name", json.string(wand.name)),
     #("max_mana", json.float(wand.max_mana)),
     #("current_mana", json.float(wand.current_mana)),
     #("mana_recharge_rate", json.float(wand.mana_recharge_rate)),
@@ -864,7 +859,6 @@ pub fn encode(wand: Wand) -> json.Json {
 
 /// Decoder for Wand from JSON
 pub fn decoder() -> decode.Decoder(Wand) {
-  use name <- decode.field("name", decode.string)
   use max_mana <- decode.field("max_mana", decode.float)
   use current_mana <- decode.field("current_mana", decode.float)
   use mana_recharge_rate <- decode.field("mana_recharge_rate", decode.float)
@@ -874,7 +868,6 @@ pub fn decoder() -> decode.Decoder(Wand) {
   use spread <- decode.field("spread", decode.float)
 
   decode.success(Wand(
-    name: name,
     slots: iv.new(),
     // Empty slots for now (TODO: decode spell slots)
     max_mana: max_mana,

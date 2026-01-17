@@ -1,108 +1,125 @@
-/// Main entry point for the Cloudflare Worker.
-/// Handles HTTP requests and routes them appropriately.
-import conversation.{type JsRequest, type JsResponse, Text}
-import gleam/dynamic
-import gleam/http
-import gleam/http/request
-import gleam/http/response
-import gleam/javascript/promise.{type Promise}
-import gleam/option
-import plinth/cloudflare/bindings
-import plinth/cloudflare/durable_object.{type Stub}
-import plinth/cloudflare/worker.{type Context}
+/// Main server entry point using ewe for WebSocket connections
+import ewe
+import gleam/bit_array
+import gleam/erlang/process
+import gleam/otp/actor
+import gleam/otp/factory_supervisor
+import gleam/otp/static_supervisor
+import gleam/otp/supervision
+import logging
+import server/enemy_actor
+import server/player
+import server/projectile_actor
+import server/room
 
-/// Main fetch handler for Cloudflare Workers.
-/// This is the entry point for all incoming HTTP requests.
-pub fn fetch(
-  js_request: JsRequest,
-  env: dynamic.Dynamic,
-  _ctx: Context,
-) -> Promise(JsResponse) {
-  let req = conversation.to_gleam_request(js_request)
+pub fn main() {
+  logging.configure()
+  logging.set_level(logging.Debug)
 
-  case req.method, request.path_segments(req) {
-    // WebSocket upgrade for game connections
-    http.Get, ["ws", room_id] -> handle_websocket(js_request, env, room_id)
+  // Create factory supervisors for all actor types
+  let player_factory_name = process.new_name("player_factory")
+  let player_factory =
+    factory_supervisor.worker_child(player.start)
+    |> factory_supervisor.named(player_factory_name)
+    |> factory_supervisor.supervised()
 
-    // API endpoints
-    http.Get, ["api", "health"] -> handle_health()
-    http.Get, ["api", "rooms"] -> handle_list_rooms()
-    http.Post, ["api", "rooms"] -> handle_create_room()
+  let projectile_factory_name = process.new_name("projectile_factory")
+  let projectile_factory =
+    factory_supervisor.worker_child(projectile_actor.start)
+    |> factory_supervisor.named(projectile_factory_name)
+    |> factory_supervisor.supervised()
 
-    // Default: Not found
-    _, _ -> handle_not_found()
-  }
-}
+  let enemy_factory_name = process.new_name("enemy_factory")
+  let enemy_factory =
+    factory_supervisor.worker_child(enemy_actor.start)
+    |> factory_supervisor.named(enemy_factory_name)
+    |> factory_supervisor.supervised()
 
-/// Handle WebSocket upgrade requests by forwarding to a Durable Object.
-fn handle_websocket(
-  js_request: JsRequest,
-  env: dynamic.Dynamic,
-  room_id: String,
-) -> Promise(JsResponse) {
-  // Get the Durable Object namespace from the environment
-  case bindings.durable_object_namespace(env, "GAME_ROOM") {
-    Ok(namespace) -> {
-      // Create or get the Durable Object ID from the room name
-      let do_id = durable_object.id_from_name(namespace, room_id)
+  // Start the game room actor, passing all factory names
+  let game_room_name = process.new_name("game_room")
+  let room =
+    supervision.worker(fn() {
+      room.start(
+        game_room_name,
+        player_factory_name,
+        projectile_factory_name,
+        enemy_factory_name,
+      )
+    })
 
-      // Get the stub to communicate with the Durable Object
-      let stub = durable_object.get(namespace, do_id, option.None)
+  // Create the ewe WebSocket server
+  let server =
+    ewe.new(fn(request) {
+      ewe.upgrade_websocket(
+        request,
+        on_init: fn(
+          conn: ewe.WebsocketConnection,
+          selector: process.Selector(room.OutgoingMsg),
+        ) {
+          // Create a subject for outgoing messages
+          let self = process.new_subject()
 
-      // Forward the request to the Durable Object
-      // The Durable Object will handle the WebSocket upgrade
-      forward_to_stub(stub, js_request)
-    }
-    Error(_) -> {
-      response.new(500)
-      |> response.set_body(Text("GAME_ROOM binding not found"))
-      |> conversation.to_js_response
-      |> promise.resolve
-    }
-  }
-}
+          // Notify game room of new connection
+          actor.send(
+            process.named_subject(game_room_name),
+            room.ClientConnected(conn, self),
+          )
 
-/// Forward a request to a Durable Object stub.
-fn forward_to_stub(stub: Stub, request: JsRequest) -> Promise(JsResponse) {
-  durable_object.stub_fetch(stub, request)
-}
+          #(self, process.select(selector, self))
+        },
+        handler: fn(conn, user_state, message) {
+          case message {
+            ewe.Binary(data) -> {
+              // Send binary message to game room
+              actor.send(
+                process.named_subject(game_room_name),
+                room.ClientMessage(conn, data),
+              )
+              ewe.websocket_continue(user_state)
+            }
+            ewe.Text(text) -> {
+              // Convert text to binary and send to game room
+              actor.send(
+                process.named_subject(game_room_name),
+                room.ClientMessage(conn, <<text:utf8>>),
+              )
+              ewe.websocket_continue(user_state)
+            }
+            ewe.User(room.SendFrame(data)) -> {
+              // Convert BitArray to String for text frame
+              let assert Ok(text) = bit_array.to_string(data)
+              case ewe.send_text_frame(conn, text) {
+                Ok(_) -> ewe.websocket_continue(user_state)
+                Error(_) -> ewe.websocket_stop_abnormal("Failed to send frame")
+              }
+            }
+            ewe.User(room.Disconnect) -> {
+              ewe.send_close_frame(
+                conn,
+                ewe.NormalClosure("Disconnected by server"),
+              )
+            }
+          }
+        },
+        on_close: fn(conn, _user_state) {
+          actor.send(
+            process.named_subject(game_room_name),
+            room.ClientDisconnected(conn),
+          )
+        },
+      )
+    })
+    |> ewe.listening(8080)
+    |> ewe.supervised()
 
-/// Handle health check endpoint.
-fn handle_health() -> Promise(JsResponse) {
-  response.new(200)
-  |> response.set_header("content-type", "application/json")
-  |> response.set_body(Text("{\"status\":\"ok\"}"))
-  |> conversation.to_js_response
-  |> promise.resolve
-}
+  let assert Ok(_sup_tree) =
+    static_supervisor.new(static_supervisor.OneForOne)
+    |> static_supervisor.add(player_factory)
+    |> static_supervisor.add(projectile_factory)
+    |> static_supervisor.add(enemy_factory)
+    |> static_supervisor.add(room)
+    |> static_supervisor.add(server)
+    |> static_supervisor.start()
 
-/// Handle listing available rooms.
-fn handle_list_rooms() -> Promise(JsResponse) {
-  // For now, return an empty list
-  // In a real implementation, this would query a database or KV store
-  response.new(200)
-  |> response.set_header("content-type", "application/json")
-  |> response.set_body(Text("{\"rooms\":[]}"))
-  |> conversation.to_js_response
-  |> promise.resolve
-}
-
-/// Handle room creation.
-fn handle_create_room() -> Promise(JsResponse) {
-  // For now, return a placeholder response
-  // In a real implementation, this would create a new room entry
-  response.new(201)
-  |> response.set_header("content-type", "application/json")
-  |> response.set_body(Text("{\"room_id\":\"new-room\"}"))
-  |> conversation.to_js_response
-  |> promise.resolve
-}
-
-/// Handle 404 Not Found.
-fn handle_not_found() -> Promise(JsResponse) {
-  response.new(404)
-  |> response.set_header("content-type", "application/json")
-  |> response.set_body(Text("{\"error\":\"Not found\"}"))
-  |> conversation.to_js_response
-  |> promise.resolve
+  process.sleep_forever()
 }

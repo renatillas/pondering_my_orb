@@ -1,10 +1,10 @@
 import gleam/option
 import shared/enemy
-import shared/game_messages
+import shared/game_event
+import shared/game_message
 import shared/health
 import shared/player
 import shared/projectile
-import shared/room
 import vec/vec3
 
 // =============================================================================
@@ -13,60 +13,57 @@ import vec/vec3
 
 pub fn player_input_move_encoding_test() {
   let msg =
-    game_messages.PlayerInput(
+    game_message.PlayerInput(
       tick: 42,
-      action: game_messages.MoveToPosition(vec3.Vec3(10.0, 0.0, 5.0)),
+      action: game_message.MoveToPosition(vec3.Vec3(10.0, 0.0, 5.0)),
     )
 
-  let encoded = game_messages.encode_client_message(msg)
-  assert Ok(msg) == game_messages.decode_client_message(encoded)
+  let encoded = game_message.encode_client_message(msg)
+  assert Ok(msg) == game_message.decode_client_message(encoded)
 }
 
 pub fn player_input_switch_wand_encoding_test() {
   let msg =
-    game_messages.PlayerInput(tick: 10, action: game_messages.SwitchWand(2))
+    game_message.PlayerInput(tick: 10, action: game_message.SwitchWand(2))
 
-  let encoded = game_messages.encode_client_message(msg)
-  assert Ok(msg) == game_messages.decode_client_message(encoded)
+  let encoded = game_message.encode_client_message(msg)
+  assert Ok(msg) == game_message.decode_client_message(encoded)
 }
 
 pub fn player_input_cast_spell_encoding_test() {
   let msg =
-    game_messages.PlayerInput(
+    game_message.PlayerInput(
       tick: 100,
-      action: game_messages.CastSpell(vec3.Vec3(15.0, 0.0, 20.0)),
+      action: game_message.CastSpell(vec3.Vec3(15.0, 0.0, 20.0)),
     )
 
-  let encoded = game_messages.encode_client_message(msg)
-  assert Ok(msg) == game_messages.decode_client_message(encoded)
+  let encoded = game_message.encode_client_message(msg)
+  assert Ok(msg) == game_message.decode_client_message(encoded)
 }
 
 pub fn player_input_none_encoding_test() {
-  let msg = game_messages.PlayerInput(tick: 5, action: game_messages.None)
+  let msg = game_message.PlayerInput(tick: 5, action: game_message.None)
 
-  let encoded = game_messages.encode_client_message(msg)
-  assert Ok(msg) == game_messages.decode_client_message(encoded)
+  let encoded = game_message.encode_client_message(msg)
+  assert Ok(msg) == game_message.decode_client_message(encoded)
 }
 
 pub fn join_room_encoding_test() {
-  let msg = game_messages.JoinRoom("room-1", "TestPlayer")
-
-  let encoded = game_messages.encode_client_message(msg)
-  assert Ok(msg) == game_messages.decode_client_message(encoded)
+  let msg = game_message.JoinRoom("room-1", "TestPlayer")
+  let encoded = game_message.encode_client_message(msg)
+  assert Ok(msg) == game_message.decode_client_message(encoded)
 }
 
 pub fn leave_room_encoding_test() {
-  let msg = game_messages.LeaveRoom
-
-  let encoded = game_messages.encode_client_message(msg)
-  assert Ok(msg) == game_messages.decode_client_message(encoded)
+  let msg = game_message.LeaveRoom
+  let encoded = game_message.encode_client_message(msg)
+  assert Ok(msg) == game_message.decode_client_message(encoded)
 }
 
 pub fn player_update_legacy_encoding_test() {
-  let msg = game_messages.PlayerUpdate(vec3.Vec3(5.0, 1.0, 10.0))
-
-  let encoded = game_messages.encode_client_message(msg)
-  assert Ok(msg) == game_messages.decode_client_message(encoded)
+  let msg = game_message.PlayerUpdate(vec3.Vec3(5.0, 1.0, 10.0))
+  let encoded = game_message.encode_client_message(msg)
+  assert Ok(msg) == game_message.decode_client_message(encoded)
 }
 
 // =============================================================================
@@ -87,76 +84,82 @@ pub fn game_state_update_encoding_test() {
     )
 
   let msg =
-    game_messages.GameStateUpdate(
+    game_message.GameStateUpdate(
       tick: 123,
       players: [test_player],
       projectiles: [],
       enemies: [test_enemy],
     )
 
-  let encoded = game_messages.encode_server_message(msg)
-  assert Ok(msg) == game_messages.decode_server_message(encoded)
+  let encoded = game_message.encode_server_message(msg)
+  assert Ok(msg) == game_message.decode_server_message(encoded)
 }
 
 pub fn enemy_spawned_encoding_test() {
   let test_enemy =
     enemy.Enemy(
       id: enemy.Id(5),
-      enemy_type: enemy.Zombie,
       position: vec3.Vec3(5.0, 0.0, 5.0),
       velocity: vec3.Vec3(1.0, 0.0, 1.0),
       health: health.new(100.0),
       target_player: option.Some(player.Id(1)),
+      enemy_type: enemy.Zombie,
     )
 
-  let msg = game_messages.EnemySpawned(test_enemy)
+  let event = game_event.EnemySpawned(test_enemy)
+  let msg = game_message.GameEvent(event)
 
-  let encoded = game_messages.encode_server_message(msg)
-  assert Ok(msg) == game_messages.decode_server_message(encoded)
+  let encoded = game_message.encode_server_message(msg)
+  assert Ok(msg) == game_message.decode_server_message(encoded)
 }
 
 pub fn enemy_died_encoding_test() {
-  let msg = game_messages.EnemyDied(enemy.Id(10))
+  let event = game_event.EnemyDied(enemy.Id(10))
+  let msg = game_message.GameEvent(event)
 
-  let encoded = game_messages.encode_server_message(msg)
-  assert Ok(msg) == game_messages.decode_server_message(encoded)
+  let encoded = game_message.encode_server_message(msg)
+  assert Ok(msg) == game_message.decode_server_message(encoded)
 }
 
 pub fn player_damaged_encoding_test() {
-  let msg = game_messages.PlayerDamaged(player.Id(2), 25.0, 75.0)
+  let event = game_event.PlayerDamaged(player.Id(2), 25.0, 75.0)
+  let msg = game_message.GameEvent(event)
 
-  let encoded = game_messages.encode_server_message(msg)
-  assert Ok(msg) == game_messages.decode_server_message(encoded)
+  let encoded = game_message.encode_server_message(msg)
+  assert Ok(msg) == game_message.decode_server_message(encoded)
 }
 
 pub fn projectile_destroyed_hit_enemy_test() {
-  let msg =
-    game_messages.ProjectileDestroyed(
+  let event =
+    game_event.ProjectileDestroyed(
       projectile.Id(1),
-      game_messages.HitEnemy(enemy.Id(5)),
+      game_event.HitEnemy(enemy.Id(5)),
     )
+  let msg = game_message.GameEvent(event)
 
-  let encoded = game_messages.encode_server_message(msg)
-  assert Ok(msg) == game_messages.decode_server_message(encoded)
+  let encoded = game_message.encode_server_message(msg)
+  assert Ok(msg) == game_message.decode_server_message(encoded)
 }
 
 pub fn projectile_destroyed_expired_test() {
-  let msg =
-    game_messages.ProjectileDestroyed(projectile.Id(2), game_messages.Expired)
+  let event =
+    game_event.ProjectileDestroyed(projectile.Id(2), game_event.Expired)
+  let msg = game_message.GameEvent(event)
 
-  let encoded = game_messages.encode_server_message(msg)
-  assert Ok(msg) == game_messages.decode_server_message(encoded)
+  let encoded = game_message.encode_server_message(msg)
+  assert Ok(msg) == game_message.decode_server_message(encoded)
 }
 
 pub fn projectile_destroyed_hit_player_test() {
-  let msg =
-    game_messages.ProjectileDestroyed(
+  let event =
+    game_event.ProjectileDestroyed(
       projectile.Id(3),
-      game_messages.HitPlayer(player.Id(1)),
+      game_event.HitPlayer(player.Id(1)),
     )
+  let msg = game_message.GameEvent(event)
 
-  let encoded = game_messages.encode_server_message(msg)
-  assert Ok(msg) == game_messages.decode_server_message(encoded)
+  let encoded = game_message.encode_server_message(msg)
+  assert Ok(msg) == game_message.decode_server_message(encoded)
 }
 
 pub fn room_joined_encoding_test() {
@@ -165,32 +168,32 @@ pub fn room_joined_encoding_test() {
     player.new(player.Id(2), "Player2", vec3.Vec3(5.0, 0.0, 5.0)),
   ]
 
-  let msg = game_messages.RoomJoined(room.Id(1), player.Id(1), test_players)
+  let msg = game_message.RoomJoined(player.Id(1), test_players)
 
-  let encoded = game_messages.encode_server_message(msg)
-  assert Ok(msg) == game_messages.decode_server_message(encoded)
+  let encoded = game_message.encode_server_message(msg)
+  assert Ok(msg) == game_message.decode_server_message(encoded)
 }
 
 pub fn player_joined_encoding_test() {
   let test_player =
     player.new(player.Id(3), "NewPlayer", vec3.Vec3(2.0, 0.0, 3.0))
 
-  let msg = game_messages.PlayerJoined(test_player)
+  let msg = game_message.PlayerJoined(test_player)
 
-  let encoded = game_messages.encode_server_message(msg)
-  assert Ok(msg) == game_messages.decode_server_message(encoded)
+  let encoded = game_message.encode_server_message(msg)
+  assert Ok(msg) == game_message.decode_server_message(encoded)
 }
 
 pub fn player_left_encoding_test() {
-  let msg = game_messages.PlayerLeft(player.Id(5))
+  let msg = game_message.PlayerLeft(player.Id(5))
 
-  let encoded = game_messages.encode_server_message(msg)
-  assert Ok(msg) == game_messages.decode_server_message(encoded)
+  let encoded = game_message.encode_server_message(msg)
+  assert Ok(msg) == game_message.decode_server_message(encoded)
 }
 
 pub fn error_encoding_test() {
-  let msg = game_messages.Error("Something went wrong")
+  let msg = game_message.Error("Something went wrong")
 
-  let encoded = game_messages.encode_server_message(msg)
-  assert Ok(msg) == game_messages.decode_server_message(encoded)
+  let encoded = game_message.encode_server_message(msg)
+  assert Ok(msg) == game_message.decode_server_message(encoded)
 }

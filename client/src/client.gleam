@@ -48,8 +48,7 @@ pub fn init(
   let connect_effect =
     effect.dispatch(
       NetworkMsg(network.Connect(
-        server_url: "ws://localhost:8787",
-        room_id: "test-room",
+        server_url: "ws://localhost:8080",
         player_name: "LocalPlayer",
       )),
     )

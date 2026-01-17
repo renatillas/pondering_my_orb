@@ -18,7 +18,6 @@ pub fn spark_with_trigger_has_payload_test() {
 
   let test_wand =
     wand.Wand(
-      name: "Test Wand",
       slots:,
       max_mana: 100.0,
       current_mana: 100.0,
@@ -62,7 +61,6 @@ pub fn add_trigger_modifier_adds_trigger_test() {
 
   let test_wand =
     wand.Wand(
-      name: "Test Wand",
       slots:,
       max_mana: 100.0,
       current_mana: 100.0,
@@ -104,7 +102,6 @@ pub fn triggered_projectile_structure_test() {
 
   let test_wand =
     wand.Wand(
-      name: "Test Wand",
       slots:,
       max_mana: 100.0,
       current_mana: 100.0,
@@ -148,7 +145,6 @@ pub fn trigger_without_payload_doesnt_crash_test() {
 
   let test_wand =
     wand.Wand(
-      name: "Test Wand",
       slots:,
       max_mana: 100.0,
       current_mana: 100.0,
@@ -192,7 +188,6 @@ pub fn trigger_consumes_payload_spell_test() {
 
   let test_wand =
     wand.Wand(
-      name: "Test Wand",
       slots:,
       max_mana: 100.0,
       current_mana: 100.0,
@@ -248,7 +243,6 @@ pub fn add_trigger_with_modifiers_test() {
 
   let test_wand =
     wand.Wand(
-      name: "Test Wand",
       slots:,
       max_mana: 100.0,
       current_mana: 100.0,
@@ -295,7 +289,6 @@ pub fn trigger_with_intermediate_modifiers_test() {
 
   let test_wand =
     wand.Wand(
-      name: "Test Wand",
       slots:,
       max_mana: 100.0,
       current_mana: 100.0,
@@ -351,7 +344,6 @@ pub fn trigger_multiple_payload_modifiers_test() {
 
   let test_wand =
     wand.Wand(
-      name: "Test Wand",
       slots:,
       max_mana: 100.0,
       current_mana: 100.0,

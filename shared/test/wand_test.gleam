@@ -52,7 +52,6 @@ pub fn wand_cast_with_rapid_fire_reduces_cast_delay_test() {
 
   let test_wand =
     wand.Wand(
-      name: "Test Wand",
       slots:,
       max_mana: 100.0,
       current_mana: 100.0,
@@ -103,7 +102,6 @@ pub fn final_cooldown_calculation_test() {
 
   let test_wand =
     wand.Wand(
-      name: "Test Wand",
       slots:,
       max_mana: 100.0,
       current_mana: 100.0,
@@ -161,7 +159,6 @@ pub fn subsequent_casts_with_empty_slots_test() {
 
   let test_wand =
     wand.Wand(
-      name: "Test Wand",
       slots:,
       max_mana: 100.0,
       current_mana: 100.0,
@@ -228,7 +225,6 @@ pub fn multiple_rapid_fire_stack_test() {
 
   let test_wand =
     wand.Wand(
-      name: "Test Wand",
       slots:,
       max_mana: 100.0,
       current_mana: 100.0,

@@ -1,5 +1,6 @@
 /// Fixed tick rate scheduler for server-authoritative gameplay.
 /// Runs at 20 Hz (50ms per tick) for deterministic game simulation.
+import gleam/int
 import gleam/time/duration
 import gleam/time/timestamp
 
@@ -17,7 +18,7 @@ pub const tick_duration_ms = 50
 // TYPES
 // =============================================================================
 
-pub type TickScheduler {
+pub opaque type TickScheduler {
   TickScheduler(current_tick: Int, last_tick_time: timestamp.Timestamp)
 }
 
@@ -26,12 +27,12 @@ pub type TickScheduler {
 // =============================================================================
 
 /// Create a new tick scheduler
-pub fn new() -> TickScheduler {
-  TickScheduler(current_tick: 0, last_tick_time: timestamp.system_time())
+pub fn new(now) -> TickScheduler {
+  TickScheduler(current_tick: 0, last_tick_time: now)
 }
 
 /// Advance to the next tick
-pub fn advance_tick(scheduler: TickScheduler) -> TickScheduler {
+pub fn advance(scheduler: TickScheduler) -> TickScheduler {
   TickScheduler(
     current_tick: scheduler.current_tick + 1,
     last_tick_time: timestamp.system_time(),
@@ -39,16 +40,24 @@ pub fn advance_tick(scheduler: TickScheduler) -> TickScheduler {
 }
 
 /// Get the current tick number
-pub fn current_tick(scheduler: TickScheduler) -> Int {
+pub fn current(scheduler: TickScheduler) -> Int {
   scheduler.current_tick
 }
 
 /// Get the tick duration for physics calculations
-pub fn get_delta_time() -> duration.Duration {
-  duration.milliseconds(tick_duration_ms)
+pub fn delta_time(scheduler: TickScheduler) -> duration.Duration {
+  scheduler.last_tick_time
+  |> timestamp.difference(timestamp.system_time())
 }
 
 /// Calculate when the next tick should occur (in milliseconds from now)
-pub fn next_tick_delay_ms() -> Int {
-  tick_duration_ms
+pub fn next(scheduler: TickScheduler, now: timestamp.Timestamp) -> Int {
+  scheduler.last_tick_time
+  |> timestamp.add(duration.milliseconds(tick_duration_ms))
+  |> timestamp.difference(now)
+  |> fn(duration) {
+    let #(seconds, nanoseconds) = duration.to_seconds_and_nanoseconds(duration)
+    { -seconds * 1000 } + { -nanoseconds / 1_000_000 }
+  }
+  |> int.clamp(min: 0, max: tick_duration_ms)
 }

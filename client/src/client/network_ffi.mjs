@@ -15,7 +15,7 @@ let socket = null;
  * @param {string} playerName - Player name
  * @param {function} dispatch - Callback to dispatch Gleam messages
  */
-export function connect(url, roomId, playerName, dispatch) {
+export function connect(url, playerName, dispatch) {
   // Close existing connection if any
   if (socket) {
     socket.close();
@@ -23,6 +23,7 @@ export function connect(url, roomId, playerName, dispatch) {
 
   try {
     socket = new WebSocket(url);
+    console.log(socket)
 
     socket.onopen = () => {
       console.log("[Network] Connected to", url);
@@ -31,7 +32,7 @@ export function connect(url, roomId, playerName, dispatch) {
       // Send join room message
       const joinMsg = {
         type: "join_room",
-        room_id: roomId,
+        room_id: "1", // Default room for now
         player_name: playerName,
       };
       socket.send(JSON.stringify(joinMsg));

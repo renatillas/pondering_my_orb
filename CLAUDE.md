@@ -8,7 +8,7 @@ A Gleam game targeting JavaScript that implements a Noita-inspired spell-casting
 - **Tiramisu** - 3D game engine (Three.js + Rapier3D)
 - **Lustre** - UI framework for HUD/menus
 - **Ensaimada** - Drag-and-drop library for spell management
-- **Cloudflare Workers** - Multiplayer backend with Durable Objects
+- **Erlang/OTP + ewe** - Actor-based multiplayer backend with WebSockets
 
 ## Monorepo Structure
 
@@ -20,11 +20,11 @@ pondering_my_orb/
 │   ├── test/                    # Client tests
 │   ├── assets/                  # Game assets
 │   └── gleam.toml
-├── server/                      # Cloudflare Workers backend
-│   ├── src/server.gleam         # Worker entry point
+├── server/                      # Erlang/OTP backend
+│   ├── src/server.gleam         # Main entry point
 │   ├── src/server/              # Server modules
-│   ├── src/server_ffi.mjs       # Durable Object JS implementation
-│   ├── wrangler.toml            # Cloudflare config
+│   │   ├── effect.gleam         # Effects system
+│   │   └── game_room.gleam      # Game room actor
 │   └── gleam.toml
 ├── shared/                      # Shared types (client + server)
 │   ├── src/shared/              # Shared modules
@@ -37,27 +37,28 @@ pondering_my_orb/
 
 ## Development Commands
 
+Using `just` (justfile):
 ```bash
 # Client (game)
-npm run client:dev              # Run game with hot reload
-npm run client:build            # Build for production
-npm run client:test             # Run client tests
+just dev                        # Run game with hot reload
+just build-client               # Build client
+just test-client                # Run client tests
 
 # Server (multiplayer backend)
-npm run server:dev              # Run local dev server
-npm run server:deploy           # Deploy to Cloudflare Workers
+just server-dev                 # Run server locally
+just server-watch               # Run with auto-restart
 
 # All packages
-npm run build                   # Build all packages
-npm run test                    # Run all tests
-npm run format                  # Format all code
+just build                      # Build all packages
+just test                       # Run all tests
+just format                     # Format all code
 ```
 
 Or run directly in each package:
 ```bash
 cd client && gleam run -m lustre/dev start
 cd client && gleam test
-cd server && wrangler dev
+cd server && gleam run
 cd shared && gleam build
 ```
 
@@ -85,16 +86,105 @@ shared = { path = "../shared" }
 
 ## Server Architecture
 
-The server uses Cloudflare Workers with Durable Objects for real-time multiplayer:
+The server uses Erlang/OTP with ewe for real-time multiplayer:
 
-- **Durable Objects** - One per game room, manages WebSocket connections
-- **WebSockets** - Real-time player state synchronization
+- **Actor-based** - Game room managed by OTP actor (message handler pattern)
+- **WebSockets** - Real-time player state synchronization via ewe
+- **Game Simulation** - Server-authoritative game logic (20Hz tick rate)
 - **Message Protocol** - JSON-encoded ClientMessage/ServerMessage types
 
 Key files:
-- `server/src/server.gleam` - HTTP routing, Durable Object access
-- `server/src/server/game_room.gleam` - Game logic (Gleam types)
-- `server/src/server_ffi.mjs` - Durable Object class (JavaScript)
+- `server/src/server.gleam` - Main entry point, ewe WebSocket server
+- `server/src/server/game_room.gleam` - Game room actor with message handling
+- `server/src/server/game_simulation.gleam` - Server-side game logic (movement, projectiles, collisions)
+- `server/src/server/game_tick.gleam` - Fixed 20Hz tick scheduler
+
+### Actor Pattern
+
+The server follows the OTP actor pattern with gleam/otp/actor:
+
+```gleam
+pub type Msg {
+  Tick
+  ClientConnected(ewe.WebsocketConnection)
+  ClientDisconnected(ewe.WebsocketConnection)
+  ClientMessage(ewe.WebsocketConnection, BitArray)
+}
+
+pub fn start(room_id: room.Id) {
+  actor.new_with_initialiser(1000, fn(self) {
+    let state = State(
+      room_id: room_id,
+      players: dict.new(),
+      game_state: game_state.new(),
+      tick_scheduler: game_tick.new(),
+      self: self,
+    )
+    
+    actor.initialised(state)
+    |> actor.returning(self)
+    |> Ok
+  })
+  |> actor.on_message(handle_message)
+  |> actor.start
+}
+
+fn handle_message(state: State, msg: Msg) -> actor.Next(State, Msg) {
+  case msg {
+    Tick -> {
+      // Run game simulation
+      let #(new_game_state, events) = 
+        game_simulation.tick(state.game_state, state.player_inputs, delta_time)
+      
+      // Broadcast to all players
+      broadcast_game_state_update(state.players, tick, new_game_state)
+      
+      // Schedule next tick
+      process.send_after(state.self, 50, Tick)
+      actor.continue(State(..state, game_state: new_game_state))
+    }
+    ClientMessage(conn, data) -> {
+      // Handle player input, store in buffer for next tick
+      // ...
+    }
+  }
+}
+```
+
+### WebSocket Integration
+
+The ewe server forwards messages to the actor:
+
+```gleam
+ewe.new(fn(request) {
+  ewe.upgrade_websocket(
+    request,
+    on_init: fn(conn, _selector) {
+      actor.send(room_actor, ClientConnected(conn))
+      // ...
+    },
+    handler: fn(conn, user_state, message) {
+      actor.send(room_actor, ClientMessage(conn, data))
+      ewe.websocket_continue(user_state)
+    },
+    on_close: fn(conn, _user_state) {
+      actor.send(room_actor, ClientDisconnected(conn))
+    },
+  )
+})
+|> ewe.listening(8080)
+|> ewe.start()
+```
+
+### Game Simulation
+
+Server-authoritative game loop at 20Hz:
+
+1. Process player inputs (movement, wand switching, spell casting)
+2. Simulate player movement toward targets
+3. Simulate projectile movement and lifetime
+4. Check collisions (projectile vs enemy, enemy vs player)
+5. Broadcast game state and events to all clients
 
 ## Tiramisu Game Architecture
 

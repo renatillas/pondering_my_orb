@@ -86,12 +86,12 @@ dev:
 # Run the server locally
 server-dev:
     @echo "🖥️  Starting server in development mode..."
-    cd server && npx wrangler dev
+    cd server && gleam run
 
-# Deploy server to Cloudflare Workers
-server-deploy:
-    @echo "🚀 Deploying server to Cloudflare Workers..."
-    cd server && wrangler deploy
+# Run the server with auto-restart on file changes
+server-watch:
+    @echo "🖥️  Starting server with auto-restart..."
+    watchexec -w server/src -r "cd server && gleam run"
 
 # Run both client and server in development mode (parallel)
 dev-all:
@@ -169,12 +169,12 @@ info:
     @echo "📦 Packages:"
     @echo "  - shared:  Shared types and game logic"
     @echo "  - client:  Browser game client (Tiramisu + Lustre)"
-    @echo "  - server:  Cloudflare Workers multiplayer backend"
+    @echo "  - server:  Erlang/OTP multiplayer backend"
     @echo ""
     @echo "🔧 Tech Stack:"
     @echo "  - Language: Gleam"
     @echo "  - Client:   Tiramisu (3D), Lustre (UI)"
-    @echo "  - Server:   Cloudflare Workers + Durable Objects"
+    @echo "  - Server:   Erlang/OTP + ewe (WebSockets)"
     @echo ""
     @echo "📝 Common Commands:"
     @echo "  just build     - Build all packages"

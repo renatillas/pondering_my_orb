@@ -18,7 +18,8 @@ import tiramisu/transform
 import vec/vec2.{type Vec2, Vec2}
 import vec/vec3.{type Vec3, Vec3}
 
-import shared/game_messages
+import shared/enemy
+import shared/game_message
 import shared/player
 import shared/projectile
 import shared/vec3 as shared_vec3
@@ -46,17 +47,21 @@ pub type Model {
     other_players: dict.Dict(player.Id, player.Player),
     // Projectiles from server with client-side interpolation
     projectiles: dict.Dict(projectile.Id, ClientProjectile),
+    // Enemies from server
+    enemies: dict.Dict(enemy.Id, enemy.Enemy),
     // Shared rendering resources (created once in init)
     player_geometry: geometry.Geometry,
     player_material: material.Material,
     projectile_geometry: geometry.Geometry,
     projectile_material: material.Material,
+    enemy_geometry: geometry.Geometry,
+    enemy_material: material.Material,
   )
 }
 
 pub type Msg {
   Tick
-  ServerMessageReceived(game_messages.ServerMessage)
+  ServerMessageReceived(game_message.ServerMessage)
 }
 
 // =============================================================================
@@ -104,6 +109,15 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
     |> material.with_emissive_intensity(1.0)
     |> material.build()
 
+  // Enemy rendering resources
+  let assert Ok(enemy_geo) = geometry.box(Vec3(0.8, 1.8, 0.8))
+  let assert Ok(enemy_mat) =
+    material.new()
+    |> material.with_color(0xFF0000)
+    |> material.with_emissive(0xFF0000)
+    |> material.with_emissive_intensity(0.8)
+    |> material.build()
+
   let initial_position = Vec3(0.0, 0.9, 0.0)
   let model =
     Model(
@@ -113,10 +127,13 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
       server_tick: 0,
       other_players: dict.new(),
       projectiles: dict.new(),
+      enemies: dict.new(),
       player_geometry: player_geo,
       player_material: player_mat,
       projectile_geometry: projectile_geo,
       projectile_material: projectile_mat,
+      enemy_geometry: enemy_geo,
+      enemy_material: enemy_mat,
     )
 
   #(model, effect.dispatch(Tick))
@@ -131,7 +148,7 @@ pub fn update(
   msg: Msg,
   ctx: tiramisu.Context,
   effect_mapper: fn(Msg) -> game_msg,
-  send_to_server: fn(game_messages.ClientMessage) -> game_msg,
+  send_to_server: fn(game_message.ClientMessage) -> game_msg,
 ) -> #(Model, effect.Effect(game_msg), option.Option(physics.PhysicsWorld)) {
   case msg {
     Tick -> {
@@ -153,7 +170,7 @@ pub fn update(
 fn tick(
   model: Model,
   ctx: tiramisu.Context,
-  send_to_server: fn(game_messages.ClientMessage) -> game_msg,
+  send_to_server: fn(game_message.ClientMessage) -> game_msg,
 ) -> #(Model, effect.Effect(game_msg)) {
   let dt = duration.to_seconds(ctx.delta_time)
 
@@ -172,9 +189,9 @@ fn tick(
 
       // Send MoveToPosition to server via tagger
       effect.dispatch(
-        send_to_server(game_messages.PlayerInput(
+        send_to_server(game_message.PlayerInput(
           tick: model.server_tick,
-          action: game_messages.MoveToPosition(target),
+          action: game_message.MoveToPosition(target),
         )),
       )
     }
@@ -196,9 +213,9 @@ fn tick(
 
       // Send CastSpell to server via tagger
       effect.dispatch(
-        send_to_server(game_messages.PlayerInput(
+        send_to_server(game_message.PlayerInput(
           tick: model.server_tick,
-          action: game_messages.CastSpell(target),
+          action: game_message.CastSpell(target),
         )),
       )
     }
@@ -276,12 +293,9 @@ fn raycast_to_ground(
 }
 
 /// Handle server messages (dispatched from network module via tagger)
-fn handle_server_message(
-  model: Model,
-  msg: game_messages.ServerMessage,
-) -> Model {
+fn handle_server_message(model: Model, msg: game_message.ServerMessage) -> Model {
   case msg {
-    game_messages.RoomJoined(_room_id, player_id, existing_players) -> {
+    game_message.RoomJoined(player_id, existing_players) -> {
       let player.Id(pid) = player_id
       io.println("🎮 Joined room with player ID: " <> int.to_string(pid))
 
@@ -298,7 +312,26 @@ fn handle_server_message(
       Model(..model, player: updated_player, other_players: other_players)
     }
 
-    game_messages.GameStateUpdate(tick, players, projectiles, _enemies) -> {
+    game_message.PlayerJoined(new_player) -> {
+      let player.Id(pid) = new_player.id
+      io.println("👋 Player joined: " <> int.to_string(pid))
+
+      // Add new player to other_players
+      let new_other_players =
+        dict.insert(model.other_players, new_player.id, new_player)
+      Model(..model, other_players: new_other_players)
+    }
+
+    game_message.PlayerLeft(player_id) -> {
+      let player.Id(pid) = player_id
+      io.println("👋 Player left: " <> int.to_string(pid))
+
+      // Remove player from other_players
+      let new_other_players = dict.delete(model.other_players, player_id)
+      Model(..model, other_players: new_other_players)
+    }
+
+    game_message.GameStateUpdate(tick, players, projectiles, enemies) -> {
       // Update other players from server
       let other_players =
         dict.from_list(
@@ -323,7 +356,7 @@ fn handle_server_message(
                   render_position: existing.render_position,
                 ),
               )
-            // New projectile - initialize render position to server position
+            // New projectile - start at server position
             Error(_) ->
               dict.insert(
                 acc,
@@ -335,6 +368,13 @@ fn handle_server_message(
               )
           }
         })
+
+      // Update enemies from server
+      let enemies_dict =
+        dict.from_list(
+          enemies
+          |> list.map(fn(e) { #(e.id, e) }),
+        )
 
       // Update our player from server (server-authoritative)
       let updated_player = case
@@ -349,6 +389,7 @@ fn handle_server_message(
         server_tick: tick,
         other_players: other_players,
         projectiles: projectiles_dict,
+        enemies: enemies_dict,
         player: updated_player,
       )
     }
@@ -436,10 +477,26 @@ pub fn view(model: Model, _ctx: tiramisu.Context) -> scene.Node {
       )
     })
 
+  // Render enemies
+  let enemy_nodes =
+    dict.to_list(model.enemies)
+    |> list.map(fn(entry) {
+      let #(enemy_id, enemy_data) = entry
+      let enemy.Id(eid) = enemy_id
+      scene.mesh(
+        id: "enemy_" <> int.to_string(eid),
+        geometry: model.enemy_geometry,
+        material: model.enemy_material,
+        transform: transform.at(position: enemy_data.position),
+        physics: option.None,
+      )
+    })
+
   let all_children =
     [camera_node, player_node]
     |> list.append(other_player_nodes)
     |> list.append(projectile_nodes)
+    |> list.append(enemy_nodes)
 
   scene.empty(
     id: "player_root",

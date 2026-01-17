@@ -18,7 +18,6 @@ pub fn rapid_fire_reduces_recharge_test() {
 
   let test_wand =
     wand.Wand(
-      name: "Test Wand",
       slots:,
       max_mana: 100.0,
       current_mana: 100.0,
@@ -70,7 +69,6 @@ pub fn multiple_modifiers_accumulate_recharge_test() {
 
   let test_wand =
     wand.Wand(
-      name: "Test Wand",
       slots:,
       max_mana: 100.0,
       current_mana: 100.0,
@@ -123,7 +121,6 @@ pub fn recharge_multiplier_test() {
 
   let test_wand =
     wand.Wand(
-      name: "Test Wand",
       slots:,
       max_mana: 100.0,
       current_mana: 100.0,

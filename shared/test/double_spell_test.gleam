@@ -19,7 +19,6 @@ pub fn double_spell_casts_two_spells_test() {
 
   let test_wand =
     wand.Wand(
-      name: "Test Wand",
       slots:,
       max_mana: 100.0,
       current_mana: 100.0,
@@ -67,7 +66,6 @@ pub fn double_spell_with_one_spell_test() {
 
   let test_wand =
     wand.Wand(
-      name: "Test Wand",
       slots:,
       max_mana: 100.0,
       current_mana: 100.0,
@@ -116,7 +114,6 @@ pub fn double_spell_wrapping_test() {
 
   let test_wand =
     wand.Wand(
-      name: "Test Wand",
       slots:,
       max_mana: 100.0,
       current_mana: 100.0,
@@ -177,7 +174,6 @@ pub fn multiple_double_spells_test() {
 
   let test_wand =
     wand.Wand(
-      name: "Test Wand",
       slots:,
       max_mana: 100.0,
       current_mana: 100.0,
@@ -229,7 +225,6 @@ pub fn double_spell_with_empty_slot_test() {
 
   let test_wand =
     wand.Wand(
-      name: "Test Wand",
       slots:,
       max_mana: 100.0,
       current_mana: 100.0,
@@ -278,7 +273,6 @@ pub fn double_spell_with_modifier_test() {
 
   let test_wand =
     wand.Wand(
-      name: "Test Wand",
       slots:,
       max_mana: 100.0,
       current_mana: 100.0,
@@ -335,7 +329,6 @@ pub fn double_spell_wrapping_partial_test() {
 
   let test_wand =
     wand.Wand(
-      name: "Test Wand",
       slots:,
       max_mana: 100.0,
       current_mana: 100.0,
