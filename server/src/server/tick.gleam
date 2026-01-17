@@ -39,15 +39,28 @@ pub fn advance(scheduler: TickScheduler) -> TickScheduler {
   )
 }
 
+/// Advance to the next tick with a specific timestamp (prevents drift)
+pub fn advance_with_time(
+  scheduler: TickScheduler,
+  now: timestamp.Timestamp,
+) -> TickScheduler {
+  TickScheduler(current_tick: scheduler.current_tick + 1, last_tick_time: now)
+}
+
+/// Update the last tick time to current time (for finalize)
+pub fn update_time(scheduler: TickScheduler) -> TickScheduler {
+  TickScheduler(..scheduler, last_tick_time: timestamp.system_time())
+}
+
 /// Get the current tick number
 pub fn current(scheduler: TickScheduler) -> Int {
   scheduler.current_tick
 }
 
 /// Get the tick duration for physics calculations
-pub fn delta_time(scheduler: TickScheduler) -> duration.Duration {
-  scheduler.last_tick_time
-  |> timestamp.difference(timestamp.system_time())
+/// Always returns the fixed tick duration (50ms) for deterministic simulation
+pub fn delta_time(_scheduler: TickScheduler) -> duration.Duration {
+  duration.milliseconds(tick_duration_ms)
 }
 
 /// Calculate when the next tick should occur (in milliseconds from now)

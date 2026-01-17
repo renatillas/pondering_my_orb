@@ -23,8 +23,8 @@ import shared/wand
 pub type Msg {
   /// Tick for movement and forwarding to wands
   Tick(delta_time: Duration)
-  /// Move to target position
-  MoveToPosition(target: Vec3(Float))
+  /// WASD movement input
+  Move(w: Bool, a: Bool, s: Bool, d: Bool)
   /// Switch active wand
   SwitchWand(slot: Int)
   /// Cast spell at target using active wand
@@ -175,7 +175,7 @@ fn handle_message(
 ) -> actor.Next(State(room_msg), Msg) {
   case msg {
     Tick(delta_time) -> handle_tick(state, delta_time)
-    MoveToPosition(target) -> handle_move_to_position(state, target)
+    Move(w, a, s, d) -> handle_move(state, w, a, s, d)
     SwitchWand(slot) -> handle_switch_wand(state, slot)
     CastSpell(target) -> handle_cast_spell(state, target)
     WandMessage(slot:, msg:) -> handle_wand_message(state, slot, msg)
@@ -220,20 +220,55 @@ fn handle_tick(
   actor.continue(new_state)
 }
 
-fn handle_move_to_position(
+fn handle_move(
   state: State(room_msg),
-  target: Vec3(Float),
+  w: Bool,
+  a: Bool,
+  s: Bool,
+  d: Bool,
 ) -> actor.Next(State(room_msg), Msg) {
-  let new_movement_state =
-    player.MovingToPosition(target, state.player_state.player.speed)
+  // Convert WASD to forward/right components
+  let forward = case w, s {
+    True, False -> 1.0
+    False, True -> -1.0
+    _, _ -> 0.0
+  }
+
+  let right = case d, a {
+    True, False -> 1.0
+    False, True -> -1.0
+    _, _ -> 0.0
+  }
+
+  // Isometric camera transformation:
+  // Camera is positioned at (+X, +Y, +Z) looking toward origin
+  // Forward (W) = move away from camera = (-X, -Z) direction  
+  // Right (D) = move right on screen = (+X, -Z) direction
+  // Both at 45° angles, so we use 1/sqrt(2) = 0.7071
+  let camera_angle = 0.7071067811865476
+
+  // Transform camera-space input to world-space direction
+  let direction_x = camera_angle *. { right -. forward }
+  let direction_z = 0.0 -. camera_angle *. { forward +. right }
+  let direction = vec3.Vec3(direction_x, 0.0, direction_z)
+
+  // Normalize diagonal movement (so moving diagonally isn't faster)
+  let magnitude = vec3f.length(direction)
+  let velocity = case magnitude >. 0.0 {
+    True -> {
+      let normalized = vec3f.scale(direction, by: 1.0 /. magnitude)
+      vec3f.scale(normalized, by: state.player_state.player.speed)
+    }
+    False -> vec3.Vec3(0.0, 0.0, 0.0)
+  }
+
+  // Update player velocity (server-authoritative)
   let new_player_state =
     PlayerState(
       ..state.player_state,
-      player: player.Player(
-        ..state.player_state.player,
-        movement_state: new_movement_state,
-      ),
+      player: player.Player(..state.player_state.player, velocity: velocity),
     )
+
   let new_state = State(..state, player_state: new_player_state)
   actor.continue(new_state)
 }
@@ -398,27 +433,11 @@ fn set_wand_at_slot(
 fn update_movement(p: player.Player, delta_time: Duration) -> player.Player {
   let dt_seconds = duration.to_seconds(delta_time)
 
-  case p.movement_state {
-    player.Idle -> p
+  // Apply velocity to position (velocity is set by handle_move)
+  let movement = vec3f.scale(p.velocity, by: dt_seconds)
+  let new_position = vec3f.add(p.position, movement)
 
-    player.MovingToPosition(target, speed) -> {
-      let current_pos = p.position
-      let distance = vec3f.distance(current_pos, with: target)
-      let max_movement = speed *. dt_seconds
-
-      case distance <=. 0.1 || max_movement >=. distance {
-        True ->
-          player.Player(..p, position: target, movement_state: player.Idle)
-
-        False -> {
-          let direction = vec3f.direction(current_pos, to: target)
-          let movement_vec = vec3f.scale(direction, by: max_movement)
-          let new_pos = vec3f.add(current_pos, movement_vec)
-          player.Player(..p, position: new_pos)
-        }
-      }
-    }
-  }
+  player.Player(..p, position: new_position)
 }
 
 /// Convert PlayerState to shared/player.Player for network transmission

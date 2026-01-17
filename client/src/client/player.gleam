@@ -49,6 +49,8 @@ pub type Model {
     projectiles: dict.Dict(projectile.Id, ClientProjectile),
     // Enemies from server
     enemies: dict.Dict(enemy.Id, enemy.Enemy),
+    // Last sent input state (for change detection)
+    last_input: #(Bool, Bool, Bool, Bool),
     // Shared rendering resources (created once in init)
     player_geometry: geometry.Geometry,
     player_material: material.Material,
@@ -128,6 +130,7 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
       other_players: dict.new(),
       projectiles: dict.new(),
       enemies: dict.new(),
+      last_input: #(False, False, False, False),
       player_geometry: player_geo,
       player_material: player_mat,
       projectile_geometry: projectile_geo,
@@ -174,28 +177,31 @@ fn tick(
 ) -> #(Model, effect.Effect(game_msg)) {
   let dt = duration.to_seconds(ctx.delta_time)
 
-  // Handle click-to-move (left-click held)
-  let move_effect = case input.is_left_button_pressed(ctx.input) {
-    True -> {
-      // Raycast from mouse to ground plane to get world position
-      let mouse_pos = input.mouse_position(ctx.input)
-      let target =
-        raycast_to_ground(
-          mouse_pos,
-          model.zoom,
-          model.player.position,
-          ctx.canvas_size,
-        )
+  // Handle WASD movement input
+  let w = input.is_key_pressed(ctx.input, input.KeyW)
+  let a = input.is_key_pressed(ctx.input, input.KeyA)
+  let s = input.is_key_pressed(ctx.input, input.KeyS)
+  let d = input.is_key_pressed(ctx.input, input.KeyD)
 
-      // Send MoveToPosition to server via tagger
-      effect.dispatch(
-        send_to_server(game_message.PlayerInput(
-          tick: model.server_tick,
-          action: game_message.MoveToPosition(target),
-        )),
+  // Only send input when it CHANGES (bandwidth optimization)
+  let current_input = #(w, a, s, d)
+  let #(move_effect, new_last_input) = case current_input == model.last_input {
+    True -> {
+      // Input hasn't changed - don't send
+      #(effect.none(), model.last_input)
+    }
+    False -> {
+      // Input changed - send to server and update last_input
+      #(
+        effect.dispatch(
+          send_to_server(game_message.PlayerInput(
+            tick: model.server_tick,
+            action: game_message.Move(w, a, s, d),
+          )),
+        ),
+        current_input,
       )
     }
-    False -> effect.none()
   }
 
   // Handle spell casting (right-click)
@@ -255,6 +261,7 @@ fn tick(
       zoom: new_zoom,
       render_position: new_render_position,
       projectiles: new_projectiles,
+      last_input: new_last_input,
     )
 
   #(new_model, effect.batch([move_effect, cast_effect]))

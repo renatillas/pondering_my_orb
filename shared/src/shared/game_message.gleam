@@ -24,8 +24,6 @@ pub type ClientMessage {
   LeaveRoom
   /// Player input for server-authoritative gameplay
   PlayerInput(tick: Int, action: PlayerAction)
-  /// Legacy: Update the player's position (will be deprecated)
-  PlayerUpdate(position: vec3.Vec3(Float))
   /// Ping the server to measure latency.
   Ping(timestamp: timestamp.Timestamp)
 }
@@ -34,8 +32,8 @@ pub type ClientMessage {
 pub type PlayerAction {
   /// No action this tick
   None
-  /// Move to a position (click-to-move)
-  MoveToPosition(target: vec3.Vec3(Float))
+  /// WASD movement input
+  Move(w: Bool, a: Bool, s: Bool, d: Bool)
   /// Switch active wand slot (0-3 for hotkeys 1-4)
   SwitchWand(slot: Int)
   /// Cast spell at target position
@@ -58,11 +56,6 @@ pub fn encode_client_message(msg: ClientMessage) -> String {
         #("tick", json.int(tick)),
         #("action", encode_player_action(action)),
       ])
-    PlayerUpdate(position) ->
-      json.object([
-        #("type", json.string("player_update")),
-        #("position", shared_vec3.encode(position)),
-      ])
     Ping(timestamp) ->
       json.object([
         #("type", json.string("ping")),
@@ -78,10 +71,13 @@ pub fn encode_client_message(msg: ClientMessage) -> String {
 fn encode_player_action(action: PlayerAction) -> json.Json {
   case action {
     None -> json.object([#("type", json.string("none"))])
-    MoveToPosition(target) ->
+    Move(w, a, s, d) ->
       json.object([
-        #("type", json.string("move_to_position")),
-        #("target", shared_vec3.encode(target)),
+        #("type", json.string("move")),
+        #("w", json.bool(w)),
+        #("a", json.bool(a)),
+        #("s", json.bool(s)),
+        #("d", json.bool(d)),
       ])
     SwitchWand(slot) ->
       json.object([
@@ -112,10 +108,6 @@ pub fn decode_client_message(data: String) -> Result(ClientMessage, String) {
         use action <- decode.field("action", player_action_decoder())
         decode.success(PlayerInput(tick, action))
       }
-      "player_update" -> {
-        use position <- decode.field("position", shared_vec3.decoder())
-        decode.success(PlayerUpdate(position))
-      }
       "ping" -> {
         use timestamp <- decode.field("timestamp", decode.int)
         decode.success(Ping(timestamp.from_unix_seconds(timestamp)))
@@ -133,9 +125,12 @@ fn player_action_decoder() -> decode.Decoder(PlayerAction) {
   use action_type <- decode.field("type", decode.string)
   case action_type {
     "none" -> decode.success(None)
-    "move_to_position" -> {
-      use target <- decode.field("target", shared_vec3.decoder())
-      decode.success(MoveToPosition(target))
+    "move" -> {
+      use w <- decode.field("w", decode.bool)
+      use a <- decode.field("a", decode.bool)
+      use s <- decode.field("s", decode.bool)
+      use d <- decode.field("d", decode.bool)
+      decode.success(Move(w, a, s, d))
     }
     "switch_wand" -> {
       use slot <- decode.field("slot", decode.int)

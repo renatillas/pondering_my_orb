@@ -15,7 +15,7 @@ pub fn player_input_move_encoding_test() {
   let msg =
     game_message.PlayerInput(
       tick: 42,
-      action: game_message.MoveToPosition(vec3.Vec3(10.0, 0.0, 5.0)),
+      action: game_message.Move(w: True, a: False, s: False, d: True),
     )
 
   let encoded = game_message.encode_client_message(msg)
@@ -56,12 +56,6 @@ pub fn join_room_encoding_test() {
 
 pub fn leave_room_encoding_test() {
   let msg = game_message.LeaveRoom
-  let encoded = game_message.encode_client_message(msg)
-  assert Ok(msg) == game_message.decode_client_message(encoded)
-}
-
-pub fn player_update_legacy_encoding_test() {
-  let msg = game_message.PlayerUpdate(vec3.Vec3(5.0, 1.0, 10.0))
   let encoded = game_message.encode_client_message(msg)
   assert Ok(msg) == game_message.decode_client_message(encoded)
 }

@@ -7,6 +7,7 @@ import gleam/int
 import gleam/list
 import gleam/otp/actor
 import gleam/otp/factory_supervisor
+import gleam/time/duration
 import gleam/time/timestamp
 import logging.{Info}
 import vec/vec3.{Vec3}
@@ -69,6 +70,8 @@ pub type State {
     // Tick collection state (ephemeral - only during tick processing)
     tick_state: TickState,
     tick_scheduler: tick.TickScheduler,
+    // Debug: Last tick timestamp for measuring actual tick intervals
+    last_tick_timestamp: timestamp.Timestamp,
     // Factory supervisors for spawning actors
     player_factory: factory_supervisor.Supervisor(
       player_actor.SpawnArguments(Msg),
@@ -179,6 +182,7 @@ pub fn start(
         last_player_positions: dict.new(),
         tick_state: Idle,
         tick_scheduler: tick.new(timestamp.system_time()),
+        last_tick_timestamp: timestamp.system_time(),
         player_factory: player_factory,
         projectile_factory: projectile_factory,
         enemy_factory: enemy_factory,
@@ -306,119 +310,136 @@ fn finalize_tick(
       player_state.position
     })
 
+  // Update tick scheduler to current time for accurate next tick calculation
+  let updated_tick_scheduler = tick.update_time(state.tick_scheduler)
+
   // Reset collection state (all ephemeral data is discarded)
   let new_state =
-    State(..state, tick_state: Idle, last_player_positions: player_positions)
+    State(
+      ..state,
+      tick_state: Idle,
+      last_player_positions: player_positions,
+      tick_scheduler: updated_tick_scheduler,
+    )
 
-  // Check if all clients disconnected
-  case dict.is_empty(new_state.player_actors) {
+  // Next tick is already scheduled in handle_tick (maintains 20 Hz)
+  // We don't schedule here to avoid double-scheduling
+  actor.continue(new_state)
+}
+
+fn handle_tick(state: State) -> actor.Next(State, Msg) {
+  // Stop ticking if all players disconnected
+  case dict.is_empty(state.player_actors) {
     True -> {
-      logging.log(logging.Info, "All clients disconnected, pausing tick loop")
-      // Don't schedule next tick - actors remain alive but tick loop stops
-      actor.continue(new_state)
+      logging.log(logging.Info, "No players connected, stopping tick loop")
+      actor.continue(state)
     }
     False -> {
-      // Schedule next tick
-      process.send_after(
-        new_state.self,
-        tick.next(state.tick_scheduler, timestamp.system_time()),
-        Tick,
-      )
+      // Check if already collecting (shouldn't happen, but guard against it)
+      case state.tick_state {
+        Collecting(..) -> {
+          logging.log(
+            logging.Warning,
+            "Tick received while already collecting - ignoring",
+          )
+          actor.continue(state)
+        }
 
-      actor.continue(new_state)
+        Idle -> handle_tick_idle(state)
+      }
     }
   }
 }
 
-fn handle_tick(state: State) -> actor.Next(State, Msg) {
-  // Check if already collecting (shouldn't happen, but guard against it)
-  case state.tick_state {
-    Collecting(..) -> {
-      logging.log(
-        logging.Warning,
-        "Tick received while already collecting - ignoring",
-      )
-      actor.continue(state)
-    }
+fn handle_tick_idle(state: State) -> actor.Next(State, Msg) {
+  // Capture current time ONCE for all tick calculations (prevents drift)
+  let now = timestamp.system_time()
 
-    Idle -> {
-      // Advance the tick counter
-      let new_scheduler = tick.advance(state.tick_scheduler)
-      let current_tick = tick.current(new_scheduler)
+  // DEBUG: Measure actual time between ticks
+  let time_since_last_tick =
+    state.last_tick_timestamp
+    |> timestamp.difference(now)
+  let #(seconds, nanoseconds) =
+    time_since_last_tick
+    |> duration.to_seconds_and_nanoseconds()
+  let milliseconds = { -seconds * 1000 } + { -nanoseconds / 1_000_000 }
 
-      // Get delta time for physics
-      let delta_time = tick.delta_time(state.tick_scheduler)
+  // Advance the tick counter (use the captured 'now' timestamp)
+  let tick_scheduler = tick.advance_with_time(state.tick_scheduler, now)
+  let current_tick = tick.current(tick_scheduler)
 
-      // Count players to expect responses from
-      let expected_player_count = dict.size(state.player_actors)
+  logging.log(
+    logging.Info,
+    "⏱️  Tick "
+      <> int.to_string(current_tick)
+      <> " started ("
+      <> int.to_string(milliseconds)
+      <> "ms since last tick)",
+  )
 
-      // Start collection phase (empty collections for all actor types)
-      let new_tick_state =
-        Collecting(
-          expected_player_count: expected_player_count,
-          player_responses: dict.new(),
-          projectile_responses: dict.new(),
-          enemy_responses: dict.new(),
-          tick_number: current_tick,
-        )
+  // Get delta time for physics
+  let delta_time = tick.delta_time(state.tick_scheduler)
 
-      // Update state with new scheduler and collection phase
-      let state =
-        State(
-          ..state,
-          tick_scheduler: new_scheduler,
-          tick_state: new_tick_state,
-        )
+  // Count players to expect responses from
+  let expected_player_count = dict.size(state.player_actors)
 
-      let Collecting(
-        expected_player_count:,
-        tick_number:,
-        player_responses: _,
-        projectile_responses: _,
-        enemy_responses: _,
-      ) = new_tick_state
-      logging.log(
-        logging.Debug,
-        "Tick "
-          <> int.to_string(tick_number)
-          <> ": Started collection. Expecting "
-          <> int.to_string(expected_player_count)
-          <> " player responses",
-      )
+  // Start collection phase (empty collections for all actor types)
+  let tick_state =
+    Collecting(
+      expected_player_count: expected_player_count,
+      player_responses: dict.new(),
+      projectile_responses: dict.new(),
+      enemy_responses: dict.new(),
+      tick_number: current_tick,
+    )
 
-      // Send Tick to all player actors (they will respond with StateChanged)
-      let _nil =
-        dict.each(state.player_actors, fn(_player_id, player_actor) {
-          process.send(player_actor, player_actor.Tick(delta_time))
-        })
+  // Update state with new scheduler, collection phase, and timestamp
+  let state =
+    State(..state, tick_scheduler:, tick_state:, last_tick_timestamp: now)
 
-      // Send Tick to all projectile actors (they will respond with StateChanged or Expired)
-      let _nil =
-        dict.each(state.projectile_actors, fn(_proj_id, projectile_actor) {
-          process.send(projectile_actor, projectile_actor.Tick(delta_time))
-        })
+  let Collecting(
+    expected_player_count:,
+    tick_number:,
+    player_responses: _,
+    projectile_responses: _,
+    enemy_responses: _,
+  ) = tick_state
+  logging.log(
+    logging.Debug,
+    "Tick "
+      <> int.to_string(tick_number)
+      <> ": Started collection. Expecting "
+      <> int.to_string(expected_player_count)
+      <> " player responses",
+  )
 
-      // Send Tick to all enemy actors with player positions from previous tick
-      // This is acceptable for AI - enemies don't need frame-perfect player positions
-      // Using cached positions avoids race conditions during collection phase
-      let _nil =
-        dict.each(state.enemy_actors, fn(_enemy_id, enemy_actor) {
-          process.send(
-            enemy_actor,
-            enemy_actor.Tick(delta_time, state.last_player_positions),
-          )
-        })
+  // Send Tick to all player actors (they will respond with StateChanged)
+  dict.each(state.player_actors, fn(_player_id, player_actor) {
+    process.send(player_actor, player_actor.Tick(delta_time))
+  })
 
-      // Schedule timeout - finalize after 50ms even if not all players responded
-      process.send_after(
-        state.self,
-        tick.next(state.tick_scheduler, timestamp.system_time()),
-        FinalizeTick,
-      )
+  // Send Tick to all projectile actors (they will respond with StateChanged or Expired)
+  dict.each(state.projectile_actors, fn(_proj_id, projectile_actor) {
+    process.send(projectile_actor, projectile_actor.Tick(delta_time))
+  })
 
-      actor.continue(state)
-    }
-  }
+  // Send Tick to all enemy actors with player positions from previous tick
+  // This is acceptable for AI - enemies don't need frame-perfect player positions
+  // Using cached positions avoids race conditions during collection phase
+  dict.each(state.enemy_actors, fn(_enemy_id, enemy_actor) {
+    process.send(
+      enemy_actor,
+      enemy_actor.Tick(delta_time, state.last_player_positions),
+    )
+  })
+
+  // Schedule timeout - finalize after 50ms (use the updated tick_scheduler and captured 'now')
+  process.send_after(state.self, tick.next(tick_scheduler, now), FinalizeTick)
+
+  // Schedule next tick for 50ms from now (use same timestamp for precision)
+  process.send_after(state.self, tick.next(tick_scheduler, now), Tick)
+
+  actor.continue(state)
 }
 
 /// Start the tick loop when the first player joins
@@ -795,9 +816,6 @@ fn handle_message_internal(
       handle_player_input(state, conn, action)
     }
 
-    game_message.PlayerUpdate(position) ->
-      handle_player_update(state, conn, position)
-
     game_message.Ping(timestamp) -> handle_ping(state, conn, timestamp)
   }
 }
@@ -843,8 +861,8 @@ fn route_action_to_player(
   case action {
     game_message.None -> Nil
 
-    game_message.MoveToPosition(target) -> {
-      process.send(player_actor, player_actor.MoveToPosition(target))
+    game_message.Move(w, a, s, d) -> {
+      process.send(player_actor, player_actor.Move(w, a, s, d))
     }
 
     game_message.SwitchWand(slot) -> {
@@ -1030,26 +1048,6 @@ fn handle_leave(
 // =============================================================================
 // PLAYER UPDATE HANDLING
 // =============================================================================
-
-fn handle_player_update(
-  state: State,
-  connection: ewe.WebsocketConnection,
-  position: vec3.Vec3(Float),
-) -> #(State, List(#(ewe.WebsocketConnection, game_message.ServerMessage))) {
-  // Route to PlayerActor
-  case dict.get(state.connection_to_player, connection) {
-    Ok(player_id) -> {
-      case dict.get(state.player_actors, player_id) {
-        Ok(player_actor) -> {
-          process.send(player_actor, player_actor.MoveToPosition(position))
-          #(state, [])
-        }
-        Error(_) -> #(state, [])
-      }
-    }
-    Error(_) -> #(state, [])
-  }
-}
 
 fn handle_ping(
   state: State,

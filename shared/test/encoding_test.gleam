@@ -36,16 +36,6 @@ pub fn player_with_damaged_health_test() {
   assert Ok(player) == json.parse(json_string, player.decoder())
 }
 
-pub fn player_movement_state_moving_test() {
-  let player =
-    player.new(player.Id(4), "MovingPlayer", vec3.Vec3(0.0, 0.0, 0.0))
-    |> player.move_to_position(vec3.Vec3(10.0, 0.0, 10.0), 5.0)
-
-  let json_encoded = player.encode(player)
-  let json_string = json.to_string(json_encoded)
-  assert Ok(player) == json.parse(json_string, player.decoder())
-}
-
 // =============================================================================
 // ENEMY ENCODING/DECODING TESTS
 // =============================================================================
