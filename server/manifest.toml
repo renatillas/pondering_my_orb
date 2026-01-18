@@ -5,6 +5,7 @@ packages = [
   { name = "compresso", version = "0.1.0", build_tools = ["gleam"], requirements = ["exception", "gleam_erlang", "gleam_stdlib", "gleam_yielder", "logging"], otp_app = "compresso", source = "hex", outer_checksum = "8BE29A1EDA42F70826ED148EAE40C46BB3FC18E78FE472663DB01DD4A38172D4" },
   { name = "ewe", version = "2.1.1", build_tools = ["gleam"], requirements = ["compresso", "gleam_erlang", "gleam_http", "gleam_otp", "gleam_stdlib", "glisten", "logging", "websocks"], otp_app = "ewe", source = "hex", outer_checksum = "31F76DAC12DDEDD552107144961795619AA374B243FF29EAF20DD2B1FAA50BF4" },
   { name = "exception", version = "2.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "exception", source = "hex", outer_checksum = "329D269D5C2A314F7364BD2711372B6F2C58FA6F39981572E5CA68624D291F8C" },
+  { name = "expresso", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "spatial", "vec"], source = "local", path = "../../expresso" },
   { name = "filepath", version = "1.1.2", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "filepath", source = "hex", outer_checksum = "B06A9AF0BF10E51401D64B98E4B627F1D2E48C154967DA7AF4D0914780A6D40A" },
   { name = "glam", version = "2.0.3", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "glam", source = "hex", outer_checksum = "237C2CE218A2A0A5D46D625F8EF5B78F964BC91018B78D692B17E1AB84295229" },
   { name = "gleam_community_maths", version = "2.0.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "gleam_yielder"], otp_app = "gleam_community_maths", source = "hex", outer_checksum = "C9EFF6BCF3C9D113EF9837655B0128CA8CAC295131E9F3468F93C1D78EC3E013" },
@@ -29,7 +30,7 @@ packages = [
   { name = "quaterni", version = "1.0.1", build_tools = ["gleam"], requirements = ["gleam_community_maths", "gleam_stdlib", "vec"], otp_app = "quaterni", source = "hex", outer_checksum = "14351B0EBF8C01394442E63E67D1A4B94D1B93C32FE14F910C455D0DD549EA60" },
   { name = "shared", version = "1.0.0", build_tools = ["gleam"], requirements = ["gleam_community_maths", "gleam_json", "gleam_stdlib", "gleam_time", "iv", "tote", "vec"], source = "local", path = "../shared" },
   { name = "simplifile", version = "2.3.2", build_tools = ["gleam"], requirements = ["filepath", "gleam_stdlib"], otp_app = "simplifile", source = "hex", outer_checksum = "E049B4DACD4D206D87843BCF4C775A50AE0F50A52031A2FFB40C9ED07D6EC70A" },
-  { name = "spatial", version = "1.0.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "quaterni", "vec"], otp_app = "spatial", source = "hex", outer_checksum = "FDE828EB956BE621C520675DF43126D2E8FAC87F4E6D05312AC7BD9E7B5D13F4" },
+  { name = "spatial", version = "1.0.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "quaterni", "vec"], source = "local", path = "../../spatial" },
   { name = "spectator", version = "2.0.1", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_http", "gleam_json", "gleam_otp", "gleam_stdlib", "logging", "lustre", "mist", "pprint", "simplifile"], otp_app = "spectator", source = "hex", outer_checksum = "8B576A8F5D65003AE10D7AA9C5239E65463CA2292A4E4BDFBA1600A6B2EF5F9F" },
   { name = "telemetry", version = "1.3.0", build_tools = ["rebar3"], requirements = [], otp_app = "telemetry", source = "hex", outer_checksum = "7015FC8919DBE63764F4B4B87A95B7C0996BD539E0D499BE6EC9D7F3875B79E6" },
   { name = "tote", version = "1.0.2", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "tote", source = "hex", outer_checksum = "A249892E26A53C668897F8D47845B0007EEE07707A1A03437487F0CD5A452CA5" },
@@ -39,10 +40,12 @@ packages = [
 
 [requirements]
 ewe = { version = ">= 2.1.0 and < 3.0.0" }
+expresso = { path = "../../expresso" }
+gleam_community_maths = { version = ">= 2.0.0 and < 3.0.0" }
 gleam_erlang = { version = ">= 1.0.0 and < 2.0.0" }
 gleam_json = { version = ">= 3.0.0 and < 4.0.0" }
 gleam_otp = { version = ">= 1.1.0 and < 2.0.0" }
-gleam_stdlib = { version = ">= 0.34.0 and < 2.0.0" }
+gleam_stdlib = { version = ">= 0.68.1 and < 1.0.0" }
 gleam_time = { version = ">= 1.0.0 and < 2.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
 logging = { version = ">= 1.3.0 and < 2.0.0" }

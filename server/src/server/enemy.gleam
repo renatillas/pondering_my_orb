@@ -23,6 +23,8 @@ import shared/player
 pub type Msg {
   /// Tick for AI movement and updates
   Tick(delta_time: Duration, nearby_players: Dict(player.Id, Vec3(Float)))
+  /// Update position after physics correction
+  UpdatePosition(position: Vec3(Float), velocity: Vec3(Float))
   /// Take damage from a projectile or player
   TakeDamage(amount: Float)
 }
@@ -87,6 +89,8 @@ fn handle_message(
   case msg {
     Tick(delta_time, nearby_players) ->
       handle_tick(state, delta_time, nearby_players)
+    UpdatePosition(position, velocity) ->
+      handle_update_position(state, position, velocity)
     TakeDamage(amount) -> handle_take_damage(state, amount)
   }
 }
@@ -105,6 +109,19 @@ fn handle_tick(
   process.send(state.room, state.to_room(StateChanged(new_enemy)))
 
   let new_state = State(..state, enemy: new_enemy)
+  actor.continue(new_state)
+}
+
+fn handle_update_position(
+  state: State(room_msg),
+  position: Vec3(Float),
+  velocity: Vec3(Float),
+) -> actor.Next(State(room_msg), Msg) {
+  // Update enemy position and velocity from physics correction
+  let updated_enemy =
+    enemy.Enemy(..state.enemy, position: position, velocity: velocity)
+
+  let new_state = State(..state, enemy: updated_enemy)
   actor.continue(new_state)
 }
 
@@ -152,15 +169,24 @@ fn handle_take_damage(
 // =============================================================================
 
 /// Zombie AI: Move toward the nearest player
+/// Physics handles separation, so we only need to move toward target
 fn update_zombie_ai(
   enemy_state: enemy.Enemy,
   delta_time: Duration,
   nearby_players: Dict(player.Id, Vec3(Float)),
 ) -> enemy.Enemy {
-  let dt_seconds = duration.to_seconds(delta_time)
+  let _dt_seconds = duration.to_seconds(delta_time)
+
+  // Collision radii
+  let enemy_radius = 0.5
+  // Half the visual size
+  let player_radius = 0.5
+  let min_distance_to_player = enemy_radius +. player_radius +. 0.5
+  // Stop 0.5m away (melee attack range)
+  // Note: Physics handles enemy-enemy separation, no need for min_distance_to_enemy
 
   // Find nearest player
-  case find_nearest_player(enemy_state.position, nearby_players) {
+  let result = case find_nearest_player(enemy_state.position, nearby_players) {
     option.None -> {
       // No players nearby - stand still
       enemy.Enemy(
@@ -177,26 +203,53 @@ fn update_zombie_ai(
         vec3.Vec3(enemy_state.position.x, 0.0, enemy_state.position.z)
       let player_pos_2d = vec3.Vec3(player_pos.x, 0.0, player_pos.z)
 
-      let direction_2d = vec3f.direction(enemy_pos_2d, to: player_pos_2d)
-      let zombie_speed = 2.0
-      // Units per second
+      // Check distance to player
+      let distance_to_player = vec3f.distance(enemy_pos_2d, with: player_pos_2d)
 
-      // Calculate new position (only move in XZ, keep Y=0.9)
-      let movement = vec3f.scale(direction_2d, by: zombie_speed *. dt_seconds)
-      let new_position_2d = vec3f.add(enemy_pos_2d, movement)
-      let new_position = vec3.Vec3(new_position_2d.x, 0.9, new_position_2d.z)
+      case distance_to_player <=. min_distance_to_player {
+        True -> {
+          // Too close! Stop moving (reached attack range)
+          enemy.Enemy(
+            ..enemy_state,
+            velocity: vec3.Vec3(0.0, 0.0, 0.0),
+            target_player: option.Some(player_id),
+          )
+        }
 
-      // Set velocity for client-side interpolation (horizontal only)
-      let velocity = vec3f.scale(direction_2d, by: zombie_speed)
+        False -> {
+          // Calculate desired velocity toward player
+          let direction_to_player =
+            vec3f.direction(enemy_pos_2d, to: player_pos_2d)
+          let zombie_speed = 2.0
+          // Units per second
 
-      enemy.Enemy(
-        ..enemy_state,
-        position: new_position,
-        velocity: velocity,
-        target_player: option.Some(player_id),
-      )
+          // Move straight toward player - physics will handle separation!
+          let desired_velocity =
+            vec3f.scale(direction_to_player, by: zombie_speed)
+
+          // Don't let enemy move if already at min distance
+          let current_distance =
+            vec3f.distance(enemy_pos_2d, with: player_pos_2d)
+          let velocity = case
+            current_distance <. min_distance_to_player +. 0.1
+          {
+            True -> vec3.Vec3(0.0, 0.0, 0.0)
+            // Stop at attack range
+            False -> desired_velocity
+          }
+
+          // Only set velocity - let physics integrate to position
+          enemy.Enemy(
+            ..enemy_state,
+            velocity: velocity,
+            target_player: option.Some(player_id),
+          )
+        }
+      }
     }
   }
+
+  result
 }
 
 /// Find the nearest player to the enemy

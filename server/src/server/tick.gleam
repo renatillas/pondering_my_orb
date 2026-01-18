@@ -1,5 +1,5 @@
 /// Fixed tick rate scheduler for server-authoritative gameplay.
-/// Runs at 20 Hz (50ms per tick) for deterministic game simulation.
+/// Runs at 60 Hz (~16.67ms per tick) for smooth, responsive gameplay.
 import gleam/int
 import gleam/time/duration
 import gleam/time/timestamp
@@ -8,11 +8,11 @@ import gleam/time/timestamp
 // CONSTANTS
 // =============================================================================
 
-/// Server tick rate in Hz (ticks per second)
-pub const tick_rate_hz = 20
+/// Server tick rate in Hz (ticks per second - actual: 62.5Hz)
+pub const tick_rate_hz = 60
 
-/// Duration of one tick in milliseconds
-pub const tick_duration_ms = 50
+/// Duration of one tick in milliseconds (16ms for clean division)
+pub const tick_duration_ms = 16
 
 // =============================================================================
 // TYPES
@@ -58,7 +58,7 @@ pub fn current(scheduler: TickScheduler) -> Int {
 }
 
 /// Get the tick duration for physics calculations
-/// Always returns the fixed tick duration (50ms) for deterministic simulation
+/// Always returns the fixed tick duration (16ms) for deterministic simulation
 pub fn delta_time(_scheduler: TickScheduler) -> duration.Duration {
   duration.milliseconds(tick_duration_ms)
 }

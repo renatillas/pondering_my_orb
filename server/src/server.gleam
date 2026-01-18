@@ -16,7 +16,7 @@ import spectator
 
 pub fn main() {
   logging.configure()
-  logging.set_level(logging.Info)
+  logging.set_level(logging.Debug)
 
   let assert Ok(_) = spectator.start()
 

@@ -17,6 +17,7 @@ import tiramisu/scene
 import tiramisu/transform
 import vec/vec2.{type Vec2}
 import vec/vec3.{type Vec3, Vec3}
+import vec/vec3f
 
 import shared/game_message
 import shared/player
@@ -26,13 +27,24 @@ import shared/vec3 as shared_vec3
 // TYPES
 // =============================================================================
 
+/// Input record for prediction replay
+pub type InputRecord {
+  InputRecord(tick: Int, w: Bool, a: Bool, s: Bool, d: Bool)
+}
+
 pub type Model {
   Model(
     player: player.Player,
-    // Client-side interpolated position for smooth rendering
+    // Client-side predicted position (instant response to input)
+    predicted_position: Vec3(Float),
+    // Smoothed render position (lerps toward predicted or server position)
     render_position: Vec3(Float),
     zoom: Float,
     server_tick: Int,
+    // Time elapsed since last server update (for extrapolation)
+    time_since_server_update: Float,
+    // Input history for server reconciliation (last 10 inputs)
+    input_history: List(InputRecord),
     // Other players from server
     other_players: dict.Dict(player.Id, player.Player),
     // Last sent input state (for change detection)
@@ -87,9 +99,12 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
   let model =
     Model(
       player: player.new(player.Id(0), "LocalPlayer", initial_position),
+      predicted_position: initial_position,
       render_position: initial_position,
       zoom: initial_zoom,
       server_tick: 0,
+      time_since_server_update: 0.0,
+      input_history: [],
       other_players: dict.new(),
       last_input: #(False, False, False, False),
       player_geometry: player_geo,
@@ -153,6 +168,28 @@ fn tick(
   let s = input.is_key_pressed(ctx.input, input.KeyS)
   let d = input.is_key_pressed(ctx.input, input.KeyD)
 
+  // CLIENT-SIDE PREDICTION: Extrapolate from last server position using CURRENT input
+  // Accumulate time since last server update
+  let new_time_since_update = model.time_since_server_update +. dt
+
+  // Calculate velocity from CURRENT input (what player is pressing NOW)
+  // This is more accurate than server velocity (which reflects old input)
+  let current_velocity =
+    calculate_velocity_from_input(w, a, s, d, model.player.speed)
+
+  // Predict position = server_position + current_velocity * time_elapsed
+  let new_predicted_position =
+    vec3f.add(
+      model.player.position,
+      vec3f.scale(current_velocity, by: new_time_since_update),
+    )
+
+  // Record input for reconciliation (keep last 10 inputs)
+  let input_record =
+    InputRecord(tick: model.server_tick, w: w, a: a, s: s, d: d)
+  let new_input_history =
+    add_to_input_history(model.input_history, input_record, 10)
+
   // Only send input when it CHANGES (bandwidth optimization)
   let current_input = #(w, a, s, d)
   let #(move_effect, new_last_input) = case current_input == model.last_input {
@@ -177,13 +214,13 @@ fn tick(
   // Handle spell casting (right-click)
   let cast_effect = case input.is_right_button_pressed(ctx.input) {
     True -> {
-      // Raycast to get target position for spell
+      // Raycast to get target position for spell (use predicted position for better feel)
       let mouse_pos = input.mouse_position(ctx.input)
       let target =
         raycast_to_ground(
           mouse_pos,
           model.zoom,
-          model.player.position,
+          new_predicted_position,
           ctx.canvas_size,
         )
 
@@ -202,19 +239,22 @@ fn tick(
   let zoom_delta = input.mouse_wheel_delta(ctx.input) *. zoom_speed *. dt
   let new_zoom = float.clamp(model.zoom -. zoom_delta, min_zoom, max_zoom)
 
-  // Interpolate render position toward server's authoritative position
+  // Interpolate render position toward PREDICTED position (for smoothing)
   let new_render_position =
     shared_vec3.lerp(
       model.render_position,
-      model.player.position,
+      new_predicted_position,
       position_lerp_factor,
     )
 
   let new_model =
     Model(
       ..model,
+      predicted_position: new_predicted_position,
+      time_since_server_update: new_time_since_update,
       zoom: new_zoom,
       render_position: new_render_position,
+      input_history: new_input_history,
       last_input: new_last_input,
     )
 
@@ -301,20 +341,47 @@ fn handle_server_message(model: Model, msg: game_message.ServerMessage) -> Model
           |> list.map(fn(p) { #(p.id, p) }),
         )
 
-      // Update our player from server (server-authoritative)
-      let updated_player = case
-        list.find(players, fn(p) { p.id == model.player.id })
-      {
-        Ok(server_player) -> server_player
-        Error(_) -> model.player
-      }
+      // SERVER RECONCILIATION for our player
+      case list.find(players, fn(p) { p.id == model.player.id }) {
+        Ok(server_player) -> {
+          // Server sent authoritative position - check if prediction was correct
+          let position_error =
+            vec3f.distance(model.predicted_position, server_player.position)
 
-      Model(
-        ..model,
-        server_tick: tick,
-        other_players: other_players,
-        player: updated_player,
-      )
+          // If error is significant (> 0.1 units), snap to server position
+          let reconciled_position = case position_error >. 0.1 {
+            True -> {
+              // Prediction was wrong - use server position
+              io.println(
+                "⚠️ Prediction error: "
+                <> float.to_string(position_error)
+                <> " - snapping to server",
+              )
+              server_player.position
+            }
+            False -> {
+              // Prediction was close enough - keep using predicted position
+              model.predicted_position
+            }
+          }
+
+          Model(
+            ..model,
+            server_tick: tick,
+            other_players: other_players,
+            player: server_player,
+            predicted_position: reconciled_position,
+            time_since_server_update: 0.0,
+          )
+        }
+        Error(_) ->
+          Model(
+            ..model,
+            server_tick: tick,
+            other_players: other_players,
+            time_since_server_update: 0.0,
+          )
+      }
     }
 
     _ -> model
@@ -387,4 +454,57 @@ pub fn view(model: Model, _ctx: tiramisu.Context) -> List(scene.Node) {
 
   [camera_node, player_node]
   |> list.append(other_player_nodes)
+}
+
+// =============================================================================
+// CLIENT-SIDE PREDICTION HELPERS
+// =============================================================================
+
+/// Calculate velocity from WASD input (mirrors server logic exactly)
+fn calculate_velocity_from_input(
+  w: Bool,
+  a: Bool,
+  s: Bool,
+  d: Bool,
+  speed: Float,
+) -> Vec3(Float) {
+  // Convert WASD to forward/right components
+  let forward = case w, s {
+    True, False -> 1.0
+    False, True -> -1.0
+    _, _ -> 0.0
+  }
+
+  let right = case d, a {
+    True, False -> 1.0
+    False, True -> -1.0
+    _, _ -> 0.0
+  }
+
+  // Isometric camera transformation (matches server exactly)
+  let camera_angle = 0.7071067811865476
+
+  let direction_x = camera_angle *. { right -. forward }
+  let direction_z = 0.0 -. camera_angle *. { forward +. right }
+  let direction = vec3.Vec3(direction_x, 0.0, direction_z)
+
+  // Normalize diagonal movement
+  let magnitude = vec3f.length(direction)
+  case magnitude >. 0.0 {
+    True -> {
+      let normalized = vec3f.scale(direction, by: 1.0 /. magnitude)
+      vec3f.scale(normalized, by: speed)
+    }
+    False -> vec3.Vec3(0.0, 0.0, 0.0)
+  }
+}
+
+/// Keep only the last N inputs in history (for reconciliation)
+fn add_to_input_history(
+  history: List(InputRecord),
+  input: InputRecord,
+  max_size: Int,
+) -> List(InputRecord) {
+  [input, ..history]
+  |> list.take(max_size)
 }

@@ -8,6 +8,10 @@ pub fn all_dict_values_contain_errors(
 ) -> Bool {
   use <- bool.guard(dict.is_empty(dict), return: False)
   dict.fold(dict, True, fn(acc, _, result) {
-    list.all(result, result.is_error) && acc
+    // Empty lists should return False (no errors to check)
+    case result {
+      [] -> False && acc
+      _ -> list.all(result, result.is_error) && acc
+    }
   })
 }

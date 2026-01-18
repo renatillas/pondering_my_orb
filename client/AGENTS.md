@@ -807,6 +807,86 @@ case current_input != model.last_input {
 - Server continues last input until change
 - No gameplay impact
 
+### 4. Client-Side Prediction (v0.8.0)
+
+**Decision:** Predict player movement locally before server confirms.
+
+**Rationale:**
+- **Instant visual feedback** - Player movement feels responsive (0ms vs 50ms lag)
+- **Server remains authoritative** - Server can correct bad predictions
+- **Better player experience** - No perceived input lag
+
+**How It Works:**
+
+1. **Extrapolation Approach:** Client extrapolates from last known server state
+2. **Track Time:** Accumulate time since last server update (`time_since_server_update`)
+3. **Calculate Current Velocity:** Use CURRENT input (w,a,s,d) to calculate velocity (mirrors server logic)
+4. **Predict:** `predicted_position = server_position + current_velocity * time_elapsed`
+5. **Server Update:** Reset timer to 0, start extrapolating from new server state
+6. **If Mismatch:** Snap to server position if error > 0.1 units
+
+**Why Current Input Instead of Server Velocity:**
+- Server velocity reflects OLD input from 50ms ago (network + processing delay)
+- Client knows CURRENT input state (what player is pressing RIGHT NOW)
+- Using current input = predicting what server WILL calculate, not what it DID calculate
+- Result: Near-zero prediction errors for local player
+
+**Why Extrapolation Instead of Frame-by-Frame:**
+- Client renders at 60 FPS, server updates at 20 Hz
+- Extrapolating from server position avoids accumulating rounding errors
+- Each server update resets the accumulator, preventing drift
+
+**Implementation:**
+```gleam
+pub type Model {
+  Model(
+    player: player.Player,                    // Server-authoritative state
+    predicted_position: Vec3(Float),          // Extrapolated position
+    render_position: Vec3(Float),             // Smoothed for rendering
+    time_since_server_update: Float,          // Time accumulator
+    input_history: List(InputRecord),         // For reconciliation
+    // ...
+  )
+}
+
+// Every frame (60 FPS):
+// 1. Accumulate time since last server update
+let new_time_since_update = model.time_since_server_update +. dt
+
+// 2. Calculate velocity from CURRENT input (what player is pressing NOW)
+let current_velocity = calculate_velocity_from_input(w, a, s, d, speed)
+
+// 3. Extrapolate from server position using current velocity
+let new_predicted_position =
+  vec3f.add(
+    model.player.position,               // Last known server position
+    vec3f.scale(current_velocity, by: new_time_since_update)
+  )
+
+// 4. Render using predicted position
+shared_vec3.lerp(model.render_position, new_predicted_position, lerp_factor)
+
+// When server update arrives (every 50ms):
+// 1. Reset time accumulator
+time_since_server_update = 0.0
+
+// 2. Check prediction accuracy
+case position_error >. 0.1 {
+  True -> snap_to_server_position()   // Prediction wrong (rare)
+  False -> keep_predicted_position()  // Prediction accurate (common)
+}
+```
+
+**Trade-off:**
+- Occasional snappy corrections when prediction wrong (rare in single-player, more common with lag)
+- Worth it for instant responsive feel
+
+**Related Files:**
+- `client/src/client/player.gleam:29-47` - Model with time_since_server_update
+- `client/src/client/player.gleam:459-492` - calculate_velocity_from_input (mirrors server)
+- `client/src/client/player.gleam:168-183` - Extrapolation using current input
+- `client/src/client/player.gleam:340-380` - Server reconciliation with timer reset
+
 ---
 
 ## Version History
