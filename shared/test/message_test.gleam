@@ -81,6 +81,7 @@ pub fn game_state_update_encoding_test() {
     game_message.GameStateUpdate(
       tick: 123,
       players: [test_player],
+      player_wands: [],
       projectiles: [],
       enemies: [test_enemy],
     )

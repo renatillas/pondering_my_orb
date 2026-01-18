@@ -2,6 +2,7 @@
 /// These messages are serialized as JSON and sent over WebSocket connections.
 import gleam/dynamic/decode
 import gleam/json
+import gleam/option
 import gleam/result
 import gleam/string
 import gleam/time/timestamp
@@ -10,6 +11,7 @@ import shared/game_event
 import shared/player.{type Player}
 import shared/projectile
 import shared/vec3 as shared_vec3
+import shared/wand
 import vec/vec3
 
 // ----------------------------------------------------------------------------
@@ -145,6 +147,60 @@ fn player_action_decoder() -> decode.Decoder(PlayerAction) {
 }
 
 // ----------------------------------------------------------------------------
+// Helper Functions for Wand Inventory
+// ----------------------------------------------------------------------------
+
+/// Encode a WandInventory to JSON
+fn encode_wand_inventory(inv: player.WandInventory) -> json.Json {
+  json.object([
+    #("slot_0", encode_optional_wand(inv.slot_0)),
+    #("slot_1", encode_optional_wand(inv.slot_1)),
+    #("slot_2", encode_optional_wand(inv.slot_2)),
+    #("slot_3", encode_optional_wand(inv.slot_3)),
+  ])
+}
+
+/// Encode an optional wand (Some(wand) or None)
+fn encode_optional_wand(wand_opt: option.Option(wand.Wand)) -> json.Json {
+  case wand_opt {
+    option.Some(w) -> wand.encode(w)
+    option.None -> json.null()
+  }
+}
+
+/// Decoder for player wand triple #(player.Id, player.WandInventory, #(Int, Int, Int, Int))
+fn player_wand_pair_decoder() -> decode.Decoder(
+  #(player.Id, player.WandInventory, #(Int, Int, Int, Int)),
+) {
+  use player_id <- decode.field("player_id", decode.int)
+  use wands <- decode.field("wands", wand_inventory_decoder())
+  use cooldowns_list <- decode.field("cooldowns", decode.list(decode.int))
+
+  // Convert list to tuple (expect exactly 4 elements)
+  let cooldowns = case cooldowns_list {
+    [cd0, cd1, cd2, cd3] -> #(cd0, cd1, cd2, cd3)
+    _ -> #(0, 0, 0, 0)
+    // Default to no cooldowns if unexpected format
+  }
+
+  decode.success(#(player.Id(player_id), wands, cooldowns))
+}
+
+/// Decoder for WandInventory
+fn wand_inventory_decoder() -> decode.Decoder(player.WandInventory) {
+  use slot_0 <- decode.field("slot_0", decode.optional(wand.decoder()))
+  use slot_1 <- decode.field("slot_1", decode.optional(wand.decoder()))
+  use slot_2 <- decode.field("slot_2", decode.optional(wand.decoder()))
+  use slot_3 <- decode.field("slot_3", decode.optional(wand.decoder()))
+  decode.success(player.WandInventory(
+    slot_0: slot_0,
+    slot_1: slot_1,
+    slot_2: slot_2,
+    slot_3: slot_3,
+  ))
+}
+
+// ----------------------------------------------------------------------------
 // Server -> Client Messages
 // ----------------------------------------------------------------------------
 
@@ -162,6 +218,9 @@ pub type ServerMessage {
   GameStateUpdate(
     tick: Int,
     players: List(Player),
+    player_wands: List(
+      #(player.Id, player.WandInventory, #(Int, Int, Int, Int)),
+    ),
     projectiles: List(projectile.Projectile),
     enemies: List(enemy.Enemy),
   )
@@ -204,11 +263,24 @@ pub fn encode_server_message(msg: ServerMessage) -> String {
         #("type", json.string("player_states")),
         #("states", json.array(states, player.encode)),
       ])
-    GameStateUpdate(tick, players, projectiles, enemies) ->
+    GameStateUpdate(tick, players, player_wands, projectiles, enemies) ->
       json.object([
         #("type", json.string("game_state_update")),
         #("tick", json.int(tick)),
         #("players", json.array(players, player.encode)),
+        #(
+          "player_wands",
+          json.array(player_wands, fn(triple) {
+            let #(player_id, wand_inv, cooldowns) = triple
+            let player.Id(id_int) = player_id
+            let #(cd0, cd1, cd2, cd3) = cooldowns
+            json.object([
+              #("player_id", json.int(id_int)),
+              #("wands", encode_wand_inventory(wand_inv)),
+              #("cooldowns", json.array([cd0, cd1, cd2, cd3], json.int)),
+            ])
+          }),
+        ),
         #("projectiles", json.array(projectiles, projectile.encode)),
         #("enemies", json.array(enemies, enemy.encode)),
       ])
@@ -267,12 +339,22 @@ pub fn decode_server_message(data: String) -> Result(ServerMessage, String) {
       "game_state_update" -> {
         use tick <- decode.field("tick", decode.int)
         use players <- decode.field("players", decode.list(player.decoder()))
+        use player_wands <- decode.field(
+          "player_wands",
+          decode.list(player_wand_pair_decoder()),
+        )
         use projectiles <- decode.field(
           "projectiles",
           decode.list(projectile.decoder()),
         )
         use enemies <- decode.field("enemies", decode.list(enemy.decoder()))
-        decode.success(GameStateUpdate(tick, players, projectiles, enemies))
+        decode.success(GameStateUpdate(
+          tick,
+          players,
+          player_wands,
+          projectiles,
+          enemies,
+        ))
       }
       "game_event" -> {
         use event <- decode.field("event", game_event.decoder())

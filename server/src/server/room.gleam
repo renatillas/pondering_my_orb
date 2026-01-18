@@ -14,10 +14,8 @@ import gleam/time/duration.{type Duration}
 import gleam/time/timestamp
 import gleam_community/maths
 import logging.{Info}
-import spatial/bvh
-import spatial/collider
-import vec/vec2
 import vec/vec3.{Vec3}
+import vec/vec3f
 
 import server/enemy as enemy_actor
 import server/player as player_actor
@@ -36,19 +34,14 @@ import shared/projectile
 
 /// Tick collection state - tracks all actor responses during tick
 pub type TickState {
-  /// Not collecting - normal operation
+  /// Not currently running a tick (waiting for next Tick message)
   Idle
   /// Collecting all actor state responses for current tick
   Collecting(
-    /// Number of players we're waiting for
     expected_player_count: Int,
-    /// Player states received so far
-    player_responses: Dict(player.Id, player.Player),
-    /// Projectile states collected this tick (updated as they respond)
+    player_responses: Dict(player.Id, player_actor.PlayerState),
     projectile_responses: Dict(projectile.Id, projectile.Projectile),
-    /// Enemy states collected this tick (updated as they respond)
     enemy_responses: Dict(enemy.Id, enemy.Enemy),
-    /// Current tick number
     tick_number: Int,
   )
 }
@@ -210,9 +203,9 @@ pub fn start(
         waves_spawned: 0,
       )
 
-    // Initialize physics world (2D, no gravity for top-down gameplay)
+    // Initialize physics world (3D, no gravity for top-down gameplay)
     let physics_world =
-      world.new(gravity: vec2.Vec2(0.0, 0.0))
+      world.new(gravity: vec3.Vec3(0.0, 0.0, 0.0))
       |> world.with_iterations(2)
       // Reduced: substeps + relaxation handle stability
       |> world.with_restitution(0.0)
@@ -314,7 +307,7 @@ fn handle_finalize_tick(state: State) -> actor.Next(State, Msg) {
 /// Finalize the tick - broadcast collected state
 fn finalize_tick(
   state: State,
-  player_responses: Dict(player.Id, player.Player),
+  player_responses: Dict(player.Id, player_actor.PlayerState),
   projectile_responses: Dict(projectile.Id, projectile.Projectile),
   enemy_responses: Dict(enemy.Id, enemy.Enemy),
   tick_number: Int,
@@ -322,10 +315,22 @@ fn finalize_tick(
   // Apply physics to prevent enemy overlapping
   let delta_time = tick.delta_time(state.tick_scheduler)
 
-  let #(updated_physics_world, physics_corrected_enemies) =
-    apply_physics_to_enemies(
+  // Convert to format physics expects (Dict(player.Id, player.Player))
+  let players_for_physics =
+    dict.map_values(player_responses, fn(_id, player_state) {
+      player_state.player
+    })
+
+  let #(
+    updated_physics_world,
+    physics_corrected_players,
+    physics_corrected_enemies,
+    collision_events,
+  ) =
+    apply_physics(
       state.physics_world,
-      player_responses,
+      players_for_physics,
+      projectile_responses,
       enemy_responses,
       delta_time,
     )
@@ -342,23 +347,53 @@ fn finalize_tick(
     }
   })
 
-  // Check collisions BEFORE broadcasting
+  // Send physics-corrected positions back to player actors (expresso handles integration)
+  dict.each(physics_corrected_players, fn(player_id, player_data) {
+    case dict.get(state.player_actors, player_id) {
+      Ok(player_actor) ->
+        process.send(
+          player_actor,
+          player_actor.UpdatePosition(
+            player_data.position,
+            player_data.velocity,
+          ),
+        )
+      Error(_) -> Nil
+    }
+  })
+
+  // Process collision events from physics (projectile-enemy collisions)
   // This ensures damage is applied and actors receive messages before tick ends
-  check_collisions(state, projectile_responses, physics_corrected_enemies)
+  process_collision_events(state, collision_events, projectile_responses)
+
+  // Extract players and wands from physics-corrected player responses
+  let players_list =
+    dict.map_values(physics_corrected_players, fn(_id, player_data) {
+      player_data
+    })
+    |> dict.values
+
+  let player_wands_list =
+    dict.to_list(player_responses)
+    |> list.map(fn(pair) {
+      let #(player_id, player_state) = pair
+      #(player_id, player_state.wands, player_state.wand_cooldowns_ms)
+    })
 
   // Broadcast GameStateUpdate to all players (using physics-corrected enemy positions)
   broadcast_tick_updates(
     state.connections,
     tick_number,
-    player_responses,
+    players_list,
+    player_wands_list,
     projectile_responses,
     physics_corrected_enemies,
   )
 
-  // Cache player positions for next tick's enemy AI
+  // Cache player positions for next tick's enemy AI (use physics-corrected positions)
   let player_positions =
-    dict.map_values(player_responses, fn(_id, player_state) {
-      player_state.position
+    dict.map_values(physics_corrected_players, fn(_id, player_data) {
+      player_data.position
     })
 
   // Cache enemy positions for next tick's enemy separation (use physics-corrected positions)
@@ -567,9 +602,9 @@ fn handle_player_message(
           enemy_responses:,
           tick_number:,
         ) -> {
-          // Add this player's response
+          // Add this player's full state (includes wands)
           let new_player_responses =
-            dict.insert(player_responses, player_id, player_state.player)
+            dict.insert(player_responses, player_id, player_state)
 
           // Update collection state - ALWAYS wait for FinalizeTick timeout
           // to ensure projectiles and enemies have time to respond
@@ -919,18 +954,11 @@ fn handle_join(
     True -> {
       start_tick_loop(state)
 
-      // Spawn 500 enemies immediately to benchmark physics performance
-      logging.log(
-        logging.Info,
-        "🌊 First player joined! Spawning 1000 enemies to benchmark expresso optimization...",
-      )
-
       // Create player positions dict with initial player position
       let player_positions =
         dict.new()
         |> dict.insert(new_player_id, initial_position)
 
-      // Generate 1000 spawn positions around the player
       let spawn_positions =
         generate_spawn_positions(player_positions, state.spawn_config, 10)
 
@@ -1124,19 +1152,20 @@ fn send_to_connection(
 fn broadcast_tick_updates(
   connections: Dict(ewe.WebsocketConnection, ConnectionInfo),
   tick: Int,
-  players: Dict(player.Id, player.Player),
+  players: List(player.Player),
+  player_wands: List(#(player.Id, player.WandInventory, #(Int, Int, Int, Int))),
   projectiles: Dict(projectile.Id, projectile.Projectile),
   enemies: Dict(enemy.Id, enemy.Enemy),
 ) -> Nil {
-  // Convert collections to lists for broadcasting
-  let players_list = dict.values(players)
+  // Convert remaining collections to lists for broadcasting
   let projectiles_list = dict.values(projectiles)
   let enemies_list = dict.values(enemies)
 
   let game_state_msg =
     game_message.GameStateUpdate(
       tick: tick,
-      players: players_list,
+      players: players,
+      player_wands: player_wands,
       projectiles: projectiles_list,
       enemies: enemies_list,
     )
@@ -1165,236 +1194,274 @@ fn broadcast_to_all(
 // PHYSICS SIMULATION
 // =============================================================================
 
-/// Apply physics to enemy positions to prevent overlapping
+/// Apply physics for collision resolution and movement integration (incremental)
 ///
-/// This function:
-/// 1. Reuses the persistent physics world structure (spatial index will be rebuilt by world.step)
-/// 2. Updates bodies dict directly with current positions (fast dict operations)
-/// 3. Removes bodies that no longer exist
-/// 4. Runs world.step() which rebuilds BVH (40x faster) and resolves collisions
-/// 5. Returns updated world and enemy positions
-fn apply_physics_to_enemies(
+/// Players: Kinematic bodies - integrate velocity manually, use as obstacles
+/// Projectiles: Kinematic triggers - detect collisions only
+/// Enemies: Dynamic bodies - physics handles separation and collision
+fn apply_physics(
   physics_world: world.World(String),
   player_responses: Dict(player.Id, player.Player),
+  projectile_responses: Dict(projectile.Id, projectile.Projectile),
   enemy_responses: Dict(enemy.Id, enemy.Enemy),
   delta_time: Duration,
-) -> #(world.World(String), Dict(enemy.Id, enemy.Enemy)) {
-  // Convert delta_time to seconds for physics
+) -> #(
+  world.World(String),
+  Dict(player.Id, player.Player),
+  Dict(enemy.Id, enemy.Enemy),
+  List(world.CollisionEvent(String)),
+) {
   let dt_seconds = duration.to_seconds(delta_time)
 
-  // Use minimal substeps for 500+ enemies to maintain 60Hz tick rate
-  let enemy_count = dict.size(enemy_responses)
-  let substeps = case enemy_count {
-    n if n > 100 -> 1
-    // 100+ enemies: 1 substep only (we don't need perfect collision chains at 60Hz)
-    _ -> 2
-    // <100 enemies: 2 substeps
-  }
+  let mut_world = world.with_substeps(physics_world, 100)
 
-  // Get current bodies dict (we'll modify it directly - faster than incremental BVH updates)
-  let current_bodies = world.bodies(physics_world)
-
-  // Build new bodies dict by updating positions
-  // (world.step will rebuild BVH from this - 40x faster than before)
-  let mut_bodies = current_bodies
-
-  // Add/update player bodies (kinematic - immovable obstacles)
-  let mut_bodies =
-    dict.fold(
-      player_responses,
-      mut_bodies,
-      fn(bodies_acc, player_id, player_data) {
-        let player.Id(id_num) = player_id
-        let body_id = "player_" <> int.to_string(id_num)
-
-        let player_body =
-          body.new_circle(
-            id: body_id,
-            position: vec3_to_vec2(player_data.position),
-            radius: 0.5,
-          )
-          |> body.kinematic()
-
-        dict.insert(bodies_acc, body_id, player_body)
-      },
-    )
-
-  // Add/update enemy bodies (dynamic - affected by physics)
-  let mut_bodies =
-    dict.fold(enemy_responses, mut_bodies, fn(bodies_acc, enemy_id, enemy_data) {
-      let enemy.Id(id_num) = enemy_id
-      let body_id = "enemy_" <> int.to_string(id_num)
-
-      let enemy_body =
-        body.new_circle(
-          id: body_id,
-          position: vec3_to_vec2(enemy_data.position),
-          radius: 0.5,
-        )
-        // Set velocity from AI - expresso will integrate movement
-        |> body.with_velocity(vec3_to_vec2(enemy_data.velocity))
-        |> body.with_mass(1.0)
-        |> body.with_friction(0.0)
-      // No friction - AI controls movement
-
-      dict.insert(bodies_acc, body_id, enemy_body)
-    })
-
-  // Build set of IDs that should exist
-  let mut_should_exist =
-    dict.fold(player_responses, dict.new(), fn(acc, player_id, _) {
-      let player.Id(id_num) = player_id
-      dict.insert(acc, "player_" <> int.to_string(id_num), True)
-    })
-  let should_exist =
-    dict.fold(enemy_responses, mut_should_exist, fn(acc, enemy_id, _) {
-      let enemy.Id(id_num) = enemy_id
-      dict.insert(acc, "enemy_" <> int.to_string(id_num), True)
-    })
-
-  // Remove bodies that no longer exist (died or disconnected)
-  let final_bodies =
-    dict.filter(mut_bodies, fn(body_id, _body) {
-      dict.has_key(should_exist, body_id)
-    })
-
-  // Create updated world with new bodies dict
-  // We'll add bodies one by one, but world.step() will rebuild BVH anyway (40x faster)
-  // Start with empty world to ensure clean state
+  // Step 1: Remove dead bodies (entities that existed last frame but not this frame)
+  let current_bodies = world.bodies(mut_world)
   let mut_world =
-    world.new(gravity: vec2.Vec2(0.0, 0.0))
-    |> world.with_iterations(2)
-    |> world.with_restitution(0.0)
-    |> world.with_substeps(substeps)
+    dict.fold(current_bodies, mut_world, fn(w, body_id, _) {
+      // Check if this body still exists in any of our response dicts
+      let still_exists = case body_id {
+        "player_" <> id_str ->
+          case int.parse(id_str) {
+            Ok(id_num) -> dict.has_key(player_responses, player.Id(id_num))
+            Error(_) -> False
+          }
+        "projectile_" <> id_str ->
+          case int.parse(id_str) {
+            Ok(id_num) ->
+              dict.has_key(projectile_responses, projectile.Id(id_num))
+            Error(_) -> False
+          }
+        "enemy_" <> id_str ->
+          case int.parse(id_str) {
+            Ok(id_num) -> dict.has_key(enemy_responses, enemy.Id(id_num))
+            Error(_) -> False
+          }
+        _ -> False
+      }
 
-  // Add all bodies to the fresh world
-  let mut_world =
-    dict.fold(final_bodies, mut_world, fn(world_acc, _id, body_data) {
-      world.add_body(world_acc, body_data)
-    })
-
-  // Run physics step with proper delta_time
-  // This integrates velocities (movement) AND resolves collisions
-  let mut_world = world.step(mut_world, delta_time: dt_seconds)
-
-  // Extract updated positions AND velocities from physics world
-  // Physics has integrated movement and resolved collisions
-  let updated_enemies =
-    dict.map_values(enemy_responses, fn(enemy_id, enemy_data) {
-      let enemy.Id(id_num) = enemy_id
-      let body_id = "enemy_" <> int.to_string(id_num)
-
-      case world.get_body(mut_world, body_id) {
-        Ok(updated_body) -> {
-          // Update both position (from physics integration + collision)
-          // and velocity (for client interpolation)
-          enemy.Enemy(
-            ..enemy_data,
-            position: vec2_to_vec3(updated_body.position),
-            velocity: vec2_to_vec3_flat(updated_body.velocity),
-          )
-        }
-        Error(_) -> {
-          // Body not found (shouldn't happen), keep original
-          enemy_data
-        }
+      case still_exists {
+        True -> w
+        False -> world.remove_body(w, body_id)
       }
     })
 
-  #(mut_world, updated_enemies)
+  // Step 2: Update or add all bodies using helpers
+  let mut_world =
+    dict.fold(player_responses, mut_world, fn(w, player_id, player) {
+      let player.Id(id_num) = player_id
+      let body_id = "player_" <> int.to_string(id_num)
+      upsert_body(w, body_id, create_player_body(body_id, player))
+    })
+
+  let mut_world =
+    dict.fold(projectile_responses, mut_world, fn(w, proj_id, proj) {
+      let projectile.Id(id_num) = proj_id
+      let body_id = "projectile_" <> int.to_string(id_num)
+      upsert_body(w, body_id, create_projectile_body(body_id, proj))
+    })
+
+  let mut_world =
+    dict.fold(enemy_responses, mut_world, fn(w, enemy_id, enemy) {
+      let enemy.Id(id_num) = enemy_id
+      let body_id = "enemy_" <> int.to_string(id_num)
+      upsert_body(w, body_id, create_enemy_body(body_id, enemy))
+    })
+
+  // Step 3: Run physics step
+  let #(updated_world, collision_events) =
+    world.step(mut_world, delta_time: dt_seconds)
+
+  // Step 4: Players integrate velocity manually (kinematic)
+  let updated_players =
+    dict.map_values(player_responses, fn(_id, player) {
+      let displacement = vec3f.scale(player.velocity, by: dt_seconds)
+      let new_position = vec3f.add(player.position, displacement)
+      player.Player(..player, position: new_position)
+    })
+
+  // Step 5: Enemies extract physics-corrected positions
+  let updated_enemies =
+    dict.map_values(enemy_responses, fn(enemy_id, enemy) {
+      let enemy.Id(id_num) = enemy_id
+      let body_id = "enemy_" <> int.to_string(id_num)
+
+      case world.get_body(updated_world, body_id) {
+        Ok(updated_body) ->
+          enemy.Enemy(
+            ..enemy,
+            position: updated_body.position,
+            velocity: updated_body.velocity,
+          )
+        Error(_) -> enemy
+      }
+    })
+
+  #(updated_world, updated_players, updated_enemies, collision_events)
+}
+
+/// Update existing body or add if not present (avoids code duplication)
+fn upsert_body(
+  w: world.World(String),
+  id: String,
+  new_body: body.Body(String),
+) -> world.World(String) {
+  // Check if body exists in world
+  case dict.has_key(world.bodies(w), id) {
+    True ->
+      // Body exists - update it (expresso handles this incrementally)
+      world.update_body(w, id, fn(_) { new_body })
+    False ->
+      // Body doesn't exist - add it
+      world.add_body(w, new_body)
+  }
 }
 
 // =============================================================================
-// COLLISION DETECTION
+// BODY CREATION HELPERS
+// =============================================================================
+// Collision layers:
+//   layer_0 = Player
+//   layer_1 = Enemy
+//   layer_2 = Projectile
+
+fn create_player_body(id: String, player: player.Player) -> body.Body(String) {
+  body.new_sphere(id: id, position: player.position, radius: 0.5)
+  |> body.kinematic()
+  |> body.with_layer(body.layer_0)
+  |> body.with_collision_mask(body.layer_1)
+}
+
+fn create_projectile_body(
+  id: String,
+  proj: projectile.Projectile,
+) -> body.Body(String) {
+  body.new_sphere(
+    id: id,
+    position: proj.position,
+    radius: proj.spell.final_size,
+  )
+  |> body.kinematic()
+  |> body.trigger()
+  |> body.with_layer(body.layer_2)
+  |> body.with_collision_mask(body.layer_1)
+}
+
+fn create_enemy_body(id: String, enemy: enemy.Enemy) -> body.Body(String) {
+  body.new_sphere(id: id, position: enemy.position, radius: 0.5)
+  |> body.with_velocity(enemy.velocity)
+  |> body.with_mass(1.0)
+  |> body.with_friction(0.0)
+  |> body.with_layer(body.layer_1)
+  |> body.with_collision_mask(
+    body.combine_layers([body.layer_0, body.layer_1, body.layer_2]),
+  )
+}
+
+// =============================================================================
+// PROJECTILE-ENEMY COLLISION HANDLING
 // =============================================================================
 
-/// Check collisions between projectiles and enemies using spatial partitioning.
+/// Process collision events from expresso physics to handle projectile hits.
 ///
-/// Uses BVH (Bounding Volume Hierarchy) to accelerate collision detection.
-/// Complexity: O(n log m + n*k) where n=projectiles, m=enemies, k=avg nearby enemies
-/// Previous brute force: O(n*m)
-fn check_collisions(
+/// Uses collision events generated by expresso's collision detection.
+/// Projectiles are triggers, so we look for TriggerEntered events.
+fn process_collision_events(
   state: State,
+  collision_events: List(world.CollisionEvent(String)),
   projectile_responses: Dict(projectile.Id, projectile.Projectile),
-  enemy_responses: Dict(enemy.Id, enemy.Enemy),
 ) -> Nil {
-  // Early exit if no projectiles or enemies
-  case dict.is_empty(projectile_responses) || dict.is_empty(enemy_responses) {
-    True -> Nil
-    False -> {
-      // Build BVH from enemy positions (O(m log m))
-      let enemy_items =
-        dict.to_list(enemy_responses)
-        |> list.map(fn(pair) {
-          let #(enemy_id, enemy_state) = pair
-          #(enemy_state.position, #(enemy_id, enemy_state))
-        })
-
-      case bvh.from_items(enemy_items, max_leaf_size: 8) {
-        Error(_) -> Nil
-        Ok(enemy_bvh) -> {
-          // For each projectile, query BVH for nearby enemies (O(n * (log m + k)))
-          dict.each(projectile_responses, fn(proj_id, proj) {
-            // Query sphere around projectile (includes both projectile and enemy radii)
-            let query_radius = proj.spell.final_size +. 1.0
-
-            let nearby_enemies =
-              bvh.query_radius(enemy_bvh, proj.position, query_radius)
-
-            // Check precise sphere-sphere collision for candidates
-            list.each(nearby_enemies, fn(enemy_pair) {
-              let #(enemy_pos, #(enemy_id, _enemy_data)) = enemy_pair
-
-              // Create sphere colliders for precise intersection test
-              let proj_collider =
-                collider.sphere(
-                  center: proj.position,
-                  radius: proj.spell.final_size,
+  list.each(collision_events, fn(event) {
+    case event {
+      // Projectile (trigger) hit enemy
+      world.TriggerEntered(body_id, trigger_id) -> {
+        // Parse IDs to determine which is projectile and which is enemy
+        case parse_body_ids(trigger_id, body_id) {
+          Ok(#(proj_id, enemy_id)) -> {
+            // Get projectile damage
+            case dict.get(projectile_responses, proj_id) {
+              Ok(proj) -> {
+                logging.log(
+                  logging.Info,
+                  "💥 Projectile "
+                    <> projectile_id_to_string(proj_id)
+                    <> " hit Enemy "
+                    <> enemy_id_to_string(enemy_id),
                 )
 
-              let enemy_collider =
-                collider.sphere(center: enemy_pos, radius: 1.0)
-
-              // Check if they intersect
-              case collider.intersects(proj_collider, enemy_collider) {
-                True -> {
-                  logging.log(
-                    logging.Info,
-                    "💥 Projectile "
-                      <> projectile_id_to_string(proj_id)
-                      <> " hit Enemy "
-                      <> enemy_id_to_string(enemy_id),
-                  )
-
-                  // Send TakeDamage to enemy actor
-                  case dict.get(state.enemy_actors, enemy_id) {
-                    Ok(enemy_actor) -> {
-                      process.send(
-                        enemy_actor,
-                        enemy_actor.TakeDamage(proj.spell.final_damage),
-                      )
-                    }
-                    Error(_) -> Nil
+                // Send TakeDamage to enemy actor
+                case dict.get(state.enemy_actors, enemy_id) {
+                  Ok(enemy_actor) -> {
+                    process.send(
+                      enemy_actor,
+                      enemy_actor.TakeDamage(proj.spell.final_damage),
+                    )
                   }
-
-                  // Send Hit to projectile actor (will expire itself)
-                  case dict.get(state.projectile_actors, proj_id) {
-                    Ok(projectile_actor) -> {
-                      process.send(
-                        projectile_actor,
-                        projectile_actor.Hit(enemy_id),
-                      )
-                    }
-                    Error(_) -> Nil
-                  }
+                  Error(_) -> Nil
                 }
-                False -> Nil
+
+                // Send Hit to projectile actor (will expire itself)
+                case dict.get(state.projectile_actors, proj_id) {
+                  Ok(projectile_actor) -> {
+                    process.send(
+                      projectile_actor,
+                      projectile_actor.Hit(enemy_id),
+                    )
+                  }
+                  Error(_) -> Nil
+                }
               }
-            })
-          })
+              Error(_) -> Nil
+            }
+          }
+          Error(_) -> Nil
         }
       }
+      _ -> Nil
     }
+  })
+}
+
+/// Parse body IDs from collision event to extract projectile and enemy IDs.
+///
+/// Returns #(projectile_id, enemy_id) if the collision is between a projectile and enemy.
+fn parse_body_ids(
+  id_a: String,
+  id_b: String,
+) -> Result(#(projectile.Id, enemy.Id), Nil) {
+  // Try parsing as projectile_X and enemy_Y
+  case parse_projectile_id(id_a), parse_enemy_id(id_b) {
+    Ok(proj_id), Ok(enemy_id) -> Ok(#(proj_id, enemy_id))
+    _, _ ->
+      // Try the reverse
+      case parse_projectile_id(id_b), parse_enemy_id(id_a) {
+        Ok(proj_id), Ok(enemy_id) -> Ok(#(proj_id, enemy_id))
+        _, _ -> Error(Nil)
+      }
+  }
+}
+
+/// Parse "projectile_123" -> projectile.Id(123)
+fn parse_projectile_id(id_string: String) -> Result(projectile.Id, Nil) {
+  case id_string {
+    "projectile_" <> num_str ->
+      case int.parse(num_str) {
+        Ok(num) -> Ok(projectile.Id(num))
+        Error(_) -> Error(Nil)
+      }
+    _ -> Error(Nil)
+  }
+}
+
+/// Parse "enemy_123" -> enemy.Id(123)
+fn parse_enemy_id(id_string: String) -> Result(enemy.Id, Nil) {
+  case id_string {
+    "enemy_" <> num_str ->
+      case int.parse(num_str) {
+        Ok(num) -> Ok(enemy.Id(num))
+        Error(_) -> Error(Nil)
+      }
+    _ -> Error(Nil)
   }
 }
 
@@ -1499,21 +1566,6 @@ fn spawn_enemy_wave(
 // =============================================================================
 // HELPER FUNCTIONS
 // =============================================================================
-
-/// Convert Vec3 position to Vec2 (XZ plane for top-down physics)
-fn vec3_to_vec2(pos: vec3.Vec3(Float)) -> vec2.Vec2(Float) {
-  vec2.Vec2(pos.x, pos.z)
-}
-
-/// Convert Vec2 position to Vec3 (add Y=0.9 for ground level)
-fn vec2_to_vec3(pos: vec2.Vec2(Float)) -> vec3.Vec3(Float) {
-  vec3.Vec3(pos.x, 0.9, pos.y)
-}
-
-/// Convert Vec2 velocity to Vec3 velocity (horizontal only, Y=0)
-fn vec2_to_vec3_flat(vel: vec2.Vec2(Float)) -> vec3.Vec3(Float) {
-  vec3.Vec3(vel.x, 0.0, vel.y)
-}
 
 fn projectile_id_to_string(id: projectile.Id) -> String {
   let projectile.Id(n) = id

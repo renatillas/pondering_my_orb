@@ -52,6 +52,10 @@ pub type Model {
     // Shared rendering resources (created once in init)
     player_geometry: geometry.Geometry,
     player_material: material.Material,
+    // Wand inventory (networked from server)
+    wand_inventory: option.Option(player.WandInventory),
+    // Wand cooldowns in milliseconds for each slot (networked from server)
+    wand_cooldowns_ms: #(Int, Int, Int, Int),
   )
 }
 
@@ -109,6 +113,8 @@ pub fn init() -> #(Model, effect.Effect(Msg)) {
       last_input: #(False, False, False, False),
       player_geometry: player_geo,
       player_material: player_mat,
+      wand_inventory: option.None,
+      wand_cooldowns_ms: #(0, 0, 0, 0),
     )
 
   #(model, effect.dispatch(Tick))
@@ -332,7 +338,13 @@ fn handle_server_message(model: Model, msg: game_message.ServerMessage) -> Model
       Model(..model, other_players: new_other_players)
     }
 
-    game_message.GameStateUpdate(tick, players, _projectiles, _enemies) -> {
+    game_message.GameStateUpdate(
+      tick,
+      players,
+      player_wands,
+      _projectiles,
+      _enemies,
+    ) -> {
       // Update other players from server
       let other_players =
         dict.from_list(
@@ -341,36 +353,29 @@ fn handle_server_message(model: Model, msg: game_message.ServerMessage) -> Model
           |> list.map(fn(p) { #(p.id, p) }),
         )
 
+      // Extract wand inventory and cooldowns for local player
+      let #(wand_inventory, wand_cooldowns) = case
+        list.find(player_wands, fn(triple) {
+          let #(player_id, _wands, _cooldowns) = triple
+          player_id == model.player.id
+        })
+      {
+        Ok(#(_id, wands, cooldowns)) -> #(option.Some(wands), cooldowns)
+        Error(_) -> #(option.None, #(0, 0, 0, 0))
+      }
+
       // SERVER RECONCILIATION for our player
       case list.find(players, fn(p) { p.id == model.player.id }) {
         Ok(server_player) -> {
-          // Server sent authoritative position - check if prediction was correct
-          let position_error =
-            vec3f.distance(model.predicted_position, server_player.position)
-
-          // If error is significant (> 0.1 units), snap to server position
-          let reconciled_position = case position_error >. 0.1 {
-            True -> {
-              // Prediction was wrong - use server position
-              io.println(
-                "⚠️ Prediction error: "
-                <> float.to_string(position_error)
-                <> " - snapping to server",
-              )
-              server_player.position
-            }
-            False -> {
-              // Prediction was close enough - keep using predicted position
-              model.predicted_position
-            }
-          }
-
+          // Server sent authoritative position - use it
           Model(
             ..model,
             server_tick: tick,
             other_players: other_players,
             player: server_player,
-            predicted_position: reconciled_position,
+            wand_inventory: wand_inventory,
+            wand_cooldowns_ms: wand_cooldowns,
+            predicted_position: server_player.position,
             time_since_server_update: 0.0,
           )
         }
@@ -379,6 +384,8 @@ fn handle_server_message(model: Model, msg: game_message.ServerMessage) -> Model
             ..model,
             server_tick: tick,
             other_players: other_players,
+            wand_inventory: wand_inventory,
+            wand_cooldowns_ms: wand_cooldowns,
             time_since_server_update: 0.0,
           )
       }

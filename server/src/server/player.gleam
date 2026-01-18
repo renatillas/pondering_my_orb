@@ -1,4 +1,5 @@
 import gleam/erlang/process.{type Subject}
+import gleam/float
 import gleam/int
 import gleam/list
 import gleam/option
@@ -31,6 +32,8 @@ pub type Msg {
   CastSpell(target: Vec3(Float))
   /// Message from WandActor
   WandMessage(slot: Int, msg: wand_actor.ToPlayerMsg)
+  /// Update position after physics correction (from expresso)
+  UpdatePosition(position: Vec3(Float), velocity: Vec3(Float))
 }
 
 /// Messages sent FROM player actor back to the room
@@ -48,6 +51,8 @@ pub type PlayerState {
     player: player.Player,
     /// Wand inventory (networked to clients, updated from WandActors)
     wands: player.WandInventory,
+    /// Cooldown remaining for each wand slot (in milliseconds)
+    wand_cooldowns_ms: #(Int, Int, Int, Int),
   )
 }
 
@@ -109,6 +114,7 @@ pub fn start(
           slot_2: option.None,
           slot_3: option.None,
         ),
+        wand_cooldowns_ms: #(0, 0, 0, 0),
       )
 
     // Create wand tagger for slot 0
@@ -179,6 +185,8 @@ fn handle_message(
     SwitchWand(slot) -> handle_switch_wand(state, slot)
     CastSpell(target) -> handle_cast_spell(state, target)
     WandMessage(slot:, msg:) -> handle_wand_message(state, slot, msg)
+    UpdatePosition(position:, velocity:) ->
+      handle_update_position(state, position, velocity)
   }
 }
 
@@ -186,11 +194,7 @@ fn handle_tick(
   state: State(room_msg),
   delta_time: Duration,
 ) -> actor.Next(State(room_msg), Msg) {
-  // 1. Update player movement
-  let player_with_movement =
-    update_movement(state.player_state.player, delta_time)
-
-  // 2. Forward tick to all wand actors (they will respond with WandStateChanged)
+  // 1. Forward tick to all wand actors (they will respond with WandStateChanged)
   case state.wand_actors.0 {
     option.Some(wand) -> process.send(wand, wand_actor.Tick(delta_time))
     option.None -> Nil
@@ -208,16 +212,14 @@ fn handle_tick(
     option.None -> Nil
   }
 
-  // 3. Notify room of state change (wand states will be updated via WandMessage)
-  let new_player_state =
-    PlayerState(..state.player_state, player: player_with_movement)
+  // 2. Notify room of state change (wand states will be updated via WandMessage)
+  // Note: Position will be updated by expresso physics via UpdatePosition message
   process.send(
     state.room,
-    state.to_room(StateChanged(new_player_state.player.id, new_player_state)),
+    state.to_room(StateChanged(state.player_state.player.id, state.player_state)),
   )
 
-  let new_state = State(..state, player_state: new_player_state)
-  actor.continue(new_state)
+  actor.continue(state)
 }
 
 fn handle_move(
@@ -344,10 +346,30 @@ fn handle_wand_message(
   msg: wand_actor.ToPlayerMsg,
 ) -> actor.Next(State(room_msg), Msg) {
   case msg {
-    wand_actor.WandStateChanged(wand:, cooldown: _) -> {
+    wand_actor.WandStateChanged(wand:, cooldown:) -> {
+      // Calculate total cooldown remaining in milliseconds
+      let cooldown_ms =
+        float.round(
+          duration.to_seconds(cooldown.cast_delay_remaining)
+          *. 1000.0
+          +. duration.to_seconds(cooldown.recharge_delay_remaining)
+          *. 1000.0,
+        )
+
       // Update wand in player state for networking
       let new_wands = set_wand_at_slot(state.player_state.wands, slot, wand)
-      let new_player_state = PlayerState(..state.player_state, wands: new_wands)
+      let new_cooldowns =
+        set_cooldown_at_slot(
+          state.player_state.wand_cooldowns_ms,
+          slot,
+          cooldown_ms,
+        )
+      let new_player_state =
+        PlayerState(
+          ..state.player_state,
+          wands: new_wands,
+          wand_cooldowns_ms: new_cooldowns,
+        )
       let new_state = State(..state, player_state: new_player_state)
       actor.continue(new_state)
     }
@@ -384,6 +406,25 @@ fn handle_wand_message(
       actor.continue(state)
     }
   }
+}
+
+fn handle_update_position(
+  state: State(room_msg),
+  position: Vec3(Float),
+  velocity: Vec3(Float),
+) -> actor.Next(State(room_msg), Msg) {
+  // Update player position and velocity from physics correction (expresso integration)
+  let updated_player =
+    player.Player(
+      ..state.player_state.player,
+      position: position,
+      velocity: velocity,
+    )
+
+  let new_player_state =
+    PlayerState(..state.player_state, player: updated_player)
+  let new_state = State(..state, player_state: new_player_state)
+  actor.continue(new_state)
 }
 
 // =============================================================================
@@ -429,15 +470,20 @@ fn set_wand_at_slot(
   }
 }
 
-/// Update player movement based on movement_state
-fn update_movement(p: player.Player, delta_time: Duration) -> player.Player {
-  let dt_seconds = duration.to_seconds(delta_time)
-
-  // Apply velocity to position (velocity is set by handle_move)
-  let movement = vec3f.scale(p.velocity, by: dt_seconds)
-  let new_position = vec3f.add(p.position, movement)
-
-  player.Player(..p, position: new_position)
+/// Set cooldown at a specific slot (0-3)
+fn set_cooldown_at_slot(
+  cooldowns: #(Int, Int, Int, Int),
+  slot: Int,
+  cooldown_value: Int,
+) -> #(Int, Int, Int, Int) {
+  let #(cd0, cd1, cd2, cd3) = cooldowns
+  case slot {
+    0 -> #(cooldown_value, cd1, cd2, cd3)
+    1 -> #(cd0, cooldown_value, cd2, cd3)
+    2 -> #(cd0, cd1, cooldown_value, cd3)
+    3 -> #(cd0, cd1, cd2, cooldown_value)
+    _ -> cooldowns
+  }
 }
 
 /// Convert PlayerState to shared/player.Player for network transmission
