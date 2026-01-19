@@ -3,11 +3,12 @@
 ////
 //// This module defines the shared message types that flow between the game
 //// (Tiramisu) and the UI overlay (Lustre). Messages are bidirectional:
-//// - Game → UI: State updates (health, mana, wand info)
-//// - UI → Game: User actions (future: slot switching, etc.)
+//// - Game → UI: State updates (health, mana, wand info, app state, room list)
+//// - UI → Game: User actions (join room, create room, etc.)
 ////
 
 import gleam/option.{type Option}
+import shared/room_info
 
 // =============================================================================
 // BRIDGE MESSAGES
@@ -15,13 +16,21 @@ import gleam/option.{type Option}
 
 /// Messages that cross the bridge between game and UI
 pub type BridgeMsg {
-  // Game → UI updates
+  // Game → UI: App state transitions
+  ShowStartScreen
+  ShowConnecting(room_id: String, player_name: String)
+  ShowInGame
+  // Game → UI: Data updates
   UpdateHealth(current: Float, max: Float)
   UpdateMana(current: Float, max: Float)
   UpdateActiveWand(WandInfo)
-  // UI → Game actions (future expansion)
-  // SwitchWandSlot(Int)
-  // CastSpell(Int)
+  UpdateRoomList(List(room_info.RoomInfo))
+  ShowError(String)
+  // UI → Game: User actions
+  UIPlayerNameChanged(String)
+  UIRefreshRooms
+  UIJoinRoom(room_id: String)
+  UICreateRoom(name: String, max_players: Int)
 }
 
 // =============================================================================

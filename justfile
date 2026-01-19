@@ -186,3 +186,68 @@ info:
 # Check project health (dependencies, formatting, tests)
 health: deps-download format-check build test
     @echo "💚 Project health check passed!"
+
+# =============================================================================
+# DEPLOYMENT COMMANDS
+# =============================================================================
+
+# Deploy server to Fly.io
+deploy-server:
+    @echo "🚀 Deploying server to Fly.io..."
+    flyctl deploy --config server/fly.toml
+
+# Deploy server with remote build (faster, uses Fly.io builders)
+deploy-server-remote:
+    @echo "🚀 Deploying server to Fly.io (remote build)..."
+    flyctl deploy --config server/fly.toml --remote-only
+
+# Deploy client to Cloudflare Pages
+deploy-client:
+    @echo "🚀 Deploying client to Cloudflare Pages..."
+    cd client && gleam run -m lustre/dev build --outdir=dist
+    cd client && npx wrangler pages deploy dist --project-name pondering-my-orb
+
+# Deploy both server and client
+deploy-all: deploy-server-remote deploy-client
+    @echo "✅ Full deployment complete!"
+
+# Open Fly.io dashboard for server
+fly-dashboard:
+    @echo "🌐 Opening Fly.io dashboard..."
+    flyctl dashboard --config server/fly.toml
+
+# View Fly.io logs for server
+fly-logs:
+    @echo "📋 Streaming Fly.io logs..."
+    flyctl logs --config server/fly.toml
+
+# SSH into Fly.io server instance
+fly-ssh:
+    @echo "🔧 Connecting to Fly.io server..."
+    flyctl ssh console --config server/fly.toml
+
+# Check Fly.io server status
+fly-status:
+    @echo "📊 Checking Fly.io server status..."
+    flyctl status --config server/fly.toml
+
+# Scale Fly.io server
+fly-scale count='1':
+    @echo "📈 Scaling Fly.io server to {{count}} instance(s)..."
+    flyctl scale count {{count}} --config server/fly.toml
+
+# Initialize Fly.io app (first-time setup)
+fly-init:
+    @echo "🎯 Initializing Fly.io app..."
+    @echo "Note: This will create a new Fly.io app. Only run once!"
+    flyctl launch --config server/fly.toml --no-deploy
+
+# View server secrets
+fly-secrets:
+    @echo "🔐 Listing Fly.io secrets..."
+    flyctl secrets list --config server/fly.toml
+
+# Set a server secret (usage: just fly-secret-set MY_KEY my_value)
+fly-secret-set name value:
+    @echo "🔐 Setting Fly.io secret {{name}}..."
+    flyctl secrets set {{name}}={{value}} --config server/fly.toml

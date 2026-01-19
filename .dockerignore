@@ -1,0 +1,33 @@
+# Build artifacts
+**/build/
+**/*.beam
+**/erl_crash.dump
+
+# Development files
+.git/
+.github/
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Documentation
+*.md
+**/AGENTS.md
+
+# Test files
+**/test/
+
+# Editor files
+.vscode/
+.idea/
+*.sublime-*
+
+# Client-specific (not needed for server build)
+client/dist/
+client/node_modules/
+client/assets/
+
+# Root level files
+justfile
+PLAN.md

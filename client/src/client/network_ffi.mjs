@@ -28,14 +28,7 @@ export function connect(url, playerName, dispatch) {
     socket.onopen = () => {
       console.log("[Network] Connected to", url);
       dispatch(new SocketOpened());
-
-      // Send join room message
-      const joinMsg = {
-        type: "join_room",
-        room_id: "1", // Default room for now
-        player_name: playerName,
-      };
-      socket.send(JSON.stringify(joinMsg));
+      // Don't auto-join a room - user will choose via UI
     };
 
     socket.onmessage = (event) => {

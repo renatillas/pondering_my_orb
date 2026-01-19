@@ -1,0 +1,118 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  # =============================================================================
+  # Test and Build Job
+  # =============================================================================
+  test:
+    name: Test & Build
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Erlang/OTP and Gleam
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '27.0'
+          gleam-version: '1.6.4'
+          rebar3-version: '3'
+
+      - name: Download dependencies
+        run: |
+          cd shared && gleam deps download
+          cd ../server && gleam deps download
+          cd ../client && gleam deps download
+
+      - name: Check formatting
+        run: |
+          cd shared && gleam format --check
+          cd ../server && gleam format --check
+          cd ../client && gleam format --check
+
+      - name: Build all packages
+        run: |
+          cd shared && gleam build
+          cd ../server && gleam build
+          cd ../client && gleam build
+
+      - name: Run tests
+        run: |
+          cd shared && gleam test
+          cd ../server && gleam test
+
+  # =============================================================================
+  # Deploy Server to Fly.io
+  # =============================================================================
+  deploy-server:
+    name: Deploy Server to Fly.io
+    needs: test
+    runs-on: ubuntu-latest
+    # Only deploy on main branch pushes (not PRs)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Fly.io CLI
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy to Fly.io
+        run: |
+          cd server
+          flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  # =============================================================================
+  # Deploy Client to Cloudflare Pages
+  # =============================================================================
+  deploy-client:
+    name: Deploy Client to Cloudflare Pages
+    needs: test
+    runs-on: ubuntu-latest
+    # Only deploy on main branch pushes (not PRs)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      deployments: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Erlang/OTP and Gleam
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: '27.0'
+          gleam-version: '1.6.4'
+          rebar3-version: '3'
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Build client
+        run: |
+          cd client
+          gleam deps download
+          bun install
+          gleam run -m lustre/dev build --outdir=dist
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy client/dist --project-name pondering-my-orb

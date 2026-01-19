@@ -21,7 +21,6 @@ import server/enemy as enemy_actor
 import server/player as player_actor
 import server/projectile as projectile_actor
 import server/tick
-import server/wand as wand_actor
 
 import shared/enemy
 import shared/game_message
@@ -107,10 +106,6 @@ pub type State {
       enemy_actor.SpawnArguments(Msg),
       process.Subject(enemy_actor.Msg),
     ),
-    wand_factory: factory_supervisor.Supervisor(
-      wand_actor.SpawnArguments(player_actor.Msg),
-      process.Subject(wand_actor.Msg),
-    ),
     self: process.Subject(Msg),
   )
 }
@@ -176,12 +171,6 @@ pub fn start(
       process.Subject(enemy_actor.Msg),
     ),
   ),
-  wand_factory_name: process.Name(
-    factory_supervisor.Message(
-      wand_actor.SpawnArguments(player_actor.Msg),
-      process.Subject(wand_actor.Msg),
-    ),
-  ),
 ) -> Result(actor.Started(process.Subject(Msg)), actor.StartError) {
   actor.new_with_initialiser(1000, fn(self) {
     // Get references to all factory supervisors
@@ -189,15 +178,13 @@ pub fn start(
     let projectile_factory =
       factory_supervisor.get_by_name(projectile_factory_name)
     let enemy_factory = factory_supervisor.get_by_name(enemy_factory_name)
-    let wand_factory = factory_supervisor.get_by_name(wand_factory_name)
 
     // Enemy spawn configuration
     // Disabled automatic spawning - we spawn 500 enemies on first join for benchmarking
     let spawn_config =
       SpawnConfig(
-        spawn_interval_ticks: 999_999,
-        // Effectively disabled
-        enemies_per_wave: 3,
+        spawn_interval_ticks: 5,
+        enemies_per_wave: 100,
         spawn_radius_min: 10.0,
         spawn_radius_max: 15.0,
         waves_spawned: 0,
@@ -233,7 +220,6 @@ pub fn start(
         player_factory: player_factory,
         projectile_factory: projectile_factory,
         enemy_factory: enemy_factory,
-        wand_factory: wand_factory,
         self: self,
       )
 
@@ -429,14 +415,27 @@ fn finalize_tick(
       // Keep original tick_scheduler - it has the correct tick start time!
     )
 
-  // Schedule next tick to maintain fixed 60Hz rate
-  // Calculate time remaining until next tick (16ms - elapsed time)
-  let now = timestamp.system_time()
-  let time_until_next_tick = tick.next(state.tick_scheduler, now)
+  // Only schedule next tick if there are still players connected
+  // This prevents orphaned tick messages after all players disconnect
+  case dict.is_empty(new_state.player_actors) {
+    True -> {
+      logging.log(
+        logging.Info,
+        "All players disconnected during tick finalization, stopping tick loop",
+      )
+      actor.continue(new_state)
+    }
+    False -> {
+      // Schedule next tick to maintain fixed 60Hz rate
+      // Calculate time remaining until next tick (16ms - elapsed time)
+      let now = timestamp.system_time()
+      let time_until_next_tick = tick.next(state.tick_scheduler, now)
 
-  process.send_after(new_state.self, time_until_next_tick, Tick)
+      process.send_after(new_state.self, time_until_next_tick, Tick)
 
-  actor.continue(new_state)
+      actor.continue(new_state)
+    }
+  }
 }
 
 fn handle_tick(state: State) -> actor.Next(State, Msg) {
@@ -786,13 +785,61 @@ fn handle_client_disconnected(
         "Player " <> player_id_to_string(player_id) <> " disconnected",
       )
 
+      // Send Shutdown message to player actor to clean up wand actors
+      case dict.get(state.player_actors, player_id) {
+        Ok(player_actor) -> {
+          process.send(player_actor, player_actor.Shutdown)
+        }
+        Error(Nil) -> Nil
+      }
+
       // Remove connection mappings
       let new_connection_to_player =
         dict.delete(state.connection_to_player, conn)
       let new_connections = dict.delete(state.connections, conn)
 
-      // Remove player actor (will terminate automatically)
+      // Remove player actor from dictionary
       let new_player_actors = dict.delete(state.player_actors, player_id)
+
+      // Clean up physics body immediately (don't wait for next tick)
+      let player.Id(id_num) = player_id
+      let body_id = "player_" <> int.to_string(id_num)
+      let new_physics_world = world.remove_body(state.physics_world, body_id)
+
+      // Update tick state if we're currently collecting
+      let new_tick_state = case state.tick_state {
+        Idle -> Idle
+        Collecting(
+          expected_player_count:,
+          player_responses:,
+          projectile_responses:,
+          enemy_responses:,
+          tick_number:,
+        ) -> {
+          // Decrement expected count and remove player from responses if present
+          let new_expected = expected_player_count - 1
+          let new_player_responses = dict.delete(player_responses, player_id)
+
+          logging.log(
+            logging.Info,
+            "Player disconnected during tick collection. Adjusted expected count: "
+              <> int.to_string(new_expected),
+          )
+
+          // If no players left, reset to Idle
+          case new_expected {
+            0 -> Idle
+            _ ->
+              Collecting(
+                expected_player_count: new_expected,
+                player_responses: new_player_responses,
+                projectile_responses:,
+                enemy_responses:,
+                tick_number:,
+              )
+          }
+        }
+      }
 
       // Broadcast player_left to remaining players
       broadcast_to_all(
@@ -806,6 +853,8 @@ fn handle_client_disconnected(
           connection_to_player: new_connection_to_player,
           connections: new_connections,
           player_actors: new_player_actors,
+          physics_world: new_physics_world,
+          tick_state: new_tick_state,
         ),
       )
     }
@@ -867,6 +916,12 @@ fn handle_message_internal(
   msg: game_message.ClientMessage,
 ) -> #(State, List(#(ewe.WebsocketConnection, game_message.ServerMessage))) {
   case msg {
+    game_message.ListRooms | game_message.CreateRoom(_, _) -> {
+      // These messages are handled by the room registry, not individual rooms
+      // If they somehow reach here, just ignore them
+      #(state, [])
+    }
+
     game_message.JoinRoom(_, player_name) ->
       handle_join(state, conn, player_name)
 
@@ -970,11 +1025,6 @@ fn handle_join(
     False -> Nil
   }
 
-  // Create tagger function to wrap player messages
-  let to_room = fn(player_msg: player_actor.ToRoomMsg) -> Msg {
-    PlayerMessage(player_msg)
-  }
-
   // Create spawn arguments for the player actor
   let spawn_args =
     player_actor.SpawnArguments(
@@ -982,8 +1032,9 @@ fn handle_join(
       player_name: player_name,
       initial_position: initial_position,
       room: state.self,
-      to_room: to_room,
-      wand_factory: state.wand_factory,
+      to_room: fn(player_msg: player_actor.ToRoomMsg) -> Msg {
+        PlayerMessage(player_msg)
+      },
     )
 
   // Spawn PlayerActor using factory supervisor
@@ -1045,13 +1096,26 @@ fn handle_leave(
   // Get player ID for this connection
   let assert Ok(player_id) = dict.get(state.connection_to_player, connection)
 
+  // Send Shutdown message to player actor to clean up wand actors
+  case dict.get(state.player_actors, player_id) {
+    Ok(player_actor) -> {
+      process.send(player_actor, player_actor.Shutdown)
+    }
+    Error(Nil) -> Nil
+  }
+
   // Remove connection mappings
   let new_connection_to_player =
     dict.delete(state.connection_to_player, connection)
   let new_connections = dict.delete(state.connections, connection)
 
-  // Remove player actor
+  // Remove player actor from dictionary
   let new_player_actors = dict.delete(state.player_actors, player_id)
+
+  // Clean up physics body immediately (don't wait for next tick)
+  let player.Id(id_num) = player_id
+  let body_id = "player_" <> int.to_string(id_num)
+  let new_physics_world = world.remove_body(state.physics_world, body_id)
 
   // Request the connection to close
   case dict.get(state.connections, connection) {
@@ -1102,6 +1166,7 @@ fn handle_leave(
       connection_to_player: new_connection_to_player,
       connections: new_connections,
       player_actors: new_player_actors,
+      physics_world: new_physics_world,
       tick_state: new_tick_state,
     )
 

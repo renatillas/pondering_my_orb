@@ -11,11 +11,11 @@ import server/enemy
 import server/player
 import server/projectile
 import server/room
-import server/wand
+import server/room_registry
 
 pub fn main() {
   logging.configure()
-  logging.set_level(logging.Debug)
+  logging.set_level(logging.Info)
 
   // Create factory supervisors for all actor types
   let player_factory_name = process.new_name("player_factory")
@@ -36,22 +36,15 @@ pub fn main() {
     |> factory_supervisor.named(enemy_factory_name)
     |> factory_supervisor.supervised()
 
-  let wand_factory_name = process.new_name("wand_factory")
-  let wand_factory =
-    factory_supervisor.worker_child(wand.start)
-    |> factory_supervisor.named(wand_factory_name)
-    |> factory_supervisor.supervised()
-
-  // Start the game room actor, passing all factory names
-  let game_room_name = process.new_name("game_room")
-  let room =
+  // Start the room registry actor, passing all factory names
+  let room_registry_name = process.new_name("room_registry")
+  let registry =
     supervision.worker(fn() {
-      room.start(
-        game_room_name,
+      room_registry.start(
+        room_registry_name,
         player_factory_name,
         projectile_factory_name,
         enemy_factory_name,
-        wand_factory_name,
       )
     })
 
@@ -67,10 +60,10 @@ pub fn main() {
           // Create a subject for outgoing messages
           let self = process.new_subject()
 
-          // Notify game room of new connection
+          // Notify room registry of new connection
           actor.send(
-            process.named_subject(game_room_name),
-            room.ClientConnected(conn, self),
+            process.named_subject(room_registry_name),
+            room_registry.ClientConnected(conn, self),
           )
 
           #(self, process.select(selector, self))
@@ -78,18 +71,18 @@ pub fn main() {
         handler: fn(conn, user_state, message) {
           case message {
             ewe.Binary(data) -> {
-              // Send binary message to game room
+              // Send binary message to room registry
               actor.send(
-                process.named_subject(game_room_name),
-                room.ClientMessage(conn, data),
+                process.named_subject(room_registry_name),
+                room_registry.ClientMessage(conn, data),
               )
               ewe.websocket_continue(user_state)
             }
             ewe.Text(text) -> {
-              // Convert text to binary and send to game room
+              // Convert text to binary and send to room registry
               actor.send(
-                process.named_subject(game_room_name),
-                room.ClientMessage(conn, <<text:utf8>>),
+                process.named_subject(room_registry_name),
+                room_registry.ClientMessage(conn, <<text:utf8>>),
               )
               ewe.websocket_continue(user_state)
             }
@@ -111,12 +104,13 @@ pub fn main() {
         },
         on_close: fn(conn, _user_state) {
           actor.send(
-            process.named_subject(game_room_name),
-            room.ClientDisconnected(conn),
+            process.named_subject(room_registry_name),
+            room_registry.ClientDisconnected(conn),
           )
         },
       )
     })
+    |> ewe.bind_all()
     |> ewe.listening(8080)
     |> ewe.supervised()
 
@@ -125,10 +119,10 @@ pub fn main() {
     |> static_supervisor.add(player_factory)
     |> static_supervisor.add(projectile_factory)
     |> static_supervisor.add(enemy_factory)
-    |> static_supervisor.add(wand_factory)
-    |> static_supervisor.add(room)
+    |> static_supervisor.add(registry)
     |> static_supervisor.add(server)
     |> static_supervisor.start()
 
+  logging.log(logging.Info, "Server started on port 8080")
   process.sleep_forever()
 }

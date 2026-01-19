@@ -1,1 +1,29 @@
 @import "tailwindcss";
+
+/* Game canvas setup - below UI */
+#game {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+}
+
+#game canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+/* Block canvas interaction on start screen and connecting screen */
+#ui:has(.start-screen) ~ #game canvas,
+#ui:has(.connecting) ~ #game canvas {
+  pointer-events: none;
+}
+
+/* Enable canvas interaction when in game */
+#ui:has(.in-game) ~ #game canvas {
+  pointer-events: auto;
+  cursor: crosshair;
+}

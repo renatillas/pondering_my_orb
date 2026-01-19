@@ -10,6 +10,7 @@ import shared/enemy
 import shared/game_event
 import shared/player.{type Player}
 import shared/projectile
+import shared/room_info
 import shared/vec3 as shared_vec3
 import shared/wand
 import vec/vec3
@@ -20,6 +21,10 @@ import vec/vec3
 
 /// Messages sent from the client to the server.
 pub type ClientMessage {
+  /// Request to list all available rooms.
+  ListRooms
+  /// Request to create a new room.
+  CreateRoom(room_name: String, max_players: Int)
   /// Request to join a game room.
   JoinRoom(room_id: String, player_name: String)
   /// Request to leave the current room.
@@ -45,6 +50,13 @@ pub type PlayerAction {
 /// Encode a ClientMessage to JSON string for transmission.
 pub fn encode_client_message(msg: ClientMessage) -> String {
   case msg {
+    ListRooms -> json.object([#("type", json.string("list_rooms"))])
+    CreateRoom(room_name, max_players) ->
+      json.object([
+        #("type", json.string("create_room")),
+        #("room_name", json.string(room_name)),
+        #("max_players", json.int(max_players)),
+      ])
     JoinRoom(room_id, player_name) ->
       json.object([
         #("type", json.string("join_room")),
@@ -99,6 +111,12 @@ pub fn decode_client_message(data: String) -> Result(ClientMessage, String) {
   let decoder = {
     use msg_type <- decode.field("type", decode.string)
     case msg_type {
+      "list_rooms" -> decode.success(ListRooms)
+      "create_room" -> {
+        use room_name <- decode.field("room_name", decode.string)
+        use max_players <- decode.field("max_players", decode.int)
+        decode.success(CreateRoom(room_name, max_players))
+      }
       "join_room" -> {
         use room_id <- decode.field("room_id", decode.string)
         use player_name <- decode.field("player_name", decode.string)
@@ -231,6 +249,14 @@ pub type ServerMessage {
     client_timestamp: timestamp.Timestamp,
     server_timestamp: timestamp.Timestamp,
   )
+  /// List of available rooms
+  RoomList(rooms: List(room_info.RoomInfo))
+  /// Confirmation that a room was created
+  RoomCreated(room_id: String, room_info: room_info.RoomInfo)
+  /// Room is full and cannot be joined
+  RoomFull(room_id: String)
+  /// Room not found
+  RoomNotFound(room_id: String)
   /// An error has occurred.
   Error(message: String)
 }
@@ -305,6 +331,27 @@ pub fn encode_server_message(msg: ServerMessage) -> String {
           ),
         ),
       ])
+    RoomList(rooms) ->
+      json.object([
+        #("type", json.string("room_list")),
+        #("rooms", json.array(rooms, room_info.encode)),
+      ])
+    RoomCreated(room_id, room_info_data) ->
+      json.object([
+        #("type", json.string("room_created")),
+        #("room_id", json.string(room_id)),
+        #("room_info", room_info.encode(room_info_data)),
+      ])
+    RoomFull(room_id) ->
+      json.object([
+        #("type", json.string("room_full")),
+        #("room_id", json.string(room_id)),
+      ])
+    RoomNotFound(room_id) ->
+      json.object([
+        #("type", json.string("room_not_found")),
+        #("room_id", json.string(room_id)),
+      ])
     Error(message) ->
       json.object([
         #("type", json.string("error")),
@@ -367,6 +414,23 @@ pub fn decode_server_message(data: String) -> Result(ServerMessage, String) {
           timestamp.from_unix_seconds(client_timestamp),
           timestamp.from_unix_seconds(server_timestamp),
         ))
+      }
+      "room_list" -> {
+        use rooms <- decode.field("rooms", decode.list(room_info.decoder()))
+        decode.success(RoomList(rooms))
+      }
+      "room_created" -> {
+        use room_id <- decode.field("room_id", decode.string)
+        use room_info_data <- decode.field("room_info", room_info.decoder())
+        decode.success(RoomCreated(room_id, room_info_data))
+      }
+      "room_full" -> {
+        use room_id <- decode.field("room_id", decode.string)
+        decode.success(RoomFull(room_id))
+      }
+      "room_not_found" -> {
+        use room_id <- decode.field("room_id", decode.string)
+        decode.success(RoomNotFound(room_id))
       }
       "error" -> {
         use message <- decode.field("message", decode.string)
